@@ -42,12 +42,18 @@ DEFAULTS: dict[str, Any] = {
         "width": 1080,
         "height": 1920,
         "fill": "crop",
+        "mode": "track",            # track (follow speaker) | center
+        "track_sample_interval": 0.33,
+        "track_smooth_window": 5,
+        "face_score": 0.6,
     },
     "captions": {
         "enabled": True,
+        "style": "karaoke",         # karaoke (word highlight) | simple
         "font": "DejaVu Sans",
         "font_size": 54,
         "primary_color": "&H00FFFFFF",
+        "highlight_color": "&H0000E5FF",   # amber (BGR) for the sung word
         "outline_color": "&H00000000",
         "outline": 3,
         "shadow": 1,
@@ -55,11 +61,31 @@ DEFAULTS: dict[str, Any] = {
         "max_line_chars": 30,
         "max_line_duration": 2.5,
     },
+    "edit": {                       # M9 silence trim (planning built + tested)
+        "jumpcuts": False,
+        "min_silence": 0.8,
+        "max_gap": 0.35,
+        "pad": 0.1,
+    },
+    "brand": {                      # M8 logo overlay
+        "logo": None,
+        "corner": "TR",             # TL | TR | BL | BR
+        "size": 0.18,               # fraction of width (<=1) or px (>1)
+        "opacity": 0.85,
+        "margin": 40,
+    },
+    "metadata": {"enabled": True, "backend": "auto"},   # M10
+    "thumbnail": {"enabled": True, "text_hook": False},  # M11
+    "page": {"niche": None, "tone": None, "hashtags": []},  # Section 8 profile
     "render": {
         "crf": 20,
         "preset": "veryfast",
         "audio_bitrate": "128k",
         "fps": None,
+        "loudnorm": True,           # M9: normalise to ~-14 LUFS
+        "loudnorm_i": -14.0,
+        "loudnorm_tp": -1.5,
+        "loudnorm_lra": 11.0,
     },
 }
 

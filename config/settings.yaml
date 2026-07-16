@@ -34,12 +34,18 @@ reframe:
   width: 1080
   height: 1920
   fill: crop                     # crop (center smart-crop) | blur (fit + blurred bg)
+  mode: track                    # track (follow speaker, M5) | center
+  track_sample_interval: 0.33    # seconds between face-detection samples
+  track_smooth_window: 5         # moving-average window for the pan path
+  face_score: 0.6                # YuNet detection confidence threshold
 
 captions:
   enabled: true
+  style: karaoke                 # karaoke (word highlight, M7) | simple
   font: "DejaVu Sans"
   font_size: 54
-  primary_color: "&H00FFFFFF"    # ASS BGR+alpha: opaque white
+  primary_color: "&H00FFFFFF"    # ASS BGR+alpha: opaque white (unsung word)
+  highlight_color: "&H0000E5FF"  # sung word (amber)
   outline_color: "&H00000000"    # opaque black
   outline: 3
   shadow: 1
@@ -49,8 +55,38 @@ captions:
   max_line_chars: 30
   max_line_duration: 2.5         # seconds per caption line
 
+edit:                            # M9 silence trim (planning; off by default)
+  jumpcuts: false
+  min_silence: 0.8               # gaps longer than this are trimmed
+  max_gap: 0.35                  # kept breathing room after trimming
+  pad: 0.1
+
+brand:                           # M8 logo overlay
+  logo: null                     # path to a PNG/logo image
+  corner: TR                     # TL | TR | BL | BR
+  size: 0.18                     # fraction of output width (<=1) or px (>1)
+  opacity: 0.85
+  margin: 40
+
+metadata:                        # M10 titles/description/hashtags
+  enabled: true
+  backend: auto                  # auto | llm | heuristic
+
+thumbnail:                       # M11 cover image
+  enabled: true
+  text_hook: false               # draw the title on the cover
+
+page:                            # Section 8 per-page profile (optional)
+  niche: null
+  tone: null
+  hashtags: []
+
 render:
   crf: 20                        # H.264 quality (lower = better)
   preset: veryfast
   audio_bitrate: 128k
   fps: null                      # null = keep source fps
+  loudnorm: true                 # M9: normalize to ~-14 LUFS (social standard)
+  loudnorm_i: -14.0
+  loudnorm_tp: -1.5
+  loudnorm_lra: 11.0

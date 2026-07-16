@@ -8,6 +8,8 @@ dependencies = [
     "yt-dlp>=2024.1.0",
     "faster-whisper>=1.0.0",
     "PyYAML>=6.0",
+    "opencv-python-headless>=4.9.0",
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +32,13 @@ packages = [
     "shortforge.reframe",
     "shortforge.captions",
     "shortforge.render",
+    "shortforge.brand",
+    "shortforge.metadata",
+    "shortforge.thumbnail",
 ]
+
+[tool.setuptools.package-data]
+"shortforge.reframe" = ["models/*.onnx"]
 
 [build-system]
 requires = ["setuptools>=61.0"]

@@ -27,8 +27,20 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("paths.work_dir", getattr(args, "work_dir", None))
     cfg.override("paths.output_dir", getattr(args, "output", None))
     cfg.override("ingest.cookies", getattr(args, "cookies", None))
+    cfg.override("reframe.mode", getattr(args, "reframe_mode", None))
+    cfg.override("captions.style", getattr(args, "caption_style", None))
+    cfg.override("brand.logo", getattr(args, "logo", None))
+    cfg.override("brand.corner", getattr(args, "logo_corner", None))
+    cfg.override("brand.opacity", getattr(args, "logo_opacity", None))
+    cfg.override("page.niche", getattr(args, "niche", None))
     if getattr(args, "no_captions", False):
         cfg.override("captions.enabled", False)
+    if getattr(args, "no_loudnorm", False):
+        cfg.override("render.loudnorm", False)
+    if getattr(args, "no_metadata", False):
+        cfg.override("metadata.enabled", False)
+    if getattr(args, "no_thumbnail", False):
+        cfg.override("thumbnail.enabled", False)
     backend = getattr(args, "backend", None)
     if backend:
         cfg.override("detect.backend", backend)
@@ -152,7 +164,18 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--num-clips", type=int, help="Number of clips (0 = auto-recommend)")
     r.add_argument("--aspect", help="9:16 / 1:1 / 16:9 / WxH (e.g. 1080x1920)")
     r.add_argument("--fill", choices=["crop", "blur"], help="Reframe fill mode")
+    r.add_argument("--reframe-mode", choices=["track", "center"],
+                   help="track = follow the speaker (M5); center = static crop")
+    r.add_argument("--caption-style", choices=["karaoke", "simple"],
+                   help="karaoke = word highlight (M7); simple = plain lines")
+    r.add_argument("--logo", help="Path to a logo image to overlay (M8)")
+    r.add_argument("--logo-corner", choices=["TL", "TR", "BL", "BR"], help="Logo corner")
+    r.add_argument("--logo-opacity", type=float, help="Logo opacity 0..1")
+    r.add_argument("--niche", help="Niche keyword(s) for metadata/hashtags (M10)")
     r.add_argument("--no-captions", action="store_true", help="Do not burn captions")
+    r.add_argument("--no-loudnorm", action="store_true", help="Skip -14 LUFS normalisation")
+    r.add_argument("--no-metadata", action="store_true", help="Skip metadata generation")
+    r.add_argument("--no-thumbnail", action="store_true", help="Skip thumbnail generation")
     r.add_argument("--whisper-model", help="tiny|base|small|medium|large-v3")
     r.add_argument("--cookies", help="Path to cookies.txt for private/unlisted "
                    "videos on your own channel (M1 auth)")

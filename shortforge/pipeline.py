@@ -15,15 +15,18 @@ import os
 import re
 
 from .analyze import load_external_transcript, transcribe
+from .brand import logo_spec
 from .cache import Cache
 from .captions import build_ass, subtitles_filter
 from .config import Config
 from .detect import detect_hooks
 from .ingest import ingest
+from .metadata import generate as gen_metadata
 from .models import Clip
-from .reframe import build_filtergraph, parse_aspect
-from .render import render_clip
+from .reframe import parse_aspect, plan_track, tracking_available
+from .render import build_filtergraph, render_clip, render_clip_tracked
 from .select import build_clips, recommend_clip_count
+from .thumbnail import make_thumbnail
 from .utils import ShortForgeError, ffprobe_info, log, require_binary
 
 
@@ -96,27 +99,69 @@ def run_pipeline(
         raise ShortForgeError("No clips could be selected from this source.")
     log.info("selected %d clip%s", len(clips), "s" if len(clips) != 1 else "")
 
-    # --- M5/M7/M13 reframe + captions + render ---------------------------- #
+    # --- M5/M7/M8/M13 reframe + captions + branding + render -------------- #
     probe = ffprobe_info(meta.file_path)
+    cfg.override("reframe._src_w", probe.width)
+    cfg.override("reframe._src_h", probe.height)
     fill = cfg.get("reframe.fill", "crop")
+    mode = cfg.get("reframe.mode", "track")
     fontsdir = _find_fontsdir()
     lang = transcript.language or "xx"
     date = _dt.date.today().strftime("%Y%m%d")
     slug = _slug(meta.title, "source")
 
-    rendered: list[Clip] = []
+    logo = logo_spec(cfg, out_w, out_h)
+    do_meta = bool(cfg.get("metadata.enabled", True))
+    do_thumb = bool(cfg.get("thumbnail.enabled", True))
+    use_track = mode == "track" and tracking_available()
+    if mode == "track" and not use_track:
+        log.info("subject tracking unavailable (opencv/model); using center-crop")
+    log.info("reframe mode: %s%s", "track" if use_track else "center",
+             " + logo" if logo else "")
+
+    rendered: list[dict] = []
     for clip in clips:
         ass_path = build_ass(
             clip, transcript, out_w, out_h, cfg, cache.path(f"clip_{clip.clip_id}.ass")
         )
-        extra = subtitles_filter(ass_path, fontsdir) if ass_path else None
-        fg = build_filtergraph(probe.width, probe.height, out_w, out_h, fill, extra)
+        subs = subtitles_filter(ass_path, fontsdir) if ass_path else None
 
         # Deterministic naming: {slug}_{lang}_{clipid}_{yyyymmdd}.mp4  (M13)
         out_path = os.path.join(out_dir, f"{slug}_{lang}_{clip.clip_id}_{date}.mp4")
-        render_clip(meta.file_path, clip, fg, cfg, out_path)
+
+        track = plan_track(meta.file_path, clip, out_w, out_h, cfg) if use_track else None
+        if track is not None:
+            fg = build_filtergraph(
+                probe.width, probe.height, out_w, out_h,
+                pre_cropped=True, subtitles=subs, logo=logo,
+            )
+            render_clip_tracked(
+                meta.file_path, clip, track, out_w, out_h, fg, cfg, out_path
+            )
+        else:
+            fg = build_filtergraph(
+                probe.width, probe.height, out_w, out_h,
+                fill=fill, subtitles=subs, logo=logo,
+            )
+            render_clip(meta.file_path, clip, fg, cfg, out_path)
         clip.file_path = os.path.abspath(out_path)
-        rendered.append(clip)
+
+        md = gen_metadata(clip, cfg) if do_meta else None
+        thumb = None
+        if do_thumb:
+            thumb_path = os.path.join(out_dir, f"{slug}_{lang}_{clip.clip_id}_{date}.jpg")
+            thumb = make_thumbnail(
+                meta.file_path, clip, out_w, out_h, cfg, thumb_path,
+                track=track, text_hook=(md or {}).get("title"),
+            )
+
+        entry = clip.to_dict()
+        entry["tracked"] = track is not None
+        if md:
+            entry["metadata"] = md
+        if thumb:
+            entry["thumbnail"] = os.path.abspath(thumb)
+        rendered.append(entry)
 
     # --- manifest --------------------------------------------------------- #
     manifest = {
@@ -130,13 +175,16 @@ def run_pipeline(
         "settings": {
             "resolution": f"{out_w}x{out_h}",
             "aspect": cfg.get("reframe.aspect"),
+            "reframe_mode": "track" if use_track else "center",
             "fill": fill,
             "target_duration": cfg.get("select.target_duration"),
-            "captions": bool(cfg.get("captions.enabled", True)),
+            "caption_style": cfg.get("captions.style") if cfg.get("captions.enabled") else None,
+            "loudnorm": bool(cfg.get("render.loudnorm", True)),
+            "logo": bool(logo),
             "hook_backend": cfg.get("detect.backend"),
         },
         "recommendation": {"recommended_clips": n_rec, "rationale": rationale},
-        "clips": [c.to_dict() for c in rendered],
+        "clips": rendered,
     }
     manifest_path = os.path.join(out_dir, f"{slug}_{date}_manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:

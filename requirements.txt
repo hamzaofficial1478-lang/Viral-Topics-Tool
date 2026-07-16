@@ -5,6 +5,9 @@
 yt-dlp>=2024.1.0
 faster-whisper>=1.0.0
 PyYAML>=6.0
+# Phase 2 (subject tracking + thumbnails). Headless build = no GUI/system deps.
+opencv-python-headless>=4.9.0
+numpy>=1.24
 
 # Optional — enables Claude-backed hook detection instead of the keyword
 # heuristic. Set ANTHROPIC_API_KEY to use it. Uncomment to install:

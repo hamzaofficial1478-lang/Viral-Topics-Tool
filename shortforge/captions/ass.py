@@ -1,12 +1,9 @@
 """M7 — Caption generation as ASS/SSA, burned by ffmpeg's libass filter.
 
-Two styles, selected by ``captions.style``:
-  - "simple"  : Phase-1 readable bottom-anchored lines.
-  - "karaoke" : word-by-word highlight — each word fills to a highlight colour as
-                it is spoken (proven to lift short-form retention).
-
-Both are bottom-anchored with a configurable safe margin so text clears the
-platform action bar / right-side button rail.
+The look is driven by a named template (``captions/templates.py``) so every clip
+renders consistently; the animation (none / fade / pop / karaoke / reveal) and
+individual fields can be overridden per run. Bottom-anchored by default with a
+configurable safe margin so text clears the platform UI.
 """
 
 from __future__ import annotations
@@ -15,6 +12,7 @@ import os
 
 from ..config import Config
 from ..models import Clip, Transcript, Word
+from . import templates
 
 
 def _ass_time(seconds: float) -> str:
@@ -89,22 +87,31 @@ def build_ass(
     if not rel:
         return None
 
-    lines = group_word_lines(
-        rel,
-        int(cfg.get("captions.max_line_chars", 30)),
-        float(cfg.get("captions.max_line_duration", 2.5)),
-    )
-    lines = [ln for ln in lines if ln]
+    lines = [
+        ln
+        for ln in group_word_lines(
+            rel,
+            int(cfg.get("captions.max_line_chars", 30)),
+            float(cfg.get("captions.max_line_duration", 2.5)),
+        )
+        if ln
+    ]
     if not lines:
         return None
 
-    karaoke = str(cfg.get("captions.style", "karaoke")).lower() == "karaoke"
-    header = _ass_header(out_w, out_h, cfg, karaoke)
-    if karaoke:
-        events = "\n".join(_karaoke_event(ln) for ln in lines)
+    style = templates.resolve(cfg)
+    upper = bool(style.get("uppercase"))
+    anim = style["animation"]
+
+    header = _ass_header(out_w, out_h, style)
+    if anim == "karaoke":
+        events = [_karaoke_event(ln, upper) for ln in lines]
+    elif anim == "reveal":
+        events = [_reveal_event(ln, upper) for ln in lines]
     else:
-        events = "\n".join(_simple_event(ln) for ln in lines)
-    content = header + events + "\n"
+        prefix = _anim_prefix(anim)
+        events = [_simple_event(ln, upper, prefix) for ln in lines]
+    content = header + "\n".join(events) + "\n"
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
@@ -112,41 +119,56 @@ def build_ass(
     return out_path
 
 
-def _simple_event(line: list[Word]) -> str:
-    start, end = line[0].start, line[-1].end
-    text = " ".join(w.text for w in line).strip()
-    return f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{text}"
+def _txt(text: str, upper: bool) -> str:
+    return text.upper() if upper else text
 
 
-def _karaoke_event(line: list[Word]) -> str:
+def _anim_prefix(anim: str) -> str:
+    if anim == "fade":
+        return r"{\fad(120,60)}"
+    if anim == "pop":
+        return r"{\fscx55\fscy55\fad(60,30)\t(0,150,\fscx100\fscy100)}"
+    return ""  # none
+
+
+def _dialogue(start: float, end: float, body: str) -> str:
+    return f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{body}"
+
+
+def _simple_event(line: list[Word], upper: bool = False, prefix: str = "") -> str:
+    text = _txt(" ".join(w.text for w in line).strip(), upper)
+    return _dialogue(line[0].start, line[-1].end, prefix + text)
+
+
+def _karaoke_event(line: list[Word], upper: bool = False, fade: bool = True) -> str:
+    parts: list[str] = []
+    prev_end = line[0].start
+    for w in line:
+        # Fill spans from the previous word's end to this word's end, so each
+        # word is fully highlighted exactly when it finishes being said.
+        dur_cs = max(1, int(round((w.end - prev_end) * 100)))
+        parts.append(f"{{\\k{dur_cs}}}{_txt(w.text, upper)} ")
+        prev_end = w.end
+    prefix = r"{\fad(80,40)}" if fade else ""
+    return _dialogue(line[0].start, line[-1].end, prefix + "".join(parts).strip())
+
+
+def _reveal_event(line: list[Word], upper: bool = False) -> str:
     start, end = line[0].start, line[-1].end
     parts: list[str] = []
-    prev_end = start
     for w in line:
-        # Fill duration spans from the previous word's end to this word's end,
-        # so each word is fully highlighted exactly when it finishes being said.
-        dur_cs = max(1, int(round((w.end - prev_end) * 100)))
-        parts.append(f"{{\\k{dur_cs}}}{w.text} ")
-        prev_end = w.end
-    text = "".join(parts).strip()
-    return f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{text}"
+        r0 = int(round((w.start - start) * 1000))
+        parts.append(f"{{\\alpha&HFF&\\t({r0},{r0 + 90},\\alpha&H00&)}}{_txt(w.text, upper)} ")
+    return _dialogue(start, end, "".join(parts).strip())
 
 
-def _ass_header(out_w: int, out_h: int, cfg: Config, karaoke: bool) -> str:
-    font = cfg.get("captions.font", "DejaVu Sans")
-    size = int(cfg.get("captions.font_size", 54))
-    base = cfg.get("captions.primary_color", "&H00FFFFFF")           # unsung/white
-    highlight = cfg.get("captions.highlight_color", "&H0000E5FF")     # sung (amber)
-    outline_c = cfg.get("captions.outline_color", "&H00000000")
-    outline = int(cfg.get("captions.outline", 3))
-    shadow = int(cfg.get("captions.shadow", 1))
-    margin_v = int(cfg.get("captions.bottom_margin", 320))
+def _ass_header(out_w: int, out_h: int, style: dict) -> str:
+    karaoke = style.get("animation") == "karaoke"
+    # Karaoke: PrimaryColour is the sung colour, SecondaryColour the unsung one.
+    primary = style["highlight_color"] if karaoke else style["primary_color"]
+    secondary = style["primary_color"]
+    bold = -1 if style.get("bold", 1) else 0
     side = max(40, out_w // 12)
-
-    # Karaoke: PrimaryColour is the highlighted (sung) colour, SecondaryColour is
-    # the not-yet-sung colour. Simple: both the same.
-    primary = highlight if karaoke else base
-    secondary = base
 
     return (
         "[Script Info]\n"
@@ -160,9 +182,11 @@ def _ass_header(out_w: int, out_h: int, cfg: Config, karaoke: bool) -> str:
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
         "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
         "MarginL, MarginR, MarginV, Encoding\n"
-        f"Style: Default,{font},{size},{primary},{secondary},{outline_c},"
-        f"&H64000000,-1,0,0,0,100,100,0,0,1,{outline},{shadow},2,"
-        f"{side},{side},{margin_v},1\n\n"
+        f"Style: Default,{style['font']},{int(style['font_size'])},{primary},"
+        f"{secondary},{style['outline_color']},{style['back_color']},{bold},0,0,0,"
+        f"100,100,0,0,{int(style['border_style'])},{int(style['outline'])},"
+        f"{int(style['shadow'])},{int(style['alignment'])},{side},{side},"
+        f"{int(style['bottom_margin'])},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
         "Effect, Text\n"

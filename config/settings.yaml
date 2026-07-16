@@ -41,17 +41,23 @@ reframe:
 
 captions:
   enabled: true
-  style: karaoke                 # karaoke (word highlight, M7) | simple
-  font: "DejaVu Sans"
-  font_size: 54
-  primary_color: "&H00FFFFFF"    # ASS BGR+alpha: opaque white (unsung word)
-  highlight_color: "&H0000E5FF"  # sung word (amber)
-  outline_color: "&H00000000"    # opaque black
-  outline: 3
-  shadow: 1
+  # Named template = consistent look across every clip on a page (M7).
+  template: clean                # clean | bold_pop | karaoke_amber | reveal_green | boxed | minimal
+  animation: null                # null = template default; none | fade | pop | karaoke | reveal
+  style: null                    # legacy shorthand: karaoke | simple (maps to animation)
+  # Any of these override the chosen template when set (null = use template):
+  font: null                     # text form, e.g. "DejaVu Sans" / "DejaVu Serif" / "FreeSans"
+  font_size: null
+  uppercase: null
+  primary_color: null            # ASS &HAABBGGRR, opaque white = &H00FFFFFF
+  highlight_color: null          # sung word colour
+  outline_color: null
+  outline: null
+  shadow: null
   # Safe margin from the bottom edge (px at output resolution) so captions
   # clear the platform action bar / right-side buttons.
-  bottom_margin: 320
+  bottom_margin: null
+  # Line grouping (behaviour, not look):
   max_line_chars: 30
   max_line_duration: 2.5         # seconds per caption line
 

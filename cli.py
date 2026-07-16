@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from shortforge.captions.templates import ANIMATIONS, list_templates
 from shortforge.config import Config
 from shortforge.pipeline import run_pipeline
 from shortforge.utils import ShortForgeError, setup_logging, log
@@ -29,6 +30,13 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("ingest.cookies", getattr(args, "cookies", None))
     cfg.override("reframe.mode", getattr(args, "reframe_mode", None))
     cfg.override("captions.style", getattr(args, "caption_style", None))
+    cfg.override("captions.template", getattr(args, "caption_template", None))
+    cfg.override("captions.animation", getattr(args, "caption_animation", None))
+    cfg.override("captions.font", getattr(args, "caption_font", None))
+    cfg.override("captions.font_size", getattr(args, "caption_size", None))
+    cfg.override("captions.highlight_color", getattr(args, "highlight_color", None))
+    if getattr(args, "uppercase", False):
+        cfg.override("captions.uppercase", True)
     cfg.override("brand.logo", getattr(args, "logo", None))
     cfg.override("brand.corner", getattr(args, "logo_corner", None))
     cfg.override("brand.opacity", getattr(args, "logo_opacity", None))
@@ -114,6 +122,9 @@ def cmd_wizard(args: argparse.Namespace) -> int:
     dub = _ask("6. Dub mode (captions-only is the only Phase 1 option)", "captions-only")
     transcript = _ask("7. Transcript (auto / path to .srt|.json)", "auto")
     caps = _ask("8. Burn captions? (yes/no)", "yes").lower().startswith("y")
+    template = _ask("   Caption template (" + " / ".join(list_templates()) + ")", "clean")
+    animation = _ask("   Caption animation (" + " / ".join(ANIMATIONS) + ", blank = template)", "")
+    caption_font = _ask("   Caption font / text form (blank = template)", "")
     fill = _ask("   Reframe fill (crop / blur)", "crop")
     output = _ask("12. Output directory", cfg.get("paths.output_dir", "out"))
 
@@ -122,6 +133,9 @@ def cmd_wizard(args: argparse.Namespace) -> int:
     cfg.override("select.target_duration", _to_int(duration, 45))
     cfg.override("select.num_clips", _to_int(num, 0))
     cfg.override("captions.enabled", caps)
+    cfg.override("captions.template", template or None)
+    cfg.override("captions.animation", animation or None)
+    cfg.override("captions.font", caption_font or None)
     cfg.override("paths.output_dir", output)
     if dub and not dub.lower().startswith("caption"):
         log.info("Dubbing is Phase 3; Phase 1 produces captions-only clips.")
@@ -166,8 +180,16 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--fill", choices=["crop", "blur"], help="Reframe fill mode")
     r.add_argument("--reframe-mode", choices=["track", "center"],
                    help="track = follow the speaker (M5); center = static crop")
+    r.add_argument("--caption-template", choices=list_templates(),
+                   help="Named caption look: " + " | ".join(list_templates()))
+    r.add_argument("--caption-animation", choices=ANIMATIONS,
+                   help="Caption animation (overrides template default)")
+    r.add_argument("--caption-font", help="Override the caption font (text form)")
+    r.add_argument("--caption-size", type=int, help="Override caption font size (px)")
+    r.add_argument("--highlight-color", help="Override sung-word colour (ASS &HAABBGGRR)")
+    r.add_argument("--uppercase", action="store_true", help="Force UPPERCASE captions")
     r.add_argument("--caption-style", choices=["karaoke", "simple"],
-                   help="karaoke = word highlight (M7); simple = plain lines")
+                   help="legacy shorthand (maps to --caption-animation)")
     r.add_argument("--logo", help="Path to a logo image to overlay (M8)")
     r.add_argument("--logo-corner", choices=["TL", "TR", "BL", "BR"], help="Logo corner")
     r.add_argument("--logo-opacity", type=float, help="Logo opacity 0..1")

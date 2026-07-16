@@ -49,15 +49,20 @@ DEFAULTS: dict[str, Any] = {
     },
     "captions": {
         "enabled": True,
-        "style": "karaoke",         # karaoke (word highlight) | simple
-        "font": "DejaVu Sans",
-        "font_size": 54,
-        "primary_color": "&H00FFFFFF",
-        "highlight_color": "&H0000E5FF",   # amber (BGR) for the sung word
-        "outline_color": "&H00000000",
-        "outline": 3,
-        "shadow": 1,
-        "bottom_margin": 320,
+        "template": "clean",        # clean|bold_pop|karaoke_amber|reveal_green|boxed|minimal
+        "animation": None,          # None = template default; none|fade|pop|karaoke|reveal
+        "style": None,              # legacy: karaoke|simple (maps to animation)
+        # The look defaults to the template; set any of these to override it.
+        "font": None,
+        "font_size": None,
+        "uppercase": None,
+        "primary_color": None,
+        "highlight_color": None,
+        "outline_color": None,
+        "outline": None,
+        "shadow": None,
+        "bottom_margin": None,
+        # Line-grouping (behaviour, not look):
         "max_line_chars": 30,
         "max_line_duration": 2.5,
     },

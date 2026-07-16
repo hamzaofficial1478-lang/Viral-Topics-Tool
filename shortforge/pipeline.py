@@ -18,6 +18,7 @@ from .analyze import load_external_transcript, transcribe
 from .brand import logo_spec
 from .cache import Cache
 from .captions import build_ass, subtitles_filter
+from .captions.templates import resolve as resolve_caption_style
 from .config import Config
 from .detect import detect_hooks
 from .ingest import ingest
@@ -111,6 +112,10 @@ def run_pipeline(
     slug = _slug(meta.title, "source")
 
     logo = logo_spec(cfg, out_w, out_h)
+    _cap_style = resolve_caption_style(cfg) if cfg.get("captions.enabled", True) else None
+    if _cap_style:
+        log.info("caption template: %s (%s animation)",
+                 _cap_style["_template"], _cap_style["animation"])
     do_meta = bool(cfg.get("metadata.enabled", True))
     do_thumb = bool(cfg.get("thumbnail.enabled", True))
     use_track = mode == "track" and tracking_available()
@@ -178,7 +183,8 @@ def run_pipeline(
             "reframe_mode": "track" if use_track else "center",
             "fill": fill,
             "target_duration": cfg.get("select.target_duration"),
-            "caption_style": cfg.get("captions.style") if cfg.get("captions.enabled") else None,
+            "caption_template": _cap_style.get("_template") if _cap_style else None,
+            "caption_animation": _cap_style.get("animation") if _cap_style else None,
             "loudnorm": bool(cfg.get("render.loudnorm", True)),
             "logo": bool(logo),
             "hook_backend": cfg.get("detect.backend"),

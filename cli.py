@@ -26,6 +26,7 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("transcribe.model", getattr(args, "whisper_model", None))
     cfg.override("paths.work_dir", getattr(args, "work_dir", None))
     cfg.override("paths.output_dir", getattr(args, "output", None))
+    cfg.override("ingest.cookies", getattr(args, "cookies", None))
     if getattr(args, "no_captions", False):
         cfg.override("captions.enabled", False)
     backend = getattr(args, "backend", None)
@@ -153,6 +154,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--fill", choices=["crop", "blur"], help="Reframe fill mode")
     r.add_argument("--no-captions", action="store_true", help="Do not burn captions")
     r.add_argument("--whisper-model", help="tiny|base|small|medium|large-v3")
+    r.add_argument("--cookies", help="Path to cookies.txt for private/unlisted "
+                   "videos on your own channel (M1 auth)")
     r.add_argument("--transcript", help="Use a supplied .srt/.json instead of ASR")
     r.add_argument("--use-llm", dest="backend", action="store_const", const="llm",
                    help="Force Claude hook detection (needs ANTHROPIC_API_KEY)")

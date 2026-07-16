@@ -41,6 +41,14 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("brand.corner", getattr(args, "logo_corner", None))
     cfg.override("brand.opacity", getattr(args, "logo_opacity", None))
     cfg.override("page.niche", getattr(args, "niche", None))
+    cfg.override("localize.language", getattr(args, "language", None))
+    cfg.override("localize.tts_backend", getattr(args, "tts", None))
+    cfg.override("localize.voice_sample", getattr(args, "voice_sample", None))
+    cfg.override("localize.translate_backend", getattr(args, "translate_backend", None))
+    if getattr(args, "dub", False):
+        cfg.override("localize.dub", True)
+    if getattr(args, "no_review", False):
+        cfg.override("review.enabled", False)
     if getattr(args, "no_captions", False):
         cfg.override("captions.enabled", False)
     if getattr(args, "no_loudnorm", False):
@@ -119,7 +127,9 @@ def cmd_wizard(args: argparse.Namespace) -> int:
     aspect = _ask("2. Aspect/resolution (9:16 / 1:1 / 16:9 / WxH)", "9:16")
     duration = _ask("3. Target clip duration seconds (30/45/60)", "45")
     num = _ask("4. Number of clips (0 = let the tool recommend)", "0")
-    dub = _ask("6. Dub mode (captions-only is the only Phase 1 option)", "captions-only")
+    language = _ask("5. Output language (en/de/it/es/ja/ar, blank = keep source)", "")
+    dub_mode = _ask("6. Dub mode (captions / voice / clone)", "captions")
+    tts = _ask("   TTS backend (auto / espeak / edge / xtts)", "auto")
     transcript = _ask("7. Transcript (auto / path to .srt|.json)", "auto")
     caps = _ask("8. Burn captions? (yes/no)", "yes").lower().startswith("y")
     template = _ask("   Caption template (" + " / ".join(list_templates()) + ")", "clean")
@@ -137,8 +147,10 @@ def cmd_wizard(args: argparse.Namespace) -> int:
     cfg.override("captions.animation", animation or None)
     cfg.override("captions.font", caption_font or None)
     cfg.override("paths.output_dir", output)
-    if dub and not dub.lower().startswith("caption"):
-        log.info("Dubbing is Phase 3; Phase 1 produces captions-only clips.")
+    cfg.override("localize.language", language or None)
+    if language and not dub_mode.lower().startswith("caption"):
+        cfg.override("localize.dub", True)
+        cfg.override("localize.tts_backend", "xtts" if dub_mode.lower().startswith("clone") else tts)
 
     transcript_path = None if transcript.lower() in ("", "auto") else transcript
 
@@ -194,6 +206,17 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--logo-corner", choices=["TL", "TR", "BL", "BR"], help="Logo corner")
     r.add_argument("--logo-opacity", type=float, help="Logo opacity 0..1")
     r.add_argument("--niche", help="Niche keyword(s) for metadata/hashtags (M10)")
+    # Localization (Phase 3, M6)
+    r.add_argument("--language", help="Target language code for captions/dub "
+                   "(en/de/it/es/ja/ar/...); omit to keep the source language")
+    r.add_argument("--dub", action="store_true",
+                   help="Synthesize a voiceover in --language (else captions-only)")
+    r.add_argument("--tts", choices=["auto", "espeak", "edge", "xtts"],
+                   help="TTS backend: espeak (offline) / edge (natural) / xtts (clone, GPU)")
+    r.add_argument("--voice-sample", help="Your-voice reference clip for --tts xtts")
+    r.add_argument("--translate-backend", choices=["auto", "llm", "argos"],
+                   help="Translation backend (Claude / offline Argos)")
+    r.add_argument("--no-review", action="store_true", help="Skip the QC review gate")
     r.add_argument("--no-captions", action="store_true", help="Do not burn captions")
     r.add_argument("--no-loudnorm", action="store_true", help="Skip -14 LUFS normalisation")
     r.add_argument("--no-metadata", action="store_true", help="Skip metadata generation")

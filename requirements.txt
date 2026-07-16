@@ -1,7 +1,7 @@
-# ShortForge Phase 1 runtime dependencies.
-# System requirements (install separately): ffmpeg + ffprobe.
-#   Debian/Ubuntu:  sudo apt-get install -y ffmpeg
-#   macOS:          brew install ffmpeg
+# ShortForge runtime dependencies.
+# System requirements (install separately):
+#   ffmpeg + ffprobe   (Debian/Ubuntu: sudo apt-get install -y ffmpeg | macOS: brew install ffmpeg)
+#   espeak-ng          (offline TTS fallback for dubbing; apt-get install -y espeak-ng)
 yt-dlp>=2024.1.0
 faster-whisper>=1.0.0
 PyYAML>=6.0
@@ -9,6 +9,11 @@ PyYAML>=6.0
 opencv-python-headless>=4.9.0
 numpy>=1.24
 
-# Optional — enables Claude-backed hook detection instead of the keyword
-# heuristic. Set ANTHROPIC_API_KEY to use it. Uncomment to install:
+# Optional — Claude-backed hook detection / metadata / translation (needs
+# ANTHROPIC_API_KEY). Uncomment to install:
 # anthropic>=0.40.0
+# Optional — localization backends (Phase 3):
+#   argostranslate>=1.9   offline CPU translation (no API key)
+#   edge-tts>=6.1         natural neural voiceover (needs network)
+# Voice cloning + stem separation need torch + a GPU:
+#   TTS>=0.22   demucs

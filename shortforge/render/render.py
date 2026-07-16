@@ -23,8 +23,13 @@ def render_clip(
     filtergraph: str,
     cfg: Config,
     out_path: str,
+    audio_path: str | None = None,
 ) -> str:
-    """Encode ``clip`` to ``out_path`` (H.264/AAC mp4). Returns the path."""
+    """Encode ``clip`` to ``out_path`` (H.264/AAC mp4). Returns the path.
+
+    ``audio_path`` (Phase 3) supplies an external dubbed audio track (already
+    clip-length); otherwise audio is taken from the seeked source.
+    """
     ffmpeg = require_binary("ffmpeg")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
@@ -33,34 +38,22 @@ def render_clip(
     abr = str(cfg.get("render.audio_bitrate", "128k"))
     fps = cfg.get("render.fps")
 
-    cmd = [
-        ffmpeg,
-        "-y",
-        "-ss",
-        format_timestamp(clip.start),
-        "-i",
-        source_path,
-        "-t",
-        f"{clip.duration:.3f}",
-        "-filter_complex",
-        filtergraph,
-        "-map",
-        "[v]",
-        "-map",
-        "0:a:0?",  # optional: sources without audio still render
-        "-c:v",
-        "libx264",
-        "-preset",
-        preset,
-        "-crf",
-        crf,
-        "-pix_fmt",
-        "yuv420p",
+    cmd = [ffmpeg, "-y", "-ss", format_timestamp(clip.start), "-i", source_path]
+    if audio_path:
+        cmd += ["-i", audio_path]
+        audio_map = "1:a:0"
+    else:
+        audio_map = "0:a:0?"  # optional: sources without audio still render
+    cmd += [
+        "-t", f"{clip.duration:.3f}",
+        "-filter_complex", filtergraph,
+        "-map", "[v]", "-map", audio_map,
+        "-c:v", "libx264", "-preset", preset, "-crf", crf, "-pix_fmt", "yuv420p",
     ]
     af = loudnorm_filter(cfg)
     if af:
         cmd += ["-af", af]
-    cmd += ["-c:a", "aac", "-b:a", abr, "-movflags", "+faststart"]
+    cmd += ["-c:a", "aac", "-b:a", abr, "-movflags", "+faststart", "-shortest"]
     if fps:
         cmd += ["-r", str(fps)]
     cmd.append(out_path)
@@ -89,6 +82,7 @@ def render_clip_tracked(
     filtergraph: str,
     cfg: Config,
     out_path: str,
+    audio_path: str | None = None,
 ) -> str:
     """Render a clip with per-frame subject-tracking crop (M5, Phase 2).
 
@@ -117,8 +111,13 @@ def render_clip_tracked(
         ffmpeg, "-y",
         "-f", "rawvideo", "-pix_fmt", "bgr24",
         "-s", f"{out_w}x{out_h}", "-r", f"{fps}", "-i", "pipe:0",
-        "-ss", format_timestamp(clip.start), "-t", f"{clip.duration:.3f}",
-        "-i", source_path,
+    ]
+    if audio_path:
+        cmd += ["-i", audio_path]  # dubbed audio (already clip-length)
+    else:
+        cmd += ["-ss", format_timestamp(clip.start), "-t", f"{clip.duration:.3f}",
+                "-i", source_path]
+    cmd += [
         "-filter_complex", filtergraph,
         "-map", "[v]", "-map", "1:a:0?",
         "-c:v", "libx264", "-preset", preset, "-crf", crf, "-pix_fmt", "yuv420p",

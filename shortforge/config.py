@@ -82,6 +82,19 @@ DEFAULTS: dict[str, Any] = {
     "metadata": {"enabled": True, "backend": "auto"},   # M10
     "thumbnail": {"enabled": True, "text_hook": False},  # M11
     "page": {"niche": None, "tone": None, "hashtags": []},  # Section 8 profile
+    "localize": {                    # M6 localization (Phase 3)
+        "language": None,            # target lang code (None = keep source)
+        "dub": False,                # synthesize voiceover (else captions-only)
+        "tts_backend": "auto",       # auto | espeak | edge | xtts
+        "espeak_speed": 165,
+        "edge_voice": None,
+        "voice_sample": None,        # reference clip for xtts voice cloning
+        "translate_backend": "auto", # auto | llm | argos
+        "demucs_model": "htdemucs",
+        "music_gain": 1.0,           # music/SFX bed gain when Demucs separates
+        "duck_db": -12.0,            # original-audio duck under dub (fallback)
+    },
+    "review": {"enabled": True},     # M12 QC review gate
     "render": {
         "crf": 20,
         "preset": "veryfast",

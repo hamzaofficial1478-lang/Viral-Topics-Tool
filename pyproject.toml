@@ -13,9 +13,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# LLM-backed hook detection / metadata. Optional: without it, a keyword
-# heuristic is used instead (no API key required).
+# LLM-backed hook detection / metadata / translation. Optional: without it,
+# heuristics / offline backends are used (no API key required).
 llm = ["anthropic>=0.40.0"]
+# Localization backends (Phase 3). espeak-ng (system binary) is the offline TTS
+# fallback; these add offline translation + natural neural voices.
+localize = ["argostranslate>=1.9", "edge-tts>=6.1"]
+# Voice cloning (xtts) and stem separation (demucs) need torch + a GPU; install
+# separately: pip install "TTS>=0.22" demucs
 dev = ["pytest>=8.0"]
 
 [project.scripts]
@@ -35,6 +40,8 @@ packages = [
     "shortforge.brand",
     "shortforge.metadata",
     "shortforge.thumbnail",
+    "shortforge.localize",
+    "shortforge.qc",
 ]
 
 [tool.setuptools.package-data]

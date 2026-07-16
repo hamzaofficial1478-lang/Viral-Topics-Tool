@@ -15,11 +15,14 @@ log = logging.getLogger("shortforge")
 
 def setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
+    # Keep third-party libraries (faster-whisper, argostranslate, httpx) quiet;
+    # only ShortForge's own logger emits at INFO/DEBUG.
     logging.basicConfig(
-        level=level,
+        level=logging.WARNING,
         format="%(asctime)s  %(levelname)-7s  %(message)s",
         datefmt="%H:%M:%S",
     )
+    logging.getLogger("shortforge").setLevel(level)
 
 
 class ShortForgeError(RuntimeError):
@@ -124,6 +127,19 @@ def _parse_fraction(value: str | None) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 30.0
+
+
+def media_duration(path: str) -> float:
+    """Duration in seconds for any media (audio or video) via the container."""
+    ffprobe = require_binary("ffprobe")
+    proc = run([
+        ffprobe, "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=nk=1:nw=1", path,
+    ])
+    try:
+        return float(proc.stdout.strip())
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def content_key(path: str) -> str:

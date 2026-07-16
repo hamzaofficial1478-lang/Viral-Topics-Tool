@@ -1,10 +1,10 @@
-"""In-process orchestrator (Phase 1).
+"""In-process orchestrator (Phases 1-3).
 
-Runs the state machine end to end on one source video. Phase 1 deliberately
-stays a plain in-process pipeline — the Celery/Redis job queue is Phase 4.
+Runs the state machine end to end on one source video. It deliberately stays a
+plain in-process pipeline — the Celery/Redis job queue is Phase 4.
 
-    ingest -> transcribe -> detect -> select -> (reframe + captions + render)*
-    -> manifest.json
+    ingest -> transcribe -> detect -> select -> [translate + dub] ->
+    (reframe + captions + brand + render + metadata + thumbnail + QC)* -> manifest.json
 """
 
 from __future__ import annotations
@@ -22,13 +22,17 @@ from .captions.templates import resolve as resolve_caption_style
 from .config import Config
 from .detect import detect_hooks
 from .ingest import ingest
+from .localize import build_translated_transcript, dub_clip
 from .metadata import generate as gen_metadata
 from .models import Clip
+from .qc import review_clip
 from .reframe import parse_aspect, plan_track, tracking_available
 from .render import build_filtergraph, render_clip, render_clip_tracked
 from .select import build_clips, recommend_clip_count
 from .thumbnail import make_thumbnail
 from .utils import ShortForgeError, ffprobe_info, log, require_binary
+
+_RTL_LANGS = {"ar", "he", "fa", "ur"}
 
 
 def _slug(text: str, fallback: str = "clip") -> str:
@@ -118,6 +122,38 @@ def run_pipeline(
                  _cap_style["_template"], _cap_style["animation"])
     do_meta = bool(cfg.get("metadata.enabled", True))
     do_thumb = bool(cfg.get("thumbnail.enabled", True))
+    do_review = bool(cfg.get("review.enabled", True))
+
+    # --- M6 localization: target-language captions + optional dub ---------- #
+    target_lang = cfg.get("localize.language")
+    src_lang = transcript.language or "en"
+    localize_on = bool(target_lang) and str(target_lang).split("-")[0] != src_lang
+    dub_on = localize_on and bool(cfg.get("localize.dub", False))
+    if localize_on:
+        cache_key = f"transcript_{target_lang}.json"
+        cached_tr = cache.load_json(cache_key)
+        if cached_tr:
+            from .models import Transcript
+            caption_transcript = Transcript.from_dict(cached_tr)
+            log.info("using cached %s translation", target_lang)
+        else:
+            log.info("translating captions %s -> %s", src_lang, target_lang)
+            caption_transcript = build_translated_transcript(transcript, target_lang, cfg)
+            cache.save_json(cache_key, caption_transcript.to_dict())
+        clip_lang = target_lang
+        # RTL scripts: karaoke/reveal per-word tags can mis-order; use fade.
+        if target_lang.split("-")[0] in _RTL_LANGS and _cap_style and \
+                _cap_style["animation"] in ("karaoke", "reveal"):
+            log.info("RTL language %s: switching caption animation to fade", target_lang)
+            cfg.override("captions.animation", "fade")
+        if dub_on:
+            log.info("dubbing voiceover in %s (tts=%s)", target_lang,
+                     cfg.get("localize.tts_backend"))
+    else:
+        caption_transcript = transcript
+        clip_lang = src_lang
+    lang = clip_lang
+
     use_track = mode == "track" and tracking_available()
     if mode == "track" and not use_track:
         log.info("subject tracking unavailable (opencv/model); using center-crop")
@@ -126,13 +162,29 @@ def run_pipeline(
 
     rendered: list[dict] = []
     for clip in clips:
+        # Localized caption text drives captions, metadata, QC, and the manifest.
+        if localize_on:
+            loc_text = " ".join(
+                w.text for w in caption_transcript.words_in(clip.start, clip.end)
+            ).strip()
+            if loc_text:
+                clip.caption_text = loc_text
+
         ass_path = build_ass(
-            clip, transcript, out_w, out_h, cfg, cache.path(f"clip_{clip.clip_id}.ass")
+            clip, caption_transcript, out_w, out_h, cfg,
+            cache.path(f"clip_{clip.clip_id}_{clip_lang}.ass"),
         )
         subs = subtitles_filter(ass_path, fontsdir) if ass_path else None
 
         # Deterministic naming: {slug}_{lang}_{clipid}_{yyyymmdd}.mp4  (M13)
         out_path = os.path.join(out_dir, f"{slug}_{lang}_{clip.clip_id}_{date}.mp4")
+
+        # M6 dub: voiceover over preserved music/SFX, if enabled.
+        dub_audio, dub_method = None, "none"
+        if dub_on:
+            dub_audio, dub_method = dub_clip(
+                meta.file_path, clip, caption_transcript, cfg, cache.path("dub")
+            )
 
         track = plan_track(meta.file_path, clip, out_w, out_h, cfg) if use_track else None
         if track is not None:
@@ -141,14 +193,15 @@ def run_pipeline(
                 pre_cropped=True, subtitles=subs, logo=logo,
             )
             render_clip_tracked(
-                meta.file_path, clip, track, out_w, out_h, fg, cfg, out_path
+                meta.file_path, clip, track, out_w, out_h, fg, cfg, out_path,
+                audio_path=dub_audio,
             )
         else:
             fg = build_filtergraph(
                 probe.width, probe.height, out_w, out_h,
                 fill=fill, subtitles=subs, logo=logo,
             )
-            render_clip(meta.file_path, clip, fg, cfg, out_path)
+            render_clip(meta.file_path, clip, fg, cfg, out_path, audio_path=dub_audio)
         clip.file_path = os.path.abspath(out_path)
 
         md = gen_metadata(clip, cfg) if do_meta else None
@@ -162,10 +215,15 @@ def run_pipeline(
 
         entry = clip.to_dict()
         entry["tracked"] = track is not None
+        entry["language"] = clip_lang
+        if localize_on:
+            entry["dub_method"] = dub_method
         if md:
             entry["metadata"] = md
         if thumb:
             entry["thumbnail"] = os.path.abspath(thumb)
+        if do_review:
+            entry["review"] = review_clip(clip.caption_text, clip_lang, dub_method)
         rendered.append(entry)
 
     # --- manifest --------------------------------------------------------- #
@@ -188,8 +246,16 @@ def run_pipeline(
             "loudnorm": bool(cfg.get("render.loudnorm", True)),
             "logo": bool(logo),
             "hook_backend": cfg.get("detect.backend"),
+            "output_language": clip_lang,
+            "localized": localize_on,
+            "dubbed": dub_on,
         },
         "recommendation": {"recommended_clips": n_rec, "rationale": rationale},
+        "review": {
+            "gate": "pending_review" if do_review else "disabled",
+            "note": "Approve each clip before scheduling/publishing (Phase 5).",
+            "flagged": sum(1 for c in rendered if c.get("review", {}).get("flags")),
+        },
         "clips": rendered,
     }
     manifest_path = os.path.join(out_dir, f"{slug}_{date}_manifest.json")

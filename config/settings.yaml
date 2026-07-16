@@ -87,6 +87,21 @@ page:                            # Section 8 per-page profile (optional)
   tone: null
   hashtags: []
 
+localize:                        # M6 localization (Phase 3)
+  language: null                 # target lang code (en/de/it/es/ja/ar); null = keep source
+  dub: false                     # synthesize a voiceover (else captions-only in target lang)
+  tts_backend: auto              # auto | espeak (offline) | edge (natural) | xtts (clone, GPU)
+  espeak_speed: 165
+  edge_voice: null               # override the Edge neural voice
+  voice_sample: null             # reference clip of your voice for xtts cloning
+  translate_backend: auto        # auto | llm (Claude) | argos (offline)
+  demucs_model: htdemucs         # stem separation model (needs demucs + torch)
+  music_gain: 1.0                # music/SFX bed gain when Demucs cleanly separates
+  duck_db: -12.0                 # duck the original audio under the dub (no-Demucs fallback)
+
+review:                          # M12 QC review gate
+  enabled: true
+
 render:
   crf: 20                        # H.264 quality (lower = better)
   preset: veryfast

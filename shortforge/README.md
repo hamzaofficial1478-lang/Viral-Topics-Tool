@@ -1,15 +1,18 @@
-# ShortForge — core clipper (Phases 1–2)
+# ShortForge — core clipper + localization (Phases 1–3)
 
-Turn **your own** long-form videos into short vertical clips.
+Turn **your own** long-form videos into short vertical clips, optionally dubbed
+into another language.
 
 ```
 ingest ─▶ transcribe ─▶ detect hooks ─▶ select clips ─▶ reframe 9:16 (track speaker)
-       ─▶ karaoke captions ─▶ logo ─▶ loudnorm ─▶ render ─▶ metadata + thumbnail ─▶ manifest.json
+       ─▶ translate + dub (music/SFX preserved) ─▶ target-language captions ─▶ logo
+       ─▶ loudnorm ─▶ render ─▶ metadata + thumbnail ─▶ QC gate ─▶ manifest.json
 ```
 
-Captions-only for now (dubbing/translation is Phase 3). Runs headless from the
-CLI and produces watchable vertical clips from one source video, each with
-generated title/hashtags and a cover image, plus a `manifest.json`.
+Runs headless from the CLI and produces watchable vertical clips from one source
+video — captions (and optionally a voiceover) in the language you choose, each
+with generated title/hashtags, a cover image, and a review record, plus a
+`manifest.json`.
 
 > **The one hard rule:** source content must be the operator's own channels or
 > otherwise licensed. Ingestion refuses to run without `--owner-confirmed`.
@@ -47,11 +50,15 @@ python cli.py run "https://youtu.be/XXXX" --owner-confirmed
 
 Key flags: `--duration`, `--tolerance`, `--num-clips` (0 = auto-recommend),
 `--aspect` (`9:16` / `1:1` / `16:9` / `WxH`), `--fill` (`crop` / `blur`),
-`--reframe-mode` (`track` / `center`), `--caption-style` (`karaoke` / `simple`),
-`--logo path.png` `--logo-corner TR` `--logo-opacity 0.9`, `--niche "..."`,
-`--no-captions`, `--no-loudnorm`, `--no-metadata`, `--no-thumbnail`,
-`--whisper-model`, `--transcript file.(srt|json)`, `--cookies cookies.txt`,
-`--no-llm` / `--use-llm`, `--work-dir`, `--output`. See `python cli.py run --help`.
+`--reframe-mode` (`track` / `center`),
+`--caption-template` (`clean`/`bold_pop`/`karaoke_amber`/`reveal_green`/`boxed`/`minimal`),
+`--caption-animation`, `--caption-font`, `--caption-size`, `--uppercase`,
+`--language es`, `--dub`, `--tts` (`espeak`/`edge`/`xtts`), `--voice-sample`,
+`--translate-backend`, `--logo path.png` `--logo-corner TR` `--logo-opacity 0.9`,
+`--niche "..."`, `--no-captions`, `--no-loudnorm`, `--no-metadata`,
+`--no-thumbnail`, `--no-review`, `--whisper-model`, `--transcript file.(srt|json)`,
+`--cookies cookies.txt`, `--no-llm` / `--use-llm`, `--work-dir`, `--output`.
+See `python cli.py run --help`.
 
 ## What each module does (Section 3)
 
@@ -63,13 +70,31 @@ Key flags: `--duration`, `--tolerance`, `--num-clips` (0 = auto-recommend),
 | `detect/`    | M3  | hook scoring — Claude rubric if available, else keyword heuristic |
 | `select/`    | M4  | clip-count recommender + sentence-snapped clip building |
 | `reframe/`   | M5  | **subject-tracking** smart-crop 16:9 → 9:16 (YuNet); center-crop fallback |
-| `captions/`  | M7  | **karaoke** word-highlight ASS (or simple); platform-safe margins |
+| `captions/`  | M7  | caption **templates + animations** (fade/pop/karaoke/reveal); safe margins |
+| `localize/`  | M6  | translate + **dub** (voiceover over preserved music/SFX); target-lang captions |
 | `brand/`     | M8  | logo overlay (corner / size / opacity) |
 | `metadata/`  | M10 | per-clip title / description / hashtags (heuristic or Claude) |
 | `thumbnail/` | M11 | expressive-keyframe cover at output aspect |
+| `qc/`        | M12 | review gate: pending-review status + brand-safety flags |
 | `render/`    | M13 | ffmpeg compose/export to H.264/AAC (plain + tracked pipe) |
 
 `pipeline.py` is the in-process orchestrator; `../cli.py` is the entry point.
+
+### Phase 3 notes (localization)
+
+- `--language es --dub` = Spanish captions **and** voiceover; `--language es`
+  alone = Spanish captions only. Languages: en/de/it/es/ja/ar (+ more).
+- **Translation**: Claude when `ANTHROPIC_API_KEY` is set, else offline **Argos**
+  (`pip install argostranslate`), else source text kept with a warning.
+- **TTS** (`--tts`): `espeak` (offline, robotic — the default fallback),
+  `edge` (natural neural voices, needs network), `xtts` (clones *your* voice —
+  needs `TTS` + a GPU + `--voice-sample`).
+- **Music/SFX preserved**: Demucs splits vocals from music+SFX when installed
+  (clean); otherwise the original is ducked under the dub (music/SFX survive,
+  with some original-voice bleed). Sounds are never removed.
+- **Arabic** and other RTL scripts fall back to the `fade` caption animation.
+- Each clip is marked `pending_review` in the manifest (M12) for approval
+  before publishing (Phase 5).
 
 ### Phase 2 notes
 

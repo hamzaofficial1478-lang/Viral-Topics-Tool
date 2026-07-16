@@ -1,0 +1,37 @@
+[project]
+name = "shortforge"
+version = "0.1.0"
+description = "Turn your own long-form videos into short vertical clips (Phase 1: core clipper)"
+readme = "shortforge/README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "yt-dlp>=2024.1.0",
+    "faster-whisper>=1.0.0",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# LLM-backed hook detection / metadata. Optional: without it, a keyword
+# heuristic is used instead (no API key required).
+llm = ["anthropic>=0.40.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+shortforge = "cli:main"
+
+[tool.setuptools]
+py-modules = ["cli"]
+packages = [
+    "shortforge",
+    "shortforge.ingest",
+    "shortforge.analyze",
+    "shortforge.detect",
+    "shortforge.select",
+    "shortforge.reframe",
+    "shortforge.captions",
+    "shortforge.render",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

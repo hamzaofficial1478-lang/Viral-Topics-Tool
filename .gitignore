@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ShortForge runtime artifacts
+.shortforge/          # cache + downloads (keyed by source hash)
+out/                  # rendered clips + manifests
+*.mp4
+*.wav

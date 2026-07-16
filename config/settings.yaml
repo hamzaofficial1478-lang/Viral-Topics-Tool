@@ -1,0 +1,56 @@
+# ShortForge configuration (Phase 1).
+# Every value here can also be overridden on the CLI. See `shortforge --help`.
+
+paths:
+  work_dir: .shortforge          # cache + intermediate files (per source hash)
+  output_dir: out                # rendered clips land here
+
+ingest:
+  # yt-dlp format selector. Prefers <=1080p mp4, falls back to best.
+  format: "bv*[height<=1080]+ba/b[height<=1080]/b"
+  # Path to a cookies.txt for private/unlisted videos (M1 auth). Optional.
+  cookies: null
+
+transcribe:
+  model: base                    # tiny | base | small | medium | large-v3
+  device: auto                   # auto | cpu | cuda
+  compute_type: auto             # auto | int8 | int8_float16 | float16 | float32
+  language: null                 # null = autodetect; else ISO code e.g. "en"
+
+detect:
+  backend: auto                  # auto | llm | heuristic
+  #   auto      -> use Claude if ANTHROPIC_API_KEY is set, else heuristic
+  llm_model: claude-opus-4-8
+  min_segment_score: 0.35        # candidates below this are dropped
+
+select:
+  target_duration: 45            # seconds (per Section 7 wizard)
+  tolerance: 12                  # +/- seconds a clip may deviate from target
+  num_clips: 0                   # 0 = use the tool's recommendation
+  min_gap: 1.5                   # seconds required between selected clips
+
+reframe:
+  aspect: "9:16"                 # 9:16 | 1:1 | 16:9 | WxH (e.g. 1080x1920)
+  width: 1080
+  height: 1920
+  fill: crop                     # crop (center smart-crop) | blur (fit + blurred bg)
+
+captions:
+  enabled: true
+  font: "DejaVu Sans"
+  font_size: 54
+  primary_color: "&H00FFFFFF"    # ASS BGR+alpha: opaque white
+  outline_color: "&H00000000"    # opaque black
+  outline: 3
+  shadow: 1
+  # Safe margin from the bottom edge (px at output resolution) so captions
+  # clear the platform action bar / right-side buttons.
+  bottom_margin: 320
+  max_line_chars: 30
+  max_line_duration: 2.5         # seconds per caption line
+
+render:
+  crf: 20                        # H.264 quality (lower = better)
+  preset: veryfast
+  audio_bitrate: 128k
+  fps: null                      # null = keep source fps

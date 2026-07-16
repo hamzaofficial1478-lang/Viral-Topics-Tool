@@ -22,6 +22,16 @@ detect:
   #   auto      -> use Claude if ANTHROPIC_API_KEY is set, else heuristic
   llm_model: claude-opus-4-8
   min_segment_score: 0.35        # candidates below this are dropped
+  # M3++ visual hook signals (local, no API): score what's SHOWN, not just said.
+  visual: true                   # fuse motion / scene-cut / face signals
+  visual_weight: 0.35            # final = (1-w)*transcript + w*visual
+  visual_sample_interval: 0.5    # seconds between sampled frames
+  visual_cut_threshold: 0.25     # frame-diff level counted as a scene cut
+  # Claude-vision multimodal scorer (claude-watch style; needs API key + vision):
+  vision_llm: false              # sends contact sheets + transcript to Claude
+  vision_hook_secs: 15
+  vision_hook_fps: 6
+  vision_body_interval: 3.5
 
 select:
   target_duration: 45            # seconds (per Section 7 wizard)

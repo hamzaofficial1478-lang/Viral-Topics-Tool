@@ -80,8 +80,8 @@ def run_pipeline(
     if not transcript.segments:
         raise ShortForgeError("Transcript is empty — nothing to clip.")
 
-    # --- M3 detect -------------------------------------------------------- #
-    candidates = detect_hooks(transcript, cfg)
+    # --- M3 detect (transcript + visual signals) -------------------------- #
+    candidates = detect_hooks(transcript, cfg, meta.file_path)
 
     # --- M4 select (with recommendation) ---------------------------------- #
     n_rec, rationale = recommend_clip_count(transcript, candidates, cfg)

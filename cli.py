@@ -41,6 +41,10 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("brand.corner", getattr(args, "logo_corner", None))
     cfg.override("brand.opacity", getattr(args, "logo_opacity", None))
     cfg.override("page.niche", getattr(args, "niche", None))
+    if getattr(args, "vision", False):
+        cfg.override("detect.vision_llm", True)
+    if getattr(args, "no_visual", False):
+        cfg.override("detect.visual", False)
     cfg.override("localize.language", getattr(args, "language", None))
     cfg.override("localize.tts_backend", getattr(args, "tts", None))
     cfg.override("localize.voice_sample", getattr(args, "voice_sample", None))
@@ -225,6 +229,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--cookies", help="Path to cookies.txt for private/unlisted "
                    "videos on your own channel (M1 auth)")
     r.add_argument("--transcript", help="Use a supplied .srt/.json instead of ASR")
+    r.add_argument("--vision", action="store_true",
+                   help="Use Claude-vision multimodal hook scoring (claude-watch; needs key)")
+    r.add_argument("--no-visual", action="store_true",
+                   help="Disable local visual hook signals (motion/cuts/faces)")
     r.add_argument("--use-llm", dest="backend", action="store_const", const="llm",
                    help="Force Claude hook detection (needs ANTHROPIC_API_KEY)")
     r.add_argument("--no-llm", dest="backend", action="store_const", const="heuristic",

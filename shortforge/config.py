@@ -30,6 +30,24 @@ DEFAULTS: dict[str, Any] = {
         "backend": "auto",
         "llm_model": "claude-opus-4-8",
         "min_segment_score": 0.35,
+        # M3++ visual hook signals (local, no API).
+        "visual": True,
+        "visual_weight": 0.35,          # blend: (1-w)*transcript + w*visual
+        "visual_sample_interval": 0.5,  # seconds between sampled frames
+        "visual_max_samples": 1500,
+        "visual_cut_threshold": 0.25,   # frame-diff level counted as a scene cut
+        "visual_motion_ref": 0.12,      # motion level that saturates the score
+        "visual_cut_ref": 0.5,          # cuts/sec that saturates the score
+        "visual_face_ref": 0.12,        # face frame-fraction that saturates
+        "visual_w_motion": 0.4,
+        "visual_w_cuts": 0.3,
+        "visual_w_face": 0.3,
+        # Claude-vision multimodal scorer (needs API key + vision) — claude-watch style.
+        "vision_llm": False,
+        "vision_hook_secs": 15,      # dense-sampled hook window
+        "vision_hook_fps": 6,        # hook sampling rate
+        "vision_body_interval": 3.5, # seconds/frame over the body
+        "vision_max_sheets": 6,      # cap contact sheets sent to the API
     },
     "select": {
         "target_duration": 45,

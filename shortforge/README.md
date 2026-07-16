@@ -67,7 +67,7 @@ See `python cli.py run --help`.
 | `ingest/`    | M1  | yt-dlp download (+cookie auth) or local file; ownership gate |
 | `analyze/`   | M2  | audio extract + faster-whisper word-level transcript (cached) |
 | `analyze/audio` | M9 | loudness norm to −14 LUFS; silence-trim planning |
-| `detect/`    | M3  | hook scoring — Claude rubric if available, else keyword heuristic |
+| `detect/`    | M3  | hook scoring: transcript rubric (Claude/heuristic) **+ visual signals** (motion/cuts/faces), optional Claude-vision |
 | `select/`    | M4  | clip-count recommender + sentence-snapped clip building |
 | `reframe/`   | M5  | **subject-tracking** smart-crop 16:9 → 9:16 (YuNet); center-crop fallback |
 | `captions/`  | M7  | caption **templates + animations** (fade/pop/karaoke/reveal); safe margins |
@@ -79,6 +79,22 @@ See `python cli.py run --help`.
 | `render/`    | M13 | ffmpeg compose/export to H.264/AAC (plain + tracked pipe) |
 
 `pipeline.py` is the in-process orchestrator; `../cli.py` is the entry point.
+
+### Finding the best parts (M3++)
+
+Hook detection combines **what's said** and **what's shown**:
+
+- **Transcript rubric** — scores each sentence for questions, numbers/stats,
+  strong claims, curiosity phrases, emotional peaks, self-containedness
+  (Claude when keyed, else a keyword heuristic).
+- **Local visual signals** (`detect/visual.py`, no API) — per-segment motion
+  energy, scene-cut density, and face presence (reusing YuNet). Static talking
+  over dead footage scores low; a fast cut / reaction / b-roll payoff scores
+  high. Fused into the score via `detect.visual_weight`.
+- **Claude-vision** (`detect/vision_llm.py`, opt-in `--vision` / `detect.vision_llm`)
+  — the *claude-watch* technique: dense-hook + sparse-body frames tiled into
+  contact sheets and sent to Claude **with the transcript**, so it scores each
+  moment on the pixels too. Needs an API key + a vision model.
 
 ### Phase 3 notes (localization)
 

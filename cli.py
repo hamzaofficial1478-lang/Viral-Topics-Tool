@@ -61,6 +61,8 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.override("captions.enabled", False)
     if getattr(args, "no_loudnorm", False):
         cfg.override("render.loudnorm", False)
+    if getattr(args, "jumpcuts", False):
+        cfg.override("edit.jumpcuts", True)
     if getattr(args, "no_metadata", False):
         cfg.override("metadata.enabled", False)
     if getattr(args, "no_thumbnail", False):
@@ -146,6 +148,7 @@ def cmd_wizard(args: argparse.Namespace) -> int:
     animation = _ask("   Caption animation (" + " / ".join(ANIMATIONS) + ", blank = template)", "")
     caption_font = _ask("   Caption font / text form (blank = template)", "")
     fill = _ask("   Reframe fill (crop / blur)", "crop")
+    jumpcuts = _ask("9. Trim dead air with jump cuts? (yes/no)", "no").lower().startswith("y")
     output = _ask("12. Output directory", cfg.get("paths.output_dir", "out"))
 
     cfg.override("reframe.aspect", aspect)
@@ -156,6 +159,7 @@ def cmd_wizard(args: argparse.Namespace) -> int:
     cfg.override("captions.template", template or None)
     cfg.override("captions.animation", animation or None)
     cfg.override("captions.font", caption_font or None)
+    cfg.override("edit.jumpcuts", jumpcuts)
     cfg.override("paths.output_dir", output)
     cfg.override("localize.language", language or None)
     if language and not dub_mode.lower().startswith("caption"):
@@ -240,6 +244,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--no-review", action="store_true", help="Skip the QC review gate")
     r.add_argument("--no-captions", action="store_true", help="Do not burn captions")
     r.add_argument("--no-loudnorm", action="store_true", help="Skip -14 LUFS normalisation")
+    r.add_argument("--jumpcuts", action="store_true",
+                   help="Trim long silences / dead air (jump cuts); off when dubbing")
     r.add_argument("--no-metadata", action="store_true", help="Skip metadata generation")
     r.add_argument("--no-thumbnail", action="store_true", help="Skip thumbnail generation")
     r.add_argument("--whisper-model", help="tiny|base|small|medium|large-v3")

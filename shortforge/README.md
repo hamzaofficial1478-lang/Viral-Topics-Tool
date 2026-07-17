@@ -75,7 +75,7 @@ Key flags: `--duration`, `--tolerance`, `--num-clips` (0 = auto-recommend),
 `--language es`, `--dub`, `--tts` (`espeak`/`edge`/`xtts`), `--voice-sample`,
 `--translate-backend`, `--lipsync` (`--wav2lip-repo` / `--wav2lip-checkpoint`),
 `--logo path.png` `--logo-corner TR` `--logo-opacity 0.9`,
-`--niche "..."`, `--no-captions`, `--no-loudnorm`, `--no-metadata`,
+`--niche "..."`, `--jumpcuts`, `--no-captions`, `--no-loudnorm`, `--no-metadata`,
 `--no-thumbnail`, `--no-review`, `--whisper-model`, `--transcript file.(srt|json)`,
 `--cookies cookies.txt`, `--no-llm` / `--use-llm`, `--work-dir`, `--output`.
 See `python cli.py run --help`.
@@ -86,7 +86,7 @@ See `python cli.py run --help`.
 |-----|--------|-------|
 | `ingest/`    | M1  | yt-dlp download (+cookie auth) or local file; ownership gate |
 | `analyze/`   | M2  | audio extract + faster-whisper word-level transcript (cached) |
-| `analyze/audio` | M9 | loudness norm to −14 LUFS; silence-trim planning |
+| `analyze/audio` | M9 | loudness norm to −14 LUFS; **jump cuts** (dead-air trim, synced across video/audio/captions) |
 | `detect/`    | M3  | hook scoring: transcript rubric (Claude/heuristic) **+ visual signals** (motion/cuts/faces), optional Claude-vision |
 | `select/`    | M4  | clip-count recommender + **coherent-story** clip building (complete thoughts) |
 | `reframe/`   | M5  | **subject-tracking** smart-crop 16:9 → 9:16 (YuNet); center-crop fallback |
@@ -146,9 +146,11 @@ Hook detection combines **what's said** and **what's shown**:
   (`reframe/models/*.onnx`, bundled). No face / OpenCV missing → center-crop.
   Detection quality is best judged on real talking-head footage.
 - **Loudness** uses single-pass `loudnorm` (lands within ~1–2 LU of −14).
-- **Silence trim** (jump cuts): the planning logic (`analyze/audio.py`,
-  `edit.jumpcuts`) is implemented and tested; wiring it into the render is the
-  next step (kept off by default so it can't desync captions).
+- **Jump cuts** (`--jumpcuts`, `edit.jumpcuts`): trims long silences / dead air.
+  Video is cut with an ffmpeg `select`, the source audio with a matching
+  `aselect`, and caption word-timings are remapped onto the compressed
+  timeline, so video, audio, and captions stay in sync. Off by default;
+  automatically disabled when dubbing (a synthesized voice would not line up).
 
 ## Caching
 

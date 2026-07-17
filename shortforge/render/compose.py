@@ -28,14 +28,22 @@ def build_filtergraph(
     pre_cropped: bool = False,
     subtitles: str | None = None,
     logo: dict[str, Any] | None = None,
+    video_select: str | None = None,
 ) -> str:
     nodes: list[str] = []
-    cur = "0:v"
+    vin = "0:v"
+
+    # M9 jump cuts (plain path): keep only the speech ranges, then re-stamp
+    # PTS so the removed dead air closes up. Captions are remapped to match.
+    if video_select and not pre_cropped:
+        nodes.append(f"[0:v]select='{video_select}',setpts=N/FRAME_RATE/TB[jc]")
+        vin = "jc"
+    cur = vin
 
     if not pre_cropped:
         if fill == "blur":
             nodes.append(
-                f"[0:v]split=2[bg][fg];"
+                f"[{vin}]split=2[bg][fg];"
                 f"[bg]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
                 f"crop={out_w}:{out_h},gblur=sigma=20[bgb];"
                 f"[fg]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease[fgs];"
@@ -44,7 +52,7 @@ def build_filtergraph(
         else:
             cw, ch, x, y = compute_crop(src_w, src_h, out_w, out_h)
             nodes.append(
-                f"[0:v]crop={cw}:{ch}:{x}:{y},scale={out_w}:{out_h},setsar=1[ref]"
+                f"[{vin}]crop={cw}:{ch}:{x}:{y},scale={out_w}:{out_h},setsar=1[ref]"
             )
         cur = "ref"
 

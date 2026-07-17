@@ -10,7 +10,10 @@ __pycache__/
 venv/
 
 # ShortForge runtime artifacts
-.shortforge/          # cache + downloads (keyed by source hash)
-out/                  # rendered clips + manifests
+# (git ignore patterns can't have inline comments — keep notes on their own line)
+# cache + downloads, keyed by source hash:
+.shortforge/
+# rendered clips + manifests:
+out/
 *.mp4
 *.wav

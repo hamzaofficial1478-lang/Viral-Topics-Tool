@@ -76,11 +76,14 @@ captions:
   max_line_chars: 30
   max_line_duration: 2.5         # seconds per caption line
 
-edit:                            # M9 silence trim (planning; off by default)
+edit:                            # M9 jump cuts — trim dead air (off by default)
+  # Wired into the render: video + audio are cut and captions remapped together
+  # so nothing desyncs. Automatically skipped when dubbing (a new voice would
+  # not line up). Turn on with --jumpcuts.
   jumpcuts: false
   min_silence: 0.8               # gaps longer than this are trimmed
   max_gap: 0.35                  # kept breathing room after trimming
-  pad: 0.1
+  pad: 0.1                       # seconds of speech kept on each side of a run
 
 brand:                           # M8 logo overlay
   logo: null                     # path to a PNG/logo image

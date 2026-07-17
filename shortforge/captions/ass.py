@@ -69,21 +69,39 @@ def build_ass(
     out_h: int,
     cfg: Config,
     out_path: str,
+    keep_ranges: list[tuple[float, float]] | None = None,
 ) -> str | None:
-    """Write an ASS file for ``clip``; return its path (or None if no captions)."""
+    """Write an ASS file for ``clip``; return its path (or None if no captions).
+
+    When ``keep_ranges`` (M9 jump cuts, source-time) is given, word timings are
+    remapped onto the compressed timeline and words that fall entirely in
+    trimmed dead air are dropped, so captions stay in sync with the cut video.
+    """
     if not cfg.get("captions.enabled", True):
         return None
 
     words = transcript.words_in(clip.start, clip.end)
-    rel = [
-        Word(
-            start=max(0.0, w.start - clip.start),
-            end=max(0.0, w.end - clip.start),
-            text=_escape(w.text),
-        )
-        for w in words
-        if w.text
-    ]
+    if keep_ranges:
+        from ..analyze.audio import remap_time
+        rel = [
+            Word(
+                start=remap_time(w.start, keep_ranges),
+                end=remap_time(w.end, keep_ranges),
+                text=_escape(w.text),
+            )
+            for w in words
+            if w.text and any(w.end > s and w.start < e for s, e in keep_ranges)
+        ]
+    else:
+        rel = [
+            Word(
+                start=max(0.0, w.start - clip.start),
+                end=max(0.0, w.end - clip.start),
+                text=_escape(w.text),
+            )
+            for w in words
+            if w.text
+        ]
     if not rel:
         return None
 

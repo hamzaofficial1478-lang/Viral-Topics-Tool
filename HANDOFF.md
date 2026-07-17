@@ -85,7 +85,8 @@ Runs anywhere (CPU-only is fine):
   (faster-whisper) → hook detection → **coherent-story** clip selection → 9:16
   reframe → captions → render.
 - **Phase 2** — subject-tracking reframe, caption templates + animations, logo,
-  loudness norm, titles/hashtags, thumbnails, QC review gate.
+  loudness norm, **jump cuts** (`--jumpcuts`, trims dead air), titles/hashtags,
+  thumbnails, QC review gate.
 - **Phase 3** — translate to any language + captions; **dub** with music/SFX
   preserved. Same-language = original audio kept, never re-recorded.
 - **M3++** — visual hook signals (motion/scene-cut/faces) always on; optional
@@ -126,9 +127,6 @@ Or set the `lipsync:` block in `config/settings.yaml` once and just pass
   pipeline handles one video at a time fine.
 - **Phase 5 — publish + research**: scheduled uploads via platform APIs after
   the QC gate approves, plus niche/RPM research helpers.
-- **Silence-trim jump cuts**: planning logic exists and is tested
-  (`analyze/audio.py`, `edit.jumpcuts`); wiring it into the render (without
-  desyncing captions) is the remaining step.
 
 To continue with Claude Code on your PC: open this repo and say
 *"Read HANDOFF.md, then let's build Phase 4"* (or whatever's next). Check

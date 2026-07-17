@@ -15,6 +15,7 @@ import os
 import re
 
 from .analyze import load_external_transcript, transcribe
+from .analyze.audio import plan_keep_ranges, total_kept
 from .brand import logo_spec
 from .cache import Cache
 from .captions import build_ass, subtitles_filter
@@ -165,6 +166,18 @@ def run_pipeline(
         clip_lang = src_lang
     lang = clip_lang
 
+    # --- M9 jump cuts: trim dead air, keeping video/audio/captions in sync ---- #
+    jumpcuts_on = bool(cfg.get("edit.jumpcuts", False))
+    if jumpcuts_on and dub_on:
+        log.info("jump cuts disabled while dubbing (would desync the new voice)")
+        jumpcuts_on = False
+    if jumpcuts_on and not probe.has_audio:
+        log.info("jump cuts need audio; source has none — skipping")
+        jumpcuts_on = False
+    if jumpcuts_on:
+        log.info("jump cuts on: trimming silences > %.2fs",
+                 float(cfg.get("edit.min_silence", 0.8)))
+
     use_track = mode == "track" and tracking_available()
     if mode == "track" and not use_track:
         log.info("subject tracking unavailable (opencv/model); using center-crop")
@@ -181,9 +194,24 @@ def run_pipeline(
             if loc_text:
                 clip.caption_text = loc_text
 
+        # Jump-cut plan from the ORIGINAL speech timing (real audio/video); the
+        # translated caption words share that same source timeline, so one plan
+        # drives video, audio and captions together.
+        keep_ranges = None
+        if jumpcuts_on:
+            kr = plan_keep_ranges(
+                transcript.words(), clip.start, clip.end,
+                min_silence=float(cfg.get("edit.min_silence", 0.8)),
+                max_gap=float(cfg.get("edit.max_gap", 0.35)),
+                pad=float(cfg.get("edit.pad", 0.1)),
+            )
+            if total_kept(kr) < clip.duration - 0.3:  # only if it actually trims
+                keep_ranges = kr
+
         ass_path = build_ass(
             clip, caption_transcript, out_w, out_h, cfg,
             cache.path(f"clip_{clip.clip_id}_{clip_lang}.ass"),
+            keep_ranges=keep_ranges,
         )
         subs = subtitles_filter(ass_path, fontsdir) if ass_path else None
 
@@ -197,6 +225,11 @@ def run_pipeline(
                 meta.file_path, clip, caption_transcript, cfg, cache.path("dub")
             )
 
+        video_select = None
+        if keep_ranges:
+            from .analyze.audio import select_expr
+            video_select = select_expr(keep_ranges, clip.start)
+
         track = plan_track(meta.file_path, clip, out_w, out_h, cfg) if use_track else None
         if track is not None:
             fg = build_filtergraph(
@@ -205,14 +238,15 @@ def run_pipeline(
             )
             render_clip_tracked(
                 meta.file_path, clip, track, out_w, out_h, fg, cfg, out_path,
-                audio_path=dub_audio,
+                audio_path=dub_audio, keep_ranges=keep_ranges,
             )
         else:
             fg = build_filtergraph(
                 probe.width, probe.height, out_w, out_h,
-                fill=fill, subtitles=subs, logo=logo,
+                fill=fill, subtitles=subs, logo=logo, video_select=video_select,
             )
-            render_clip(meta.file_path, clip, fg, cfg, out_path, audio_path=dub_audio)
+            render_clip(meta.file_path, clip, fg, cfg, out_path,
+                        audio_path=dub_audio, keep_ranges=keep_ranges)
         clip.file_path = os.path.abspath(out_path)
 
         # Lip-sync the dubbed clip so the mouth tracks the new voiceover.
@@ -232,6 +266,9 @@ def run_pipeline(
         entry = clip.to_dict()
         entry["tracked"] = track is not None
         entry["language"] = clip_lang
+        if keep_ranges:
+            entry["jumpcut"] = True
+            entry["edited_duration"] = round(total_kept(keep_ranges), 3)
         if localize_on:
             entry["dub_method"] = dub_method
             entry["lipsynced"] = lipsynced
@@ -261,6 +298,7 @@ def run_pipeline(
             "caption_template": _cap_style.get("_template") if _cap_style else None,
             "caption_animation": _cap_style.get("animation") if _cap_style else None,
             "loudnorm": bool(cfg.get("render.loudnorm", True)),
+            "jumpcuts": jumpcuts_on,
             "logo": bool(logo),
             "hook_backend": cfg.get("detect.backend"),
             "output_language": clip_lang,

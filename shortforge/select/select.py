@@ -1,9 +1,10 @@
 """M4 — Clip selection + the "how many clips?" recommender.
 
-Turns ranked hook candidates into concrete clips by growing each high-scoring
-anchor segment outward across whole neighbouring segments until it reaches the
-target duration. Growing by whole segments keeps clip boundaries on clean
-sentence starts/ends and keeps clips self-contained.
+Turns ranked hook candidates into concrete clips. Each clip is a *continuous*
+passage of the source (never random splices) grown from a high-scoring anchor.
+In coherent mode (default), boundaries snap to natural thought/topic breaks —
+pauses in the speech — so a clip begins at the start of an idea and ends on its
+payoff, playing as a complete little story rather than an arbitrary window.
 """
 
 from __future__ import annotations
@@ -14,6 +15,14 @@ from ..models import Candidate, Clip, Transcript
 _STRONG = 0.5   # candidate score considered a "strong standalone moment"
 _MAX_CLIPS = 20
 _MIN_CLIP_SECONDS = 6.0
+
+# Words that signal a segment continues a previous thought — a bad place to
+# START a clip unless there was a real pause before it.
+_CONTINUATIONS = {
+    "and", "but", "so", "or", "nor", "yet", "because", "which", "that", "then",
+    "also", "plus", "however", "therefore", "thus", "although", "though",
+    "whereas", "while", "since", "besides", "anyway",
+}
 
 
 def recommend_clip_count(
@@ -77,6 +86,10 @@ def build_clips(
     lower = max(target - tol, _MIN_CLIP_SECONDS)
     upper = max(target + tol, lower)
 
+    coherent = bool(cfg.get("select.coherent", True))
+    pause_thr = float(cfg.get("select.pause_threshold", 0.5))
+    gaps = _gaps(segments)
+
     seg_score = _score_by_segment(transcript, candidates)
     # Anchor order: highest-scoring segments first.
     order = sorted(
@@ -93,7 +106,12 @@ def build_clips(
             break
         if anchor in used:
             continue
-        lo, hi = _grow(anchor, segments, used, lower, upper)
+        if coherent:
+            lo, hi = _grow_coherent(
+                anchor, segments, gaps, used, lower, upper, target, pause_thr
+            )
+        else:
+            lo, hi = _grow(anchor, segments, used, lower, upper)
         if lo is None:
             continue
         dur = segments[hi].end - segments[lo].start
@@ -125,6 +143,100 @@ def build_clips(
             )
         )
     return clips
+
+
+def _gaps(segments: list) -> list[float]:
+    """Pause (seconds) after each segment; last entry is +inf (end of video)."""
+    gaps = []
+    for i in range(len(segments)):
+        if i + 1 < len(segments):
+            gaps.append(max(0.0, segments[i + 1].start - segments[i].end))
+        else:
+            gaps.append(float("inf"))
+    return gaps
+
+
+def _first_word(text: str) -> str:
+    parts = text.strip().split()
+    return parts[0].lower().strip(",.!?;:") if parts else ""
+
+
+def _is_thought_start(i: int, segments: list, gaps: list[float], pause_thr: float) -> bool:
+    """True if segment ``i`` cleanly begins a thought (not mid-sentence)."""
+    if i == 0:
+        return True
+    if _first_word(segments[i].text) in _CONTINUATIONS:
+        # A continuation word only starts a clip cleanly after a real pause.
+        return gaps[i - 1] >= pause_thr
+    return True
+
+
+def _is_strong_end(i: int, segments: list, gaps: list[float], pause_thr: float) -> bool:
+    """True if segment ``i`` is followed by a pause (a thought/topic boundary)."""
+    return gaps[i] >= pause_thr
+
+
+def _grow_coherent(
+    anchor: int,
+    segments: list,
+    gaps: list[float],
+    used: set[int],
+    lower: float,
+    upper: float,
+    target: float,
+    pause_thr: float,
+) -> tuple[int | None, int | None]:
+    """Grow a clip that starts on a thought-start and ends on its payoff.
+
+    1. Back up (bounded) so we don't begin mid-thought.
+    2. Grow forward to reach the minimum length.
+    3. Extend to the nearest pause (natural end) within tolerance, else to the
+       segment closest to the target duration.
+    """
+    if anchor in used:
+        return None, None
+    n = len(segments)
+    lo = hi = anchor
+
+    # 1) Back up to a clean thought start (at most a few segments, within upper).
+    back = 0
+    while (
+        lo - 1 >= 0
+        and (lo - 1) not in used
+        and back < 3
+        and not _is_thought_start(lo, segments, gaps, pause_thr)
+        and segments[hi].end - segments[lo - 1].start <= upper
+    ):
+        lo -= 1
+        back += 1
+
+    # 2) Grow forward (preferred) to reach the lower bound.
+    while segments[hi].end - segments[lo].start < lower:
+        if hi + 1 < n and (hi + 1) not in used and \
+                segments[hi + 1].end - segments[lo].start <= upper:
+            hi += 1
+        elif lo - 1 >= 0 and (lo - 1) not in used and \
+                segments[hi].end - segments[lo - 1].start <= upper:
+            lo -= 1
+        else:
+            break
+
+    # 3) Extend to a natural end (pause) within upper; else closest to target.
+    best_hi = hi
+    while hi + 1 < n and (hi + 1) not in used:
+        if segments[hi + 1].end - segments[lo].start > upper:
+            break
+        hi += 1
+        if _is_strong_end(hi, segments, gaps, pause_thr):
+            best_hi = hi
+            break
+        cur = abs((segments[hi].end - segments[lo].start) - target)
+        prev = abs((segments[best_hi].end - segments[lo].start) - target)
+        if cur < prev:
+            best_hi = hi
+    hi = best_hi
+
+    return lo, hi
 
 
 def _grow(

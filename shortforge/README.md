@@ -68,7 +68,7 @@ See `python cli.py run --help`.
 | `analyze/`   | M2  | audio extract + faster-whisper word-level transcript (cached) |
 | `analyze/audio` | M9 | loudness norm to −14 LUFS; silence-trim planning |
 | `detect/`    | M3  | hook scoring: transcript rubric (Claude/heuristic) **+ visual signals** (motion/cuts/faces), optional Claude-vision |
-| `select/`    | M4  | clip-count recommender + sentence-snapped clip building |
+| `select/`    | M4  | clip-count recommender + **coherent-story** clip building (complete thoughts) |
 | `reframe/`   | M5  | **subject-tracking** smart-crop 16:9 → 9:16 (YuNet); center-crop fallback |
 | `captions/`  | M7  | caption **templates + animations** (fade/pop/karaoke/reveal); safe margins |
 | `localize/`  | M6  | translate + **dub** (voiceover over preserved music/SFX); target-lang captions |

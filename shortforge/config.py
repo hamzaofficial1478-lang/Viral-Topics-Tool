@@ -54,6 +54,10 @@ DEFAULTS: dict[str, Any] = {
         "tolerance": 12,
         "num_clips": 0,
         "min_gap": 1.5,
+        # Coherent-story selection: start/end clips on natural thought boundaries
+        # (pauses / topic shifts) so each short is a complete idea, not a window.
+        "coherent": True,
+        "pause_threshold": 0.5,   # gap (s) that marks a thought/topic boundary
     },
     "reframe": {
         "aspect": "9:16",

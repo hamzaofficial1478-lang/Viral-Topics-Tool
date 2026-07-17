@@ -38,6 +38,11 @@ select:
   tolerance: 12                  # +/- seconds a clip may deviate from target
   num_clips: 0                   # 0 = use the tool's recommendation
   min_gap: 1.5                   # seconds required between selected clips
+  # Each clip is one CONTINUOUS passage (never random splices). Coherent mode
+  # snaps start/end to natural thought boundaries (pauses) so every short is a
+  # complete idea (setup -> hook -> payoff), not an arbitrary window.
+  coherent: true
+  pause_threshold: 0.5           # gap (s) that marks a thought/topic boundary
 
 reframe:
   aspect: "9:16"                 # 9:16 | 1:1 | 16:9 | WxH (e.g. 1080x1920)

@@ -25,6 +25,40 @@ def setup_logging(verbose: bool = False) -> None:
     logging.getLogger("shortforge").setLevel(level)
 
 
+def load_env_file(path: str = ".env") -> int:
+    """Load ``KEY=VALUE`` lines from a .env file into os.environ.
+
+    Dependency-free (no python-dotenv needed). Existing environment variables
+    are never overwritten, so a real shell export always wins. Lines that are
+    blank, comments (``#``), or ``export KEY=VALUE`` are handled; surrounding
+    quotes are stripped. Returns the number of keys set. Silently does nothing
+    if the file is absent — this is how the operator supplies API keys on their
+    own machine without ever pasting them into a chat or committing them.
+    """
+    if not os.path.isfile(path):
+        return 0
+    count = 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):]
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+                    count += 1
+    except OSError:
+        return count
+    if count:
+        log.debug("loaded %d key(s) from %s", count, path)
+    return count
+
+
 class ShortForgeError(RuntimeError):
     """Raised for expected, user-facing failures (bad input, missing tool)."""
 

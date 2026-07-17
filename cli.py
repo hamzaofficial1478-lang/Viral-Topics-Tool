@@ -15,7 +15,7 @@ import sys
 from shortforge.captions.templates import ANIMATIONS, list_templates
 from shortforge.config import Config
 from shortforge.pipeline import run_pipeline
-from shortforge.utils import ShortForgeError, setup_logging, log
+from shortforge.utils import ShortForgeError, load_env_file, setup_logging, log
 
 
 def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
@@ -51,6 +51,10 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("localize.translate_backend", getattr(args, "translate_backend", None))
     if getattr(args, "dub", False):
         cfg.override("localize.dub", True)
+    if getattr(args, "lipsync", False):
+        cfg.override("lipsync.enabled", True)
+    cfg.override("lipsync.wav2lip_repo", getattr(args, "wav2lip_repo", None))
+    cfg.override("lipsync.checkpoint", getattr(args, "wav2lip_checkpoint", None))
     if getattr(args, "no_review", False):
         cfg.override("review.enabled", False)
     if getattr(args, "no_captions", False):
@@ -88,6 +92,7 @@ def _print_summary(manifest: dict) -> None:
 
 def cmd_run(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
     cfg = Config.load(args.config)
     _apply_common_overrides(cfg, args)
     try:
@@ -115,6 +120,7 @@ def _ask(prompt: str, default: str | None = None) -> str:
 
 def cmd_wizard(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
     cfg = Config.load(args.config)
     print("ShortForge wizard — answer the prompts (Enter accepts the default).\n")
 
@@ -155,6 +161,12 @@ def cmd_wizard(args: argparse.Namespace) -> int:
     if language and not dub_mode.lower().startswith("caption"):
         cfg.override("localize.dub", True)
         cfg.override("localize.tts_backend", "xtts" if dub_mode.lower().startswith("clone") else tts)
+        lip = _ask("   Lip-sync the dub to the speaker's mouth? (yes/no) — needs Wav2Lip + GPU",
+                   "no").lower().startswith("y")
+        if lip:
+            cfg.override("lipsync.enabled", True)
+            cfg.override("lipsync.wav2lip_repo", _ask("     Path to Wav2Lip checkout", "") or None)
+            cfg.override("lipsync.checkpoint", _ask("     Path to wav2lip_gan.pth", "") or None)
 
     transcript_path = None if transcript.lower() in ("", "auto") else transcript
 
@@ -182,6 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Turn your own long-form videos into short vertical clips (Phase 1).",
     )
     p.add_argument("--config", help="Path to settings.yaml (defaults to config/settings.yaml)")
+    p.add_argument("--env-file", help="Path to a .env with API keys (defaults to ./.env)")
     p.add_argument("-v", "--verbose", action="store_true", help="Debug logging")
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -220,6 +233,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--voice-sample", help="Your-voice reference clip for --tts xtts")
     r.add_argument("--translate-backend", choices=["auto", "llm", "argos"],
                    help="Translation backend (Claude / offline Argos)")
+    r.add_argument("--lipsync", action="store_true",
+                   help="Lip-sync dubbed clips to the new voice (Wav2Lip; GPU, cross-language)")
+    r.add_argument("--wav2lip-repo", help="Path to a cloned Rudrabha/Wav2Lip checkout")
+    r.add_argument("--wav2lip-checkpoint", help="Path to wav2lip_gan.pth")
     r.add_argument("--no-review", action="store_true", help="Skip the QC review gate")
     r.add_argument("--no-captions", action="store_true", help="Do not burn captions")
     r.add_argument("--no-loudnorm", action="store_true", help="Skip -14 LUFS normalisation")

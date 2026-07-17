@@ -114,6 +114,20 @@ localize:                        # M6 localization (Phase 3)
   music_gain: 1.0                # music/SFX bed gain when Demucs cleanly separates
   duck_db: -12.0                 # duck the original audio under the dub (no-Demucs fallback)
 
+lipsync:                         # Optional Wav2Lip lip-sync — CROSS-LANGUAGE dubs only.
+  # When you dub into another language the on-screen lips no longer match the
+  # new voice. Wav2Lip re-renders the mouth so the lips track the dub. Same-
+  # language clips keep the original audio + real lips, so this never runs on
+  # them. Needs a GPU + a cloned Wav2Lip; missing/failed = original render kept.
+  enabled: false
+  backend: auto                  # auto | wav2lip
+  wav2lip_repo: null             # path to cloned github.com/Rudrabha/Wav2Lip (has inference.py)
+  checkpoint: null               # path to wav2lip_gan.pth
+  python: null                   # interpreter for Wav2Lip's venv (null = current)
+  pads: "0 10 0 0"               # face padding: top bottom left right
+  resize_factor: 1               # downscale before inference for speed
+  nosmooth: false                # disable temporal mouth smoothing
+
 review:                          # M12 QC review gate
   enabled: true
 

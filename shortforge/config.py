@@ -116,6 +116,16 @@ DEFAULTS: dict[str, Any] = {
         "music_gain": 1.0,           # music/SFX bed gain when Demucs separates
         "duck_db": -12.0,            # original-audio duck under dub (fallback)
     },
+    "lipsync": {                     # Optional Wav2Lip lip-sync (cross-language dubs only)
+        "enabled": False,            # off by default — needs a GPU + Wav2Lip checkout
+        "backend": "auto",           # auto | wav2lip
+        "wav2lip_repo": None,        # path to a cloned Rudrabha/Wav2Lip (has inference.py)
+        "checkpoint": None,          # path to wav2lip_gan.pth
+        "python": None,              # interpreter for Wav2Lip's env (None = current)
+        "pads": "0 10 0 0",          # face padding top bottom left right
+        "resize_factor": 1,          # downscale before inference for speed
+        "nosmooth": False,           # disable temporal mouth smoothing
+    },
     "review": {"enabled": True},     # M12 QC review gate
     "render": {
         "crf": 20,

@@ -26,8 +26,27 @@ sudo apt-get install -y ffmpeg      # or: brew install ffmpeg
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 # optional, for Claude-backed hook detection:
-pip install "anthropic>=0.40.0"     # then set ANTHROPIC_API_KEY
+pip install "anthropic>=0.40.0"     # then add your key (see below)
 ```
+
+### API keys (optional — add them on your own machine)
+
+ShortForge runs **fully offline** with no keys (heuristic hooks, offline Argos
+translation, espeak voice). A Claude key unlocks smarter hook detection, the
+vision scorer (`--vision`), better translation, and titles — a few cents/video,
+only when set.
+
+Add keys in a local **`.env`** file — never paste them into a chat, never commit
+them:
+
+```bash
+cp .env.example .env
+# edit .env and set ANTHROPIC_API_KEY=sk-...
+```
+
+`.env` is git-ignored and loaded automatically on every run (a real
+`export ANTHROPIC_API_KEY=...` in your shell also works and takes precedence).
+Point elsewhere with `--env-file path/to/.env`.
 
 ## Use
 
@@ -54,7 +73,8 @@ Key flags: `--duration`, `--tolerance`, `--num-clips` (0 = auto-recommend),
 `--caption-template` (`clean`/`bold_pop`/`karaoke_amber`/`reveal_green`/`boxed`/`minimal`),
 `--caption-animation`, `--caption-font`, `--caption-size`, `--uppercase`,
 `--language es`, `--dub`, `--tts` (`espeak`/`edge`/`xtts`), `--voice-sample`,
-`--translate-backend`, `--logo path.png` `--logo-corner TR` `--logo-opacity 0.9`,
+`--translate-backend`, `--lipsync` (`--wav2lip-repo` / `--wav2lip-checkpoint`),
+`--logo path.png` `--logo-corner TR` `--logo-opacity 0.9`,
 `--niche "..."`, `--no-captions`, `--no-loudnorm`, `--no-metadata`,
 `--no-thumbnail`, `--no-review`, `--whisper-model`, `--transcript file.(srt|json)`,
 `--cookies cookies.txt`, `--no-llm` / `--use-llm`, `--work-dir`, `--output`.
@@ -72,6 +92,7 @@ See `python cli.py run --help`.
 | `reframe/`   | M5  | **subject-tracking** smart-crop 16:9 → 9:16 (YuNet); center-crop fallback |
 | `captions/`  | M7  | caption **templates + animations** (fade/pop/karaoke/reveal); safe margins |
 | `localize/`  | M6  | translate + **dub** (voiceover over preserved music/SFX); target-lang captions |
+| `lipsync/`   | opt | Wav2Lip mouth-sync for cross-language dubs (GPU; graceful skip) |
 | `brand/`     | M8  | logo overlay (corner / size / opacity) |
 | `metadata/`  | M10 | per-clip title / description / hashtags (heuristic or Claude) |
 | `thumbnail/` | M11 | expressive-keyframe cover at output aspect |
@@ -109,6 +130,13 @@ Hook detection combines **what's said** and **what's shown**:
   (clean); otherwise the original is ducked under the dub (music/SFX survive,
   with some original-voice bleed). Sounds are never removed.
 - **Arabic** and other RTL scripts fall back to the `fade` caption animation.
+- **Lip-sync** (`--lipsync`, opt-in): only for **cross-language dubs** — when a
+  new voiceover is synthesized the on-screen lips no longer match, so Wav2Lip
+  re-renders the mouth to track the dub. Same-language clips keep the original
+  audio + real lips and are never touched. Needs a GPU + a cloned
+  [Wav2Lip](https://github.com/Rudrabha/Wav2Lip) (`--wav2lip-repo`,
+  `--wav2lip-checkpoint`, or the `lipsync:` config block). Missing/failed →
+  the clip keeps its normal render (graceful degradation).
 - Each clip is marked `pending_review` in the manifest (M12) for approval
   before publishing (Phase 5).
 

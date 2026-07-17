@@ -1,3 +1,6 @@
+# Secrets — API keys live here, never in git (copy .env.example -> .env)
+.env
+
 # Python
 __pycache__/
 *.py[cod]

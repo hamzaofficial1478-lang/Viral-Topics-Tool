@@ -22,6 +22,7 @@ from .captions.templates import resolve as resolve_caption_style
 from .config import Config
 from .detect import detect_hooks
 from .ingest import ingest
+from .lipsync import available as lipsync_available, lipsync_clip
 from .localize import build_translated_transcript, dub_clip
 from .metadata import generate as gen_metadata
 from .models import Clip
@@ -129,6 +130,16 @@ def run_pipeline(
     src_lang = transcript.language or "en"
     localize_on = bool(target_lang) and str(target_lang).split("-")[0] != src_lang
     dub_on = localize_on and bool(cfg.get("localize.dub", False))
+    # Lip-sync only makes sense over a NEW voiceover (cross-language dub); it is
+    # never applied to same-language clips (real lips already match).
+    lipsync_on = dub_on and bool(cfg.get("lipsync.enabled", False))
+    if lipsync_on:
+        ok, reason = lipsync_available(cfg)
+        if ok:
+            log.info("lip-sync enabled (Wav2Lip): dubbed clips will be mouth-synced")
+        else:
+            log.info("lip-sync requested but unavailable (%s); clips render normally", reason)
+            lipsync_on = False
     if localize_on:
         cache_key = f"transcript_{target_lang}.json"
         cached_tr = cache.load_json(cache_key)
@@ -204,6 +215,11 @@ def run_pipeline(
             render_clip(meta.file_path, clip, fg, cfg, out_path, audio_path=dub_audio)
         clip.file_path = os.path.abspath(out_path)
 
+        # Lip-sync the dubbed clip so the mouth tracks the new voiceover.
+        lipsynced = False
+        if lipsync_on and dub_audio:
+            lipsynced = lipsync_clip(out_path, dub_audio, cfg, out_path)
+
         md = gen_metadata(clip, cfg) if do_meta else None
         thumb = None
         if do_thumb:
@@ -218,6 +234,7 @@ def run_pipeline(
         entry["language"] = clip_lang
         if localize_on:
             entry["dub_method"] = dub_method
+            entry["lipsynced"] = lipsynced
         if md:
             entry["metadata"] = md
         if thumb:
@@ -249,6 +266,7 @@ def run_pipeline(
             "output_language": clip_lang,
             "localized": localize_on,
             "dubbed": dub_on,
+            "lipsync": lipsync_on,
         },
         "recommendation": {"recommended_clips": n_rec, "rationale": rationale},
         "review": {

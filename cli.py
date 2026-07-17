@@ -10,11 +10,14 @@ Also runnable as `python -m shortforge`.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
+import os
 import sys
 
 from shortforge.captions.templates import ANIMATIONS, list_templates
 from shortforge.config import Config
 from shortforge.pipeline import run_pipeline
+from shortforge.publish import write_index
 from shortforge.utils import ShortForgeError, load_env_file, setup_logging, log
 
 
@@ -67,6 +70,10 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.override("metadata.enabled", False)
     if getattr(args, "no_thumbnail", False):
         cfg.override("thumbnail.enabled", False)
+    if getattr(args, "no_sidecar", False):
+        cfg.override("publish.sidecar", False)
+    if getattr(args, "resume", False):
+        cfg.override("render.resume", True)
     backend = getattr(args, "backend", None)
     if backend:
         cfg.override("detect.backend", backend)
@@ -109,6 +116,90 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     _print_summary(manifest)
     return 0
+
+
+def _collect_batch_sources(args: argparse.Namespace) -> list[str]:
+    sources = list(args.sources or [])
+    if getattr(args, "from_file", None):
+        with open(args.from_file, "r", encoding="utf-8") as f:
+            for line in f:
+                s = line.split("#", 1)[0].strip()
+                if s:
+                    sources.append(s)
+    return sources
+
+
+def cmd_batch(args: argparse.Namespace) -> int:
+    """Run the pipeline over several of the operator's own videos, in sequence.
+
+    Deliberately lean: no job queue, no database — just a loop that keeps going
+    when one source fails, then writes one combined index. That covers the real
+    scale need (a backlog of your own videos) without the ops overhead.
+    """
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+
+    sources = _collect_batch_sources(args)
+    if not sources:
+        log.error("run-batch needs at least one source (positional args or --from-file).")
+        return 2
+    if not args.owner_confirmed:
+        log.error("Batch requires --owner-confirmed (it applies to every source).")
+        return 2
+    if getattr(args, "transcript", None):
+        log.warning("--transcript is ignored in batch mode (one file can't fit every source)")
+
+    out_dir = None
+    results: list[dict] = []
+    failures: list[dict] = []
+    for i, src in enumerate(sources, 1):
+        log.info("=== batch %d/%d: %s ===", i, len(sources), src)
+        cfg = Config.load(args.config)
+        _apply_common_overrides(cfg, args)
+        out_dir = cfg.get("paths.output_dir", "out")
+        try:
+            manifest = run_pipeline(src, cfg, owner_confirmed=True, transcript_path=None)
+        except ShortForgeError as e:
+            log.error("source failed (%s): %s", src, e)
+            failures.append({"source": src, "error": str(e)})
+            continue
+        _print_summary(manifest)
+        results.append(manifest)
+
+    total_clips = sum(len(m["clips"]) for m in results)
+    index = {
+        "generated": _dt.datetime.now().isoformat(timespec="seconds"),
+        "sources_requested": len(sources),
+        "sources_succeeded": len(results),
+        "sources_failed": len(failures),
+        "total_clips": total_clips,
+        "failures": failures,
+        "runs": [
+            {
+                "source": m["source"]["source"],
+                "title": m["source"]["title"],
+                "clips": len(m["clips"]),
+                "manifest": m.get("manifest_path"),
+            }
+            for m in results
+        ],
+    }
+    index_path = None
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+        name = f"batch_{_dt.date.today():%Y%m%d}_index.json"
+        index_path = write_index(index, out_dir, name)
+
+    print("\n" + "#" * 64)
+    print(f"  BATCH: {len(results)}/{len(sources)} source(s) OK, "
+          f"{len(failures)} failed  ->  {total_clips} clip(s) total")
+    if failures:
+        for f in failures:
+            print(f"   ✗ {f['source']}: {f['error']}")
+    if index_path:
+        print(f"  index -> {os.path.abspath(index_path)}")
+    print("#" * 64)
+    return 0 if not failures else 1
 
 
 def _ask(prompt: str, default: str | None = None) -> str:
@@ -204,6 +295,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     r = sub.add_parser("run", help="Run the pipeline non-interactively")
     r.add_argument("source", help="Your video: a URL or a local file path")
+    _add_run_options(r)
+    r.set_defaults(func=cmd_run)
+
+    b = sub.add_parser("run-batch",
+                       help="Run the pipeline over several of your own videos (sequential)")
+    b.add_argument("sources", nargs="*",
+                   help="Your videos: URLs or local paths (or use --from-file)")
+    b.add_argument("--from-file",
+                   help="Text file with one source per line (# comments allowed)")
+    _add_run_options(b)
+    b.set_defaults(func=cmd_batch)
+
+    w = sub.add_parser("wizard", help="Interactive operator wizard")
+    w.set_defaults(func=cmd_wizard)
+    return p
+
+
+def _add_run_options(r: argparse.ArgumentParser) -> None:
+    """Flags shared by `run` and `run-batch` (everything except the source(s))."""
     r.add_argument("--owner-confirmed", action="store_true",
                    help="Confirm the source is your own / licensed content (required)")
     r.add_argument("--duration", type=int, help="Target clip duration in seconds")
@@ -248,6 +358,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Trim long silences / dead air (jump cuts); off when dubbing")
     r.add_argument("--no-metadata", action="store_true", help="Skip metadata generation")
     r.add_argument("--no-thumbnail", action="store_true", help="Skip thumbnail generation")
+    r.add_argument("--no-sidecar", action="store_true",
+                   help="Skip the per-video title/description/tags .txt file")
+    r.add_argument("--resume", action="store_true",
+                   help="Skip clips whose output file already exists")
     r.add_argument("--whisper-model", help="tiny|base|small|medium|large-v3")
     r.add_argument("--cookies", help="Path to cookies.txt for private/unlisted "
                    "videos on your own channel (M1 auth)")
@@ -262,11 +376,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Force the keyword heuristic")
     r.add_argument("--work-dir", help="Cache/intermediate directory")
     r.add_argument("--output", help="Output directory for rendered clips")
-    r.set_defaults(func=cmd_run)
-
-    w = sub.add_parser("wizard", help="Interactive operator wizard")
-    w.set_defaults(func=cmd_wizard)
-    return p
 
 
 def main(argv: list[str] | None = None) -> int:

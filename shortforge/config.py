@@ -102,6 +102,7 @@ DEFAULTS: dict[str, Any] = {
         "margin": 40,
     },
     "metadata": {"enabled": True, "backend": "auto"},   # M10
+    "publish": {"sidecar": True},                        # M14 title/desc/tags sidecar
     "thumbnail": {"enabled": True, "text_hook": False},  # M11
     "page": {"niche": None, "tone": None, "hashtags": []},  # Section 8 profile
     "localize": {                    # M6 localization (Phase 3)
@@ -132,6 +133,8 @@ DEFAULTS: dict[str, Any] = {
         "preset": "veryfast",
         "audio_bitrate": "128k",
         "fps": None,
+        "resume": False,            # skip clips whose output already exists
+
         "loudnorm": True,           # M9: normalise to ~-14 LUFS
         "loudnorm_i": -14.0,
         "loudnorm_tp": -1.5,

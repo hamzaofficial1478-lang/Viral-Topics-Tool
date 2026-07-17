@@ -96,6 +96,11 @@ metadata:                        # M10 titles/description/hashtags
   enabled: true
   backend: auto                  # auto | llm | heuristic
 
+publish:                         # M14 per-video publishing sidecar
+  # Writes a copy-paste-ready <video>.txt with the Title / Description / Tags
+  # next to each clip, so they travel with the video (not just in the manifest).
+  sidecar: true
+
 thumbnail:                       # M11 cover image
   enabled: true
   text_hook: false               # draw the title on the cover

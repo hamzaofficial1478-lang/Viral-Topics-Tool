@@ -65,7 +65,16 @@ python cli.py run ./my_talk.mp4 --owner-confirmed \
 
 # From one of your own YouTube videos:
 python cli.py run "https://youtu.be/XXXX" --owner-confirmed
+
+# Several of your own videos in one go (sequential batch):
+python cli.py run-batch a.mp4 "https://youtu.be/XXXX" --owner-confirmed --resume
+#   or:  python cli.py run-batch --from-file my_videos.txt --owner-confirmed
 ```
+
+Every rendered clip gets a companion **`<video>.txt`** with a ready-to-paste
+**Title / Description / Tags** (and a first-comment CTA), so publishing metadata
+travels next to each video. `--num-clips 0` (default) makes the tool **recommend
+how many strong clips** the source can yield; set a number to force it.
 
 Key flags: `--duration`, `--tolerance`, `--num-clips` (0 = auto-recommend),
 `--aspect` (`9:16` / `1:1` / `16:9` / `WxH`), `--fill` (`crop` / `blur`),
@@ -75,7 +84,8 @@ Key flags: `--duration`, `--tolerance`, `--num-clips` (0 = auto-recommend),
 `--language es`, `--dub`, `--tts` (`espeak`/`edge`/`xtts`), `--voice-sample`,
 `--translate-backend`, `--lipsync` (`--wav2lip-repo` / `--wav2lip-checkpoint`),
 `--logo path.png` `--logo-corner TR` `--logo-opacity 0.9`,
-`--niche "..."`, `--jumpcuts`, `--no-captions`, `--no-loudnorm`, `--no-metadata`,
+`--niche "..."`, `--jumpcuts`, `--resume`, `--no-sidecar`, `--no-captions`,
+`--no-loudnorm`, `--no-metadata`,
 `--no-thumbnail`, `--no-review`, `--whisper-model`, `--transcript file.(srt|json)`,
 `--cookies cookies.txt`, `--no-llm` / `--use-llm`, `--work-dir`, `--output`.
 See `python cli.py run --help`.
@@ -95,6 +105,7 @@ See `python cli.py run --help`.
 | `lipsync/`   | opt | Wav2Lip mouth-sync for cross-language dubs (GPU; graceful skip) |
 | `brand/`     | M8  | logo overlay (corner / size / opacity) |
 | `metadata/`  | M10 | per-clip title / description / hashtags (heuristic or Claude) |
+| `publish/`   | M14 | per-video title/description/tags **sidecar** + batch index |
 | `thumbnail/` | M11 | expressive-keyframe cover at output aspect |
 | `qc/`        | M12 | review gate: pending-review status + brand-safety flags |
 | `render/`    | M13 | ffmpeg compose/export to H.264/AAC (plain + tracked pipe) |
@@ -152,6 +163,18 @@ Hook detection combines **what's said** and **what's shown**:
   timeline, so video, audio, and captions stay in sync. Off by default;
   automatically disabled when dubbing (a synthesized voice would not line up).
 
+### Phase 4 notes (lean scale)
+
+Kept intentionally light — no job queue, no database, no worker pool (overkill
+for a creator running on one machine):
+
+- **Publishing sidecars** (`publish/`, M14): each clip gets a `<video>.txt` with
+  copy-paste-ready Title / Description / Tags. Toggle with `--no-sidecar`.
+- **Batch** (`run-batch`): process many of your own videos sequentially; keeps
+  going if one fails and writes a combined `batch_<date>_index.json`.
+- **Resume** (`--resume`): skip clips whose output already exists, so a re-run
+  (or a batch that died partway) continues instead of redoing finished work.
+
 ## Caching
 
 Transcription is cached under `<work_dir>/<source_hash>/`. Re-running to change
@@ -160,6 +183,7 @@ Whisper — the biggest time saver at scale.
 
 ## Roadmap (later phases, not built here)
 
-Phase 2 quality (subject-tracking reframe, karaoke captions, branding, loudness
-norm, metadata, thumbnails) · Phase 3 localization (stems, translate + TTS dub,
-QC gate) · Phase 4 scale (queue, DB, dedup) · Phase 5 publish + research.
+Phase 5 publish + research: scheduled uploads via platform APIs after the QC
+gate approves, plus niche/RPM research helpers. (The heavy-ops side of Phase 4 —
+a Celery/Redis queue and a database — is intentionally left out; the lean batch
+runner above covers the real need without the overhead.)

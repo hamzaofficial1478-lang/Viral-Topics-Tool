@@ -27,6 +27,7 @@ from .lipsync import available as lipsync_available, lipsync_clip
 from .localize import build_translated_transcript, dub_clip
 from .metadata import generate as gen_metadata
 from .models import Clip
+from .publish import write_sidecar
 from .qc import review_clip
 from .reframe import parse_aspect, plan_track, tracking_available
 from .render import build_filtergraph, render_clip, render_clip_tracked
@@ -125,6 +126,8 @@ def run_pipeline(
     do_meta = bool(cfg.get("metadata.enabled", True))
     do_thumb = bool(cfg.get("thumbnail.enabled", True))
     do_review = bool(cfg.get("review.enabled", True))
+    do_publish = bool(cfg.get("publish.sidecar", True))
+    resume = bool(cfg.get("render.resume", False))
 
     # --- M6 localization: target-language captions + optional dub ---------- #
     target_lang = cfg.get("localize.language")
@@ -194,78 +197,97 @@ def run_pipeline(
             if loc_text:
                 clip.caption_text = loc_text
 
-        # Jump-cut plan from the ORIGINAL speech timing (real audio/video); the
-        # translated caption words share that same source timeline, so one plan
-        # drives video, audio and captions together.
-        keep_ranges = None
-        if jumpcuts_on:
-            kr = plan_keep_ranges(
-                transcript.words(), clip.start, clip.end,
-                min_silence=float(cfg.get("edit.min_silence", 0.8)),
-                max_gap=float(cfg.get("edit.max_gap", 0.35)),
-                pad=float(cfg.get("edit.pad", 0.1)),
-            )
-            if total_kept(kr) < clip.duration - 0.3:  # only if it actually trims
-                keep_ranges = kr
-
-        ass_path = build_ass(
-            clip, caption_transcript, out_w, out_h, cfg,
-            cache.path(f"clip_{clip.clip_id}_{clip_lang}.ass"),
-            keep_ranges=keep_ranges,
-        )
-        subs = subtitles_filter(ass_path, fontsdir) if ass_path else None
-
         # Deterministic naming: {slug}_{lang}_{clipid}_{yyyymmdd}.mp4  (M13)
         out_path = os.path.join(out_dir, f"{slug}_{lang}_{clip.clip_id}_{date}.mp4")
 
-        # M6 dub: voiceover over preserved music/SFX, if enabled.
-        dub_audio, dub_method = None, "none"
-        if dub_on:
-            dub_audio, dub_method = dub_clip(
-                meta.file_path, clip, caption_transcript, cfg, cache.path("dub")
-            )
+        # Resume: skip the expensive render if this exact output already exists.
+        reuse = resume and os.path.isfile(out_path) and os.path.getsize(out_path) > 0
 
-        video_select = None
-        if keep_ranges:
-            from .analyze.audio import select_expr
-            video_select = select_expr(keep_ranges, clip.start)
-
-        track = plan_track(meta.file_path, clip, out_w, out_h, cfg) if use_track else None
-        if track is not None:
-            fg = build_filtergraph(
-                probe.width, probe.height, out_w, out_h,
-                pre_cropped=True, subtitles=subs, logo=logo,
-            )
-            render_clip_tracked(
-                meta.file_path, clip, track, out_w, out_h, fg, cfg, out_path,
-                audio_path=dub_audio, keep_ranges=keep_ranges,
-            )
+        keep_ranges = None
+        dub_method = "none"
+        track = None
+        lipsynced = False
+        if reuse:
+            log.info("resume: clip %s already rendered, reusing %s",
+                     clip.clip_id, os.path.basename(out_path))
         else:
-            fg = build_filtergraph(
-                probe.width, probe.height, out_w, out_h,
-                fill=fill, subtitles=subs, logo=logo, video_select=video_select,
+            # Jump-cut plan from the ORIGINAL speech timing (real audio/video);
+            # the translated caption words share that same source timeline, so one
+            # plan drives video, audio and captions together.
+            if jumpcuts_on:
+                kr = plan_keep_ranges(
+                    transcript.words(), clip.start, clip.end,
+                    min_silence=float(cfg.get("edit.min_silence", 0.8)),
+                    max_gap=float(cfg.get("edit.max_gap", 0.35)),
+                    pad=float(cfg.get("edit.pad", 0.1)),
+                )
+                if total_kept(kr) < clip.duration - 0.3:  # only if it actually trims
+                    keep_ranges = kr
+
+            ass_path = build_ass(
+                clip, caption_transcript, out_w, out_h, cfg,
+                cache.path(f"clip_{clip.clip_id}_{clip_lang}.ass"),
+                keep_ranges=keep_ranges,
             )
-            render_clip(meta.file_path, clip, fg, cfg, out_path,
-                        audio_path=dub_audio, keep_ranges=keep_ranges)
+            subs = subtitles_filter(ass_path, fontsdir) if ass_path else None
+
+            # M6 dub: voiceover over preserved music/SFX, if enabled.
+            dub_audio = None
+            if dub_on:
+                dub_audio, dub_method = dub_clip(
+                    meta.file_path, clip, caption_transcript, cfg, cache.path("dub")
+                )
+
+            video_select = None
+            if keep_ranges:
+                from .analyze.audio import select_expr
+                video_select = select_expr(keep_ranges, clip.start)
+
+            track = plan_track(meta.file_path, clip, out_w, out_h, cfg) if use_track else None
+            if track is not None:
+                fg = build_filtergraph(
+                    probe.width, probe.height, out_w, out_h,
+                    pre_cropped=True, subtitles=subs, logo=logo,
+                )
+                render_clip_tracked(
+                    meta.file_path, clip, track, out_w, out_h, fg, cfg, out_path,
+                    audio_path=dub_audio, keep_ranges=keep_ranges,
+                )
+            else:
+                fg = build_filtergraph(
+                    probe.width, probe.height, out_w, out_h,
+                    fill=fill, subtitles=subs, logo=logo, video_select=video_select,
+                )
+                render_clip(meta.file_path, clip, fg, cfg, out_path,
+                            audio_path=dub_audio, keep_ranges=keep_ranges)
+
+            # Lip-sync the dubbed clip so the mouth tracks the new voiceover.
+            if lipsync_on and dub_audio:
+                lipsynced = lipsync_clip(out_path, dub_audio, cfg, out_path)
         clip.file_path = os.path.abspath(out_path)
 
-        # Lip-sync the dubbed clip so the mouth tracks the new voiceover.
-        lipsynced = False
-        if lipsync_on and dub_audio:
-            lipsynced = lipsync_clip(out_path, dub_audio, cfg, out_path)
-
+        # M10 title/description/tags — generated for every output video.
         md = gen_metadata(clip, cfg) if do_meta else None
+        # M14 publishing sidecar: copy-paste-ready title/description/tags next
+        # to the video, so they travel with each clip (not just in the manifest).
+        publish_file = write_sidecar(out_path, md) if (md and do_publish) else None
+
         thumb = None
         if do_thumb:
             thumb_path = os.path.join(out_dir, f"{slug}_{lang}_{clip.clip_id}_{date}.jpg")
-            thumb = make_thumbnail(
-                meta.file_path, clip, out_w, out_h, cfg, thumb_path,
-                track=track, text_hook=(md or {}).get("title"),
-            )
+            if reuse and os.path.isfile(thumb_path):
+                thumb = thumb_path
+            else:
+                thumb = make_thumbnail(
+                    meta.file_path, clip, out_w, out_h, cfg, thumb_path,
+                    track=track, text_hook=(md or {}).get("title"),
+                )
 
         entry = clip.to_dict()
         entry["tracked"] = track is not None
         entry["language"] = clip_lang
+        if reuse:
+            entry["reused"] = True
         if keep_ranges:
             entry["jumpcut"] = True
             entry["edited_duration"] = round(total_kept(keep_ranges), 3)
@@ -274,6 +296,8 @@ def run_pipeline(
             entry["lipsynced"] = lipsynced
         if md:
             entry["metadata"] = md
+        if publish_file:
+            entry["publish_file"] = os.path.abspath(publish_file)
         if thumb:
             entry["thumbnail"] = os.path.abspath(thumb)
         if do_review:

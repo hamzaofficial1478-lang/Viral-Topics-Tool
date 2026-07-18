@@ -65,6 +65,21 @@ still works (back-compat). Test the connection with `python cli.py check-llm`
 
 ## Use
 
+### Web dashboard (no terminal needed)
+
+```bash
+pip install streamlit
+streamlit run app.py          # opens a dashboard in your browser
+```
+
+Fill in the form (URL or file upload, ownership, aspect, length, language, dub
+mode, caption template, reframe, logo), click **Run**, watch live per-stage
+progress, then preview each clip inline with its title/description/tags and
+download buttons. It's a thin layer over the same pipeline — the CLI below still
+works identically.
+
+### Command line
+
 Check your environment first (dependencies, disk, hardware estimates):
 
 ```bash

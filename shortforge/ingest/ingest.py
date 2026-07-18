@@ -93,17 +93,55 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        # C3: resumable partial downloads + yt-dlp's own fragment retries.
+        "continuedl": True,
+        "retries": 3,
+        "fragment_retries": 5,
     }
     cookies = cfg.get("ingest.cookies")
     if cookies:
         ydl_opts["cookiefile"] = cookies  # M1 auth for private/unlisted videos
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            file_path = ydl.prepare_filename(info)
-    except Exception as e:  # yt-dlp raises many subclasses; surface cleanly
-        raise ShortForgeError(f"Download failed for {url}: {e}") from e
+    # C3: retry transient network failures with exponential backoff, and tell a
+    # network error apart from an invalid/unavailable URL.
+    import time
+
+    attempts = int(cfg.get("ingest.retries", 3))
+    last_err: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                file_path = ydl.prepare_filename(info)
+            break
+        except Exception as e:  # yt-dlp raises many subclasses
+            last_err = e
+            msg = str(e).lower()
+            transient = any(s in msg for s in (
+                "forcibly closed", "timed out", "timeout", "connection",
+                "temporarily", "10054", "reset by peer", "network", "unreachable",
+            ))
+            unavailable = any(s in msg for s in (
+                "not available", "private video", "removed", "does not exist",
+                "unavailable", "404", "no video", "unsupported url",
+            ))
+            if unavailable or not transient or attempt == attempts:
+                if unavailable:
+                    raise ShortForgeError(
+                        f"'{url}' is unavailable or not a valid video URL "
+                        f"({e}). Check the link, or download it yourself and pass "
+                        f"the local file path instead."
+                    ) from e
+                raise ShortForgeError(
+                    f"Download failed for {url} after {attempt} attempt(s): {e}\n"
+                    f"This looks like a network problem. Re-run to resume the "
+                    f"partial download, or download the file manually and pass its "
+                    f"local path."
+                ) from e
+            wait = 2 ** attempt
+            log.warning("download attempt %d/%d failed (%s); retrying in %ds",
+                        attempt, attempts, e, wait)
+            time.sleep(wait)
 
     # merge_output_format may have rewritten the extension to .mp4.
     if not os.path.isfile(file_path):

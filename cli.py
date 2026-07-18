@@ -270,6 +270,16 @@ def cmd_niches(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+    cfg = Config.load(args.config)
+    from shortforge.doctor import run_checks, format_report, FAIL
+    checks = run_checks(cfg)
+    print(format_report(checks))
+    return 1 if any(c.status == FAIL for c in checks) else 0
+
+
 def cmd_cache(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     cfg = Config.load(args.config)
@@ -318,8 +328,20 @@ def cmd_wizard(args: argparse.Namespace) -> int:
     duration = _ask("3. Target clip duration seconds (30/45/60)", "45")
     num = _ask("4. Number of clips (0 = let the tool recommend)", "0")
     language = _ask("5. Output language (en/de/it/es/ja/ar, blank = keep source)", "")
+    print("   Dub modes:  captions = translate the TEXT only (keep original audio);")
+    print("               voice    = replace speech with a synthetic voice;")
+    print("               clone    = replace speech with a cloned voice (xtts).")
     dub_mode = _ask("6. Dub mode (captions / voice / clone)", "captions")
     tts = _ask("   TTS backend (auto / espeak / edge / xtts)", "auto")
+
+    # C5: the exact confusion that shipped English captions over French audio.
+    if language and dub_mode.lower().startswith("caption"):
+        keep = _ask(
+            f"   You chose {language} output with dub mode 'captions' — the "
+            f"ORIGINAL audio is kept and only the captions are translated (no "
+            f"voiceover). Continue? (yes/no)", "yes")
+        if not keep.lower().startswith("y"):
+            dub_mode = _ask("   Dub mode (voice / clone)", "voice")
     transcript = _ask("7. Transcript (auto / path to .srt|.json)", "auto")
     caps = _ask("8. Burn captions? (yes/no)", "yes").lower().startswith("y")
     template = _ask("   Caption template (" + " / ".join(list_templates()) + ")", "clean")
@@ -351,6 +373,23 @@ def cmd_wizard(args: argparse.Namespace) -> int:
             cfg.override("lipsync.checkpoint", _ask("     Path to wav2lip_gan.pth", "") or None)
 
     transcript_path = None if transcript.lower() in ("", "auto") else transcript
+
+    # C5: echo the full plan and require confirmation before processing.
+    dubbing = bool(language and not dub_mode.lower().startswith("caption"))
+    print("\n" + "-" * 56)
+    print("  Plan:")
+    print(f"    source     : {source}")
+    print(f"    output     : {aspect}, ~{duration}s, {num} clip(s), fill={fill}")
+    print(f"    language   : {language or '(keep source)'}")
+    print(f"    audio      : {'DUB — ' + dub_mode if dubbing else 'original audio (captions only)'}")
+    print(f"    captions   : {'on (' + (template or 'clean') + ')' if caps else 'off'}"
+          + (f", translated to {language}" if language else ""))
+    print(f"    jump cuts  : {'yes' if jumpcuts else 'no'}")
+    print(f"    out dir    : {output}")
+    print("-" * 56)
+    if not _ask("  Proceed? (yes/no)", "yes").lower().startswith("y"):
+        log.error("Cancelled.")
+        return 1
 
     try:
         manifest = run_pipeline(
@@ -419,6 +458,9 @@ def build_parser() -> argparse.ArgumentParser:
     csub.add_argument("--all", action="store_true", help="Clear the whole cache (default)")
     csub.add_argument("--work-dir", help="Cache directory (default from config)")
     csub.set_defaults(func=cmd_cache)
+
+    dsub = sub.add_parser("doctor", help="Check the environment / dependencies (C1)")
+    dsub.set_defaults(func=cmd_doctor)
     return p
 
 

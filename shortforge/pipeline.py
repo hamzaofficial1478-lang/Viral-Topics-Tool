@@ -59,6 +59,8 @@ def run_pipeline(
     transcript_path: str | None = None,
 ) -> dict:
     """Execute the full Phase 1 pipeline. Returns a manifest dict."""
+    from .doctor import preflight
+    preflight(cfg)  # C1: fail fast with actionable messages
     require_binary("ffmpeg")
     require_binary("ffprobe")
 
@@ -82,7 +84,11 @@ def run_pipeline(
         transcript = transcribe(meta, cfg, cache)
 
     if not transcript.segments:
-        raise ShortForgeError("Transcript is empty — nothing to clip.")
+        raise ShortForgeError(
+            "This source has no detectable speech (transcript is empty). ShortForge "
+            "selects clips from spoken content, so a music-only or sports source "
+            "with no narration won't work here — try a source with clear speech."
+        )
 
     # --- M3 detect (transcript + visual signals) -------------------------- #
     candidates = detect_hooks(transcript, cfg, meta.file_path)

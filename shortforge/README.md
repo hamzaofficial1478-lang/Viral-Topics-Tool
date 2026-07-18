@@ -50,7 +50,13 @@ Point elsewhere with `--env-file path/to/.env`.
 
 ## Use
 
-Interactive wizard (Section 7 order):
+Check your environment first (dependencies, disk, hardware estimates):
+
+```bash
+python cli.py doctor
+```
+
+Interactive wizard (Section 7 order — shows a plan and asks to confirm):
 
 ```bash
 python cli.py wizard

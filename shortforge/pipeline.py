@@ -373,6 +373,27 @@ def run_pipeline(
             entry["review"] = review_clip(clip.caption_text, clip_lang, dub_method)
         rendered.append(entry)
 
+    # --- B: one-line provenance summary (required; how the operator verifies
+    #        which code path actually ran) ---------------------------------- #
+    captions_on = bool(cfg.get("captions.enabled", True))
+    if dub_on:
+        stem_state = ("stems separated" if accompaniment_source
+                      else "voice-bleed" if allow_voice_bleed else "no-stems")
+        dub_desc = f"dub ({cfg.get('localize.tts_backend', 'auto')}, {stem_state})"
+    else:
+        dub_desc = "dub none"
+    lang_desc = (f"lang {src_lang}->{clip_lang} ({translation_backend})"
+                 if localize_on else f"lang {src_lang}")
+    summary = " | ".join([
+        f"done: {len(rendered)} clip(s)",
+        lang_desc,
+        dub_desc,
+        f"captions {clip_lang if captions_on else 'off'}",
+        f"reframe {'track' if use_track else 'center'}",
+    ] + (["jumpcuts"] if jumpcuts_on else [])
+      + (["lipsync"] if lipsync_on else []))
+    log.info(summary)
+
     # --- manifest --------------------------------------------------------- #
     manifest = {
         "source": {
@@ -382,6 +403,7 @@ def run_pipeline(
             "language": transcript.language,
             "hash": meta.hash,
         },
+        "summary": summary,
         "settings": {
             "resolution": f"{out_w}x{out_h}",
             "aspect": cfg.get("reframe.aspect"),
@@ -390,6 +412,7 @@ def run_pipeline(
             "target_duration": cfg.get("select.target_duration"),
             "caption_template": _cap_style.get("_template") if _cap_style else None,
             "caption_animation": _cap_style.get("animation") if _cap_style else None,
+            "captions_translated": localize_on and captions_on,
             "loudnorm": bool(cfg.get("render.loudnorm", True)),
             "jumpcuts": jumpcuts_on,
             "logo": bool(logo),
@@ -397,9 +420,11 @@ def run_pipeline(
             "output_language": clip_lang,
             "localized": localize_on,
             "dubbed": dub_on,
+            "dub_tts": cfg.get("localize.tts_backend") if dub_on else None,
             "lipsync": lipsync_on,
             "translation_backend": translation_backend,
             "stems_separated": bool(accompaniment_source),
+            "burned_in": burned_mode if burned_band else "none",
         },
         "recommendation": {"recommended_clips": n_rec, "rationale": rationale},
         "review": {

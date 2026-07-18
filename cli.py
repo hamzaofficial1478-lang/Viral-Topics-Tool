@@ -117,6 +117,8 @@ def _print_summary(manifest: dict) -> None:
         if c.get("reason"):
             print(f"           why: {c['reason']}")
     print("-" * 64)
+    if manifest.get("summary"):
+        print(f"  {manifest['summary']}")
     print(f"  {len(manifest['clips'])} clip(s) + manifest -> {manifest['manifest_path']}")
     print("=" * 64)
 

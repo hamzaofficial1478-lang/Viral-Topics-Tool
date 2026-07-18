@@ -17,13 +17,8 @@ from . import heuristic, visual
 
 
 def _llm_available() -> bool:
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        return False
-    try:
-        import anthropic  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    from ..llm import available
+    return available()
 
 
 def _transcript_candidates(

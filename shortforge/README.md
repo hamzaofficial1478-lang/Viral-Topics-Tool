@@ -48,6 +48,21 @@ cp .env.example .env
 `export ANTHROPIC_API_KEY=...` in your shell also works and takes precedence).
 Point elsewhere with `--env-file path/to/.env`.
 
+**Any LLM provider (Part E).** ShortForge isn't tied to Anthropic. All LLM calls
+(translation, hook detection, metadata) go through one abstraction configured in
+`.env`:
+
+```
+LLM_PROVIDER=anthropic | openai | none   # openai = any OpenAI-compatible gateway
+LLM_BASE_URL=https://your-gateway.example.com/v1
+LLM_API_KEY=...
+LLM_MODEL=...
+```
+
+`none` (or no key) → local/heuristic paths only. Setting just `ANTHROPIC_API_KEY`
+still works (back-compat). Test the connection with `python cli.py check-llm`
+(prints provider, base URL, model, and latency — the key is always redacted).
+
 ## Use
 
 Check your environment first (dependencies, disk, hardware estimates):

@@ -48,13 +48,8 @@ class TranslationResult:
 
 
 def _llm_available() -> bool:
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        return False
-    try:
-        import anthropic  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    from ..llm import available
+    return available()
 
 
 def _argos_importable() -> bool:
@@ -84,7 +79,8 @@ def resolve_backend(cfg: Config, src: str, tgt: str) -> tuple[str, str]:
         return ("identity", "-")
     backend = cfg.get("localize.translate_backend", "auto")
     if backend in ("auto", "llm") and _llm_available():
-        return ("llm", str(cfg.get("detect.llm_model", "claude")))
+        from ..llm import resolve as _llmcfg
+        return ("llm", str(_llmcfg().model))
     if backend in ("auto", "argos") and _argos_importable():
         return ("argos", f"argos-{_argos_version()}")
     return ("none", "-")
@@ -166,10 +162,8 @@ def translate_segments(
 
 
 def _llm_translate(texts: list[str], src: str, tgt: str, cfg: Config) -> list[str]:
-    import anthropic
+    from ..llm import complete_json
 
-    client = anthropic.Anthropic()
-    model = cfg.get("detect.llm_model", "claude-opus-4-8")
     tgt_name = LANG_NAMES.get(tgt, tgt)
     schema = {
         "type": "object",
@@ -183,15 +177,7 @@ def _llm_translate(texts: list[str], src: str, tgt: str, cfg: Config) -> list[st
         f"(short-form video captions/dub), one output per input line, same order. "
         f"Return only the translations.\n\n{numbered}"
     )
-    resp = client.messages.create(
-        model=model,
-        max_tokens=8000,
-        output_config={"format": {"type": "json_schema", "schema": schema}},
-        messages=[{"role": "user", "content": prompt}],
-    )
-    import json
-
-    data = json.loads(next((b.text for b in resp.content if b.type == "text"), "{}"))
+    data = complete_json(prompt, schema, max_tokens=8000)
     tr = data.get("translations", [])
     if len(tr) != len(texts):
         raise ValueError(f"translation count mismatch: {len(tr)} != {len(texts)}")

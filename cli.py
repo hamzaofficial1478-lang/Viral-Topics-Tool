@@ -280,6 +280,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if any(c.status == FAIL for c in checks) else 0
 
 
+def cmd_check_llm(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+    from shortforge.llm import check
+    ok, detail = check()
+    print(detail)
+    return 0 if ok else 1
+
+
 def cmd_cache(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     cfg = Config.load(args.config)
@@ -461,6 +470,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     dsub = sub.add_parser("doctor", help="Check the environment / dependencies (C1)")
     dsub.set_defaults(func=cmd_doctor)
+
+    lsub = sub.add_parser("check-llm", help="Test the configured LLM provider (E)")
+    lsub.set_defaults(func=cmd_check_llm)
     return p
 
 

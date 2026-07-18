@@ -263,20 +263,13 @@ def _heuristic(clip: Clip, cfg: Config) -> dict[str, Any]:
 
 
 def _llm_available() -> bool:
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        return False
-    try:
-        import anthropic  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    from ..llm import available
+    return available()
 
 
 def _llm(clip: Clip, cfg: Config) -> dict[str, Any]:
-    import anthropic
+    from ..llm import complete_json
 
-    client = anthropic.Anthropic()
-    model = cfg.get("detect.llm_model", "claude-opus-4-8")
     niche = cfg.get("page.niche") or "general"
     tone = cfg.get("page.tone") or "punchy, direct"
     schema = {
@@ -312,16 +305,7 @@ def _llm(clip: Clip, cfg: Config) -> dict[str, Any]:
         "- first_comment: a short engagement CTA.\n\n"
         f"Clip transcript:\n{clip.caption_text}"
     )
-    resp = client.messages.create(
-        model=model,
-        max_tokens=1100,
-        output_config={"format": {"type": "json_schema", "schema": schema}},
-        messages=[{"role": "user", "content": prompt}],
-    )
-    import json
-
-    text = next((b.text for b in resp.content if b.type == "text"), "{}")
-    data = json.loads(text)
+    data = complete_json(prompt, schema, max_tokens=1100)
     data["backend"] = "llm"
     return data
 

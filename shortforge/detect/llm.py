@@ -40,11 +40,8 @@ _SCHEMA = {
 
 
 def detect(transcript: Transcript, cfg: Config) -> list[Candidate]:
-    """Score every segment with Claude. Raises on failure (caller falls back)."""
-    import anthropic  # imported lazily so the dep stays optional
-
-    client = anthropic.Anthropic()
-    model = cfg.get("detect.llm_model", "claude-opus-4-8")
+    """Score every segment via the configured LLM. Raises on failure (caller falls back)."""
+    from ..llm import complete_json
 
     segments = transcript.segments
     scores: dict[int, tuple[float, str]] = {}
@@ -62,16 +59,7 @@ def detect(transcript: Transcript, cfg: Config) -> list[Candidate]:
             "index<TAB>[start-end] text:\n"
             f"{listing}"
         )
-        # Structured output guarantees valid JSON matching _SCHEMA; effort low
-        # keeps this bulk classification pass cheap.
-        resp = client.messages.create(
-            model=model,
-            max_tokens=8000,
-            output_config={"format": {"type": "json_schema", "schema": _SCHEMA}},
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = next((b.text for b in resp.content if b.type == "text"), "{}")
-        data = json.loads(text)
+        data = complete_json(prompt, _SCHEMA, max_tokens=8000)
         for item in data.get("scores", []):
             idx = int(item["index"])
             score = max(0.0, min(1.0, float(item["score"])))

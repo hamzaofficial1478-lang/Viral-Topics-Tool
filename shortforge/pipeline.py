@@ -134,6 +134,35 @@ def run_pipeline(
     src_lang = transcript.language or "en"
     localize_on = bool(target_lang) and str(target_lang).split("-")[0] != src_lang
     dub_on = localize_on and bool(cfg.get("localize.dub", False))
+
+    # A1: dubbing must REMOVE the original voice (keep music/SFX). Resolve stem
+    # separation up front and abort *before* any rendering rather than laying a
+    # second voice over the original.
+    accompaniment_source = None
+    allow_voice_bleed = bool(cfg.get("localize.allow_voice_bleed", False))
+    if dub_on:
+        from .localize import stems
+        should_stem, stem_reason = stems.stem_separation_enabled(cfg)
+        if should_stem:
+            src_wav = cache.path("source_48k.wav")
+            accompaniment_source = stems.separate_source(
+                meta.file_path, src_wav, cache.dir,
+                transcript.duration or meta.duration, cfg,
+            )
+            if accompaniment_source is None and not allow_voice_bleed:
+                raise ShortForgeError(
+                    "Dub requested but Demucs stem separation failed, so the "
+                    "original voice cannot be removed. Fix Demucs (`pip install "
+                    "-U demucs`) or pass --allow-voice-bleed to accept two voices."
+                )
+        elif not allow_voice_bleed:
+            raise ShortForgeError(
+                f"Dub requested but stem separation is {stem_reason}. Removing the "
+                f"original voice needs Demucs — install it (`pip install demucs`), "
+                f"or pass --allow-voice-bleed to duck the original (two voices), or "
+                f"drop --dub for translated captions over the original audio."
+            )
+
     # Lip-sync only makes sense over a NEW voiceover (cross-language dub); it is
     # never applied to same-language clips (real lips already match).
     lipsync_on = dub_on and bool(cfg.get("lipsync.enabled", False))
@@ -235,7 +264,9 @@ def run_pipeline(
             dub_audio = None
             if dub_on:
                 dub_audio, dub_method = dub_clip(
-                    meta.file_path, clip, caption_transcript, cfg, cache.path("dub")
+                    meta.file_path, clip, caption_transcript, cfg, cache.path("dub"),
+                    accompaniment_source=accompaniment_source,
+                    allow_voice_bleed=allow_voice_bleed,
                 )
 
             video_select = None

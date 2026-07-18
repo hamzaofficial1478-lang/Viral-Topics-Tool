@@ -113,9 +113,17 @@ DEFAULTS: dict[str, Any] = {
         "edge_voice": None,
         "voice_sample": None,        # reference clip for xtts voice cloning
         "translate_backend": "auto", # auto | llm | argos
-        "demucs_model": "htdemucs",
-        "music_gain": 1.0,           # music/SFX bed gain when Demucs separates
-        "duck_db": -12.0,            # original-audio duck under dub (fallback)
+        "allow_untranslated": False, # A2: proceed on failed translation (loud warn)
+        # A1 stem separation (remove original voice, keep music/SFX):
+        "stem_separation": "auto",   # auto | true | false
+        "stem_model": "htdemucs",    # Demucs model (lighter: mdx_extra_q)
+        "demucs_model": "htdemucs",  # back-compat alias
+        "accompaniment_gain_db": 0.0,  # music/SFX bed level
+        "duck_db": -6.0,             # sidechain duck depth under the dub voice
+        "duck_attack_ms": 5,
+        "duck_release_ms": 250,
+        "allow_voice_bleed": False,  # A1: allow ducking the ORIGINAL (two voices)
+        "bleed_duck_db": -12.0,      # duck depth for the --allow-voice-bleed path
     },
     "lipsync": {                     # Optional Wav2Lip lip-sync (cross-language dubs only)
         "enabled": False,            # off by default — needs a GPU + Wav2Lip checkout

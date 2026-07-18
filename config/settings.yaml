@@ -118,9 +118,20 @@ localize:                        # M6 localization (Phase 3)
   edge_voice: null               # override the Edge neural voice
   voice_sample: null             # reference clip of your voice for xtts cloning
   translate_backend: auto        # auto | llm (Claude) | argos (offline)
-  demucs_model: htdemucs         # stem separation model (needs demucs + torch)
-  music_gain: 1.0                # music/SFX bed gain when Demucs cleanly separates
-  duck_db: -12.0                 # duck the original audio under the dub (no-Demucs fallback)
+  allow_untranslated: false      # A2: proceed even if translation fails (loud warning)
+  # A1 — remove the ORIGINAL voice, keep music/SFX. Dubbing splits the source
+  # into vocals + accompaniment (Demucs), drops vocals, and ducks the
+  # accompaniment under the new voice. Without Demucs the run ABORTS (it will not
+  # play two voices) unless allow_voice_bleed is set.
+  stem_separation: auto          # auto | true | false
+  stem_model: htdemucs           # Demucs model; lighter/faster CPU option: mdx_extra_q
+  demucs_model: htdemucs         # back-compat alias
+  accompaniment_gain_db: 0.0     # music/SFX bed level
+  duck_db: -6.0                  # how far the bed dips under the dub voice
+  duck_attack_ms: 5
+  duck_release_ms: 250
+  allow_voice_bleed: false       # allow ducking the ORIGINAL instead (two voices)
+  bleed_duck_db: -12.0           # duck depth for the allow_voice_bleed path
 
 lipsync:                         # Optional Wav2Lip lip-sync — CROSS-LANGUAGE dubs only.
   # When you dub into another language the on-screen lips no longer match the

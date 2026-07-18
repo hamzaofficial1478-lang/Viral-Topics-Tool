@@ -147,9 +147,14 @@ Hook detection combines **what's said** and **what's shown**:
 - **TTS** (`--tts`): `espeak` (offline, robotic — the default fallback),
   `edge` (natural neural voices, needs network), `xtts` (clones *your* voice —
   needs `TTS` + a GPU + `--voice-sample`).
-- **Music/SFX preserved**: Demucs splits vocals from music+SFX when installed
-  (clean); otherwise the original is ducked under the dub (music/SFX survive,
-  with some original-voice bleed). Sounds are never removed.
+- **Original voice removed, music/SFX kept (A1)**: dubbing splits the source
+  into vocals + accompaniment with **Demucs** (once per source, cached), drops
+  the vocals, and mixes the new voice over the accompaniment with a **sidechain
+  duck** (`duck_db`, default −6 dB) so music breathes between sentences. Without
+  Demucs the run **aborts** rather than playing two voices — pass
+  `--allow-voice-bleed` to instead duck the untouched original. `--dub-mode
+  captions` skips separation entirely (original audio passes through). Lighter
+  CPU model: `--stem-model mdx_extra_q`.
 - **Arabic** and other RTL scripts fall back to the `fade` caption animation.
 - **Lip-sync** (`--lipsync`, opt-in): only for **cross-language dubs** — when a
   new voiceover is synthesized the on-screen lips no longer match, so Wav2Lip

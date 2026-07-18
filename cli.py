@@ -55,6 +55,20 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("localize.translate_backend", getattr(args, "translate_backend", None))
     if getattr(args, "dub", False):
         cfg.override("localize.dub", True)
+    dub_mode = getattr(args, "dub_mode", None)
+    if dub_mode:
+        if dub_mode == "captions":
+            cfg.override("localize.dub", False)
+        else:
+            cfg.override("localize.dub", True)
+            if dub_mode == "clone":
+                cfg.override("localize.tts_backend", "xtts")
+    cfg.override("localize.stem_separation", getattr(args, "stem_separation", None))
+    cfg.override("localize.stem_model", getattr(args, "stem_model", None))
+    if getattr(args, "allow_voice_bleed", False):
+        cfg.override("localize.allow_voice_bleed", True)
+    if getattr(args, "allow_untranslated", False):
+        cfg.override("localize.allow_untranslated", True)
     if getattr(args, "lipsync", False):
         cfg.override("lipsync.enabled", True)
     cfg.override("lipsync.wav2lip_repo", getattr(args, "wav2lip_repo", None))
@@ -400,8 +414,18 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
                    "(en/de/it/es/ja/ar/...); omit to keep the source language")
     r.add_argument("--dub", action="store_true",
                    help="Synthesize a voiceover in --language (else captions-only)")
+    r.add_argument("--dub-mode", choices=["captions", "voice", "clone"],
+                   help="captions = translated text only; voice = synthetic voice; "
+                        "clone = cloned voice (needs xtts)")
     r.add_argument("--tts", choices=["auto", "espeak", "edge", "xtts"],
                    help="TTS backend: espeak (offline) / edge (natural) / xtts (clone, GPU)")
+    r.add_argument("--stem-separation", choices=["auto", "true", "false"],
+                   help="Split vocals from music/SFX before dubbing (A1)")
+    r.add_argument("--stem-model", help="Demucs model (e.g. htdemucs, mdx_extra_q)")
+    r.add_argument("--allow-voice-bleed", action="store_true",
+                   help="Dub without stems by ducking the original (accepts two voices)")
+    r.add_argument("--allow-untranslated", action="store_true",
+                   help="Continue if translation fails (keeps source text; loud warning)")
     r.add_argument("--voice-sample", help="Your-voice reference clip for --tts xtts")
     r.add_argument("--translate-backend", choices=["auto", "llm", "argos"],
                    help="Translation backend (Claude / offline Argos)")

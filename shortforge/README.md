@@ -180,9 +180,16 @@ Hook detection combines **what's said** and **what's shown**:
 
 ### Phase 2 notes
 
-- **Subject tracking** uses OpenCV's YuNet face detector
-  (`reframe/models/*.onnx`, bundled). No face / OpenCV missing → center-crop.
-  Detection quality is best judged on real talking-head footage.
+- **Virtual-camera reframe (A4)** (`reframe/vcam.py`): a crop path that follows
+  the action instead of a fixed crop. Per-sample **saliency** (speaker face →
+  dominant motion → center) drives the camera; it **re-detects at every scene
+  cut** (never carries a box across a cut), and a **hold / pan / snap** state
+  machine with a deadzone, velocity cap, and minimum dwell keeps it smooth —
+  panning within a shot but *cutting* between subjects. Detection runs on
+  downscaled frames and the saliency track is cached. `--debug-reframe` writes a
+  source-aspect diagnostic video (detected point, crop box, scene-cut markers).
+  No OpenCV/model, or nothing salient → center-crop fallback. Uses YuNet (not
+  mediapipe, which lacks Python 3.13 wheels).
 - **Loudness** uses single-pass `loudnorm` (lands within ~1–2 LU of −14).
 - **Jump cuts** (`--jumpcuts`, `edit.jumpcuts`): trims long silences / dead air.
   Video is cut with an ffmpeg `select`, the source audio with a matching

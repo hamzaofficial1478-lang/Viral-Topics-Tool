@@ -49,10 +49,25 @@ reframe:
   width: 1080
   height: 1920
   fill: crop                     # crop (center smart-crop) | blur (fit + blurred bg)
-  mode: track                    # track (follow speaker, M5) | center
-  track_sample_interval: 0.33    # seconds between face-detection samples
-  track_smooth_window: 5         # moving-average window for the pan path
+  mode: track                    # track (virtual camera, A4) | center | static
   face_score: 0.6                # YuNet detection confidence threshold
+  # A4 virtual camera — a crop path that follows the action, re-centers at scene
+  # cuts, and cuts (not sweeps) between subjects. Signals: face -> motion -> center.
+  sample_hz: 6                   # saliency samples/sec (interpolated between)
+  redetect_on_scene_cut: true    # discard tracking state at every cut (key fix)
+  scene_cut_threshold: 0.18      # mean frame-diff fraction that marks a cut
+  motion_min_area_pct: 0.3       # min changed-area % to treat motion as salient
+  deadzone_pct: 8                # ignore camera moves under this % of frame width
+  max_pan_speed_pct_s: 35        # cap pan speed (% of width / second)
+  min_dwell_s: 1.2               # min dwell before honoring a new target
+  snap_threshold_pct: 45         # displacement over this % of width => hard cut
+  smoothing: one_euro            # planner eases + caps velocity
+  multi_subject: cut             # cut (follow speaker) | split | widen
+  punch_in_max_scale: 1.12       # (reserved) energy-driven punch-in ceiling
+  punch_in_min_gap_s: 6
+  # legacy tracker knobs (unused by the virtual camera):
+  track_sample_interval: 0.33
+  track_smooth_window: 5
 
 captions:
   enabled: true

@@ -64,10 +64,23 @@ DEFAULTS: dict[str, Any] = {
         "width": 1080,
         "height": 1920,
         "fill": "crop",
-        "mode": "track",            # track (follow speaker) | center
-        "track_sample_interval": 0.33,
-        "track_smooth_window": 5,
+        "mode": "track",            # track (virtual camera) | center | static
+        "track_sample_interval": 0.33,   # legacy tracker
+        "track_smooth_window": 5,        # legacy tracker
         "face_score": 0.6,
+        # A4 virtual camera:
+        "sample_hz": 6,             # saliency sample rate (interpolated between)
+        "redetect_on_scene_cut": True,
+        "scene_cut_threshold": 0.18,  # mean frame-diff fraction that marks a cut
+        "motion_min_area_pct": 0.3,   # min changed-area % to treat motion as salient
+        "deadzone_pct": 8,          # ignore camera moves under this % of width
+        "max_pan_speed_pct_s": 35,  # cap pan speed (% of width / second)
+        "min_dwell_s": 1.2,         # min time before honoring a new target
+        "snap_threshold_pct": 45,   # displacement over this % of width => hard cut
+        "smoothing": "one_euro",    # documented; planner eases + caps velocity
+        "multi_subject": "cut",     # cut (follow speaker) | split | widen
+        "punch_in_max_scale": 1.12,
+        "punch_in_min_gap_s": 6,
     },
     "captions": {
         "enabled": True,

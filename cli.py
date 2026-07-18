@@ -50,6 +50,8 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.override("detect.vision_llm", True)
     if getattr(args, "no_visual", False):
         cfg.override("detect.visual", False)
+    if getattr(args, "debug_reframe", False):
+        cfg.override("reframe.debug", True)
     cfg.override("localize.language", getattr(args, "language", None))
     cfg.override("localize.tts_backend", getattr(args, "tts", None))
     cfg.override("localize.voice_sample", getattr(args, "voice_sample", None))
@@ -428,7 +430,9 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
     r.add_argument("--aspect", help="9:16 / 1:1 / 16:9 / WxH (e.g. 1080x1920)")
     r.add_argument("--fill", choices=["crop", "blur"], help="Reframe fill mode")
     r.add_argument("--reframe-mode", choices=["track", "center"],
-                   help="track = follow the speaker (M5); center = static crop")
+                   help="track = virtual camera follows the action (A4); center = static crop")
+    r.add_argument("--debug-reframe", action="store_true",
+                   help="Also write a source-aspect diagnostic video of the crop path (A4.7)")
     r.add_argument("--caption-template", choices=list_templates(),
                    help="Named caption look: " + " | ".join(list_templates()))
     r.add_argument("--caption-animation", choices=ANIMATIONS,

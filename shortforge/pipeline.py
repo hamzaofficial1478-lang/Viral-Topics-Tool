@@ -30,7 +30,7 @@ from .metadata import generate as gen_metadata
 from .models import Clip
 from .publish import write_sidecar
 from .qc import review_clip
-from .reframe import parse_aspect, plan_track, tracking_available
+from .reframe import parse_aspect, plan_vcam, tracking_available
 from .render import build_filtergraph, render_clip, render_clip_tracked
 from .select import build_clips, recommend_clip_count
 from .thumbnail import make_thumbnail
@@ -306,7 +306,11 @@ def run_pipeline(
                 from .analyze.audio import select_expr
                 video_select = select_expr(keep_ranges, clip.start)
 
-            track = plan_track(meta.file_path, clip, out_w, out_h, cfg) if use_track else None
+            track = plan_vcam(meta.file_path, clip, out_w, out_h, cfg, cache) if use_track else None
+            if use_track and bool(cfg.get("reframe.debug", False)):
+                from .reframe.vcam import debug_reframe
+                dbg = os.path.join(out_dir, f"{slug}_{lang}_{clip.clip_id}_{date}_reframe-debug.mp4")
+                debug_reframe(meta.file_path, clip, out_w, out_h, cfg, cache, dbg)
             if track is not None:
                 fg = build_filtergraph(
                     probe.width, probe.height, out_w, out_h,

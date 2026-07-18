@@ -73,7 +73,8 @@ def render_clip(
     ]
     if extra_af:
         cmd += ["-af", extra_af]
-    cmd += ["-c:a", "aac", "-b:a", abr, "-movflags", "+faststart", "-shortest"]
+    # A3: -sn drops any soft subtitle stream so only our caption layer exists.
+    cmd += ["-c:a", "aac", "-b:a", abr, "-sn", "-movflags", "+faststart", "-shortest"]
     if fps:
         cmd += ["-r", str(fps)]
     cmd.append(out_path)
@@ -104,6 +105,8 @@ def render_clip_tracked(
     out_path: str,
     audio_path: str | None = None,
     keep_ranges: list[tuple[float, float]] | None = None,
+    burned_band: dict | None = None,
+    burned_mode: str = "cover",
 ) -> str:
     """Render a clip with per-frame subject-tracking crop (M5, Phase 2).
 
@@ -167,7 +170,7 @@ def render_clip_tracked(
     if extra_af:
         cmd += ["-af", extra_af]
     cmd += [
-        "-c:a", "aac", "-b:a", abr, "-movflags", "+faststart",
+        "-c:a", "aac", "-b:a", abr, "-sn", "-movflags", "+faststart",
         "-shortest", out_path,
     ]
 
@@ -194,6 +197,10 @@ def render_clip_tracked(
             # Jump cuts: drop frames that fall in trimmed dead air.
             if rel_keep is not None and not _in_ranges(t, rel_keep):
                 continue
+            # A3: treat burned-in source captions before cropping/piping.
+            if burned_band is not None:
+                from ..captions import burned_in
+                frame = burned_in.treat_frame(frame, burned_band, burned_mode)
             x, y = track.topleft_at(t)
             crop = frame[y : y + track.ch, x : x + track.cw]
             if crop.shape[0] != track.ch or crop.shape[1] != track.cw:

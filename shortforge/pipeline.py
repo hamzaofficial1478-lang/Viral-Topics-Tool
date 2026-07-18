@@ -115,6 +115,17 @@ def run_pipeline(
     fill = cfg.get("reframe.fill", "crop")
     mode = cfg.get("reframe.mode", "track")
     fontsdir = _find_fontsdir()
+
+    # A3: detect captions baked into the source pixels; treat the band so our
+    # target-language captions are the only text on screen.
+    burned_mode = str(cfg.get("captions.burned_in", "none"))
+    burned_band = None
+    if burned_mode != "none":
+        from .captions import burned_in
+        burned_band = burned_in.detect(meta.file_path, probe.width, probe.height, cfg)
+        if burned_band:
+            log.info("burned-in captions: applying '%s' treatment to the detected band",
+                     burned_mode)
     lang = transcript.language or "xx"
     date = _dt.date.today().strftime("%Y%m%d")
     slug = _slug(meta.title, "source")
@@ -304,11 +315,13 @@ def run_pipeline(
                 render_clip_tracked(
                     meta.file_path, clip, track, out_w, out_h, fg, cfg, out_path,
                     audio_path=dub_audio, keep_ranges=keep_ranges,
+                    burned_band=burned_band, burned_mode=burned_mode,
                 )
             else:
                 fg = build_filtergraph(
                     probe.width, probe.height, out_w, out_h,
                     fill=fill, subtitles=subs, logo=logo, video_select=video_select,
+                    burned_band=burned_band, burned_mode=burned_mode,
                 )
                 render_clip(meta.file_path, clip, fg, cfg, out_path,
                             audio_path=dub_audio, keep_ranges=keep_ranges)

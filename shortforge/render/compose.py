@@ -29,6 +29,8 @@ def build_filtergraph(
     subtitles: str | None = None,
     logo: dict[str, Any] | None = None,
     video_select: str | None = None,
+    burned_band: dict | None = None,
+    burned_mode: str = "cover",
 ) -> str:
     nodes: list[str] = []
     vin = "0:v"
@@ -38,6 +40,13 @@ def build_filtergraph(
     if video_select and not pre_cropped:
         nodes.append(f"[0:v]select='{video_select}',setpts=N/FRAME_RATE/TB[jc]")
         vin = "jc"
+
+    # A3: treat burned-in source captions (cover/blur/crop) before compositing
+    # ours, so the source text can't remain on screen under our captions.
+    if burned_band and not pre_cropped:
+        from ..captions import burned_in
+        nodes.append(burned_in.subgraph(vin, "bt", burned_band, burned_mode))
+        vin = "bt"
     cur = vin
 
     if not pre_cropped:

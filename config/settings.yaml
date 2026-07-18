@@ -72,6 +72,11 @@ captions:
   # Safe margin from the bottom edge (px at output resolution) so captions
   # clear the platform action bar / right-side buttons.
   bottom_margin: null
+  # A3 — handle captions BAKED into the source pixels so ours don't stack on top.
+  # none = off; cover = opaque box; blur = localized blur; crop = trim the band.
+  burned_in: none
+  burned_in_samples: 16          # frames sampled for text-density detection
+  burned_in_threshold: 0.025     # min edge-density floor (relative to baseline) for a band
   # Line grouping (behaviour, not look):
   max_line_chars: 30
   max_line_duration: 2.5         # seconds per caption line

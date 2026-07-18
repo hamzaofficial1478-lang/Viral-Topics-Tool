@@ -39,6 +39,7 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("captions.font", getattr(args, "caption_font", None))
     cfg.override("captions.font_size", getattr(args, "caption_size", None))
     cfg.override("captions.highlight_color", getattr(args, "highlight_color", None))
+    cfg.override("captions.burned_in", getattr(args, "burned_in", None))
     if getattr(args, "uppercase", False):
         cfg.override("captions.uppercase", True)
     cfg.override("brand.logo", getattr(args, "logo", None))
@@ -438,6 +439,8 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
     r.add_argument("--uppercase", action="store_true", help="Force UPPERCASE captions")
     r.add_argument("--caption-style", choices=["karaoke", "simple"],
                    help="legacy shorthand (maps to --caption-animation)")
+    r.add_argument("--burned-in", choices=["none", "cover", "blur", "crop"],
+                   help="Treat captions baked into the source pixels (A3)")
     r.add_argument("--logo", help="Path to a logo image to overlay (M8)")
     r.add_argument("--logo-corner", choices=["TL", "TR", "BL", "BR"], help="Logo corner")
     r.add_argument("--logo-opacity", type=float, help="Logo opacity 0..1")

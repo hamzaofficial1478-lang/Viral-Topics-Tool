@@ -84,6 +84,10 @@ DEFAULTS: dict[str, Any] = {
         "outline": None,
         "shadow": None,
         "bottom_margin": None,
+        # A3 burned-in source-caption handling:
+        "burned_in": "none",        # none | cover | blur | crop
+        "burned_in_samples": 16,
+        "burned_in_threshold": 0.10,
         # Line-grouping (behaviour, not look):
         "max_line_chars": 30,
         "max_line_duration": 2.5,

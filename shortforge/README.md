@@ -162,6 +162,11 @@ Hook detection combines **what's said** and **what's shown**:
   `--allow-voice-bleed` to instead duck the untouched original. `--dub-mode
   captions` skips separation entirely (original audio passes through). Lighter
   CPU model: `--stem-model mdx_extra_q`.
+- **One caption layer only (A3)**: renders burn exactly one subtitle track (in
+  the target language) and pass `-sn` so no soft subtitle stream from the source
+  is carried through. Captions **baked into the source pixels** are detected
+  (edge-density band scan) and treated with `--burned-in cover|blur|crop` so our
+  captions never sit on top of the source text.
 - **Arabic** and other RTL scripts fall back to the `fade` caption animation.
 - **Lip-sync** (`--lipsync`, opt-in): only for **cross-language dubs** — when a
   new voiceover is synthesized the on-screen lips no longer match, so Wav2Lip

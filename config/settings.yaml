@@ -147,6 +147,10 @@ lipsync:                         # Optional Wav2Lip lip-sync — CROSS-LANGUAGE 
   resize_factor: 1               # downscale before inference for speed
   nosmooth: false                # disable temporal mouth smoothing
 
+cache:                           # A2 cache controls (also --no-cache / --refresh-translation)
+  disabled: false                # never read or write caches
+  refresh_translation: false     # recompute translation only, keep transcript/analysis
+
 review:                          # M12 QC review gate
   enabled: true
 

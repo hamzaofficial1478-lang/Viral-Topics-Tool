@@ -25,6 +25,7 @@ from .detect import detect_hooks
 from .ingest import ingest
 from .lipsync import available as lipsync_available, lipsync_clip
 from .localize import build_translated_transcript, dub_clip
+from .localize.translate import resolve_backend
 from .metadata import generate as gen_metadata
 from .models import Clip
 from .publish import write_sidecar
@@ -173,17 +174,37 @@ def run_pipeline(
         else:
             log.info("lip-sync requested but unavailable (%s); clips render normally", reason)
             lipsync_on = False
+    translation_backend = "identity"
     if localize_on:
-        cache_key = f"transcript_{target_lang}.json"
-        cached_tr = cache.load_json(cache_key)
+        allow_untranslated = bool(cfg.get("localize.allow_untranslated", False))
+        no_cache = bool(cfg.get("cache.disabled", False))
+        refresh = bool(cfg.get("cache.refresh_translation", False))
+        # A2: provenance in the cache key — a failure can never masquerade as a hit.
+        bname, bver = resolve_backend(cfg, src_lang, target_lang)
+        if bname == "none" and not allow_untranslated:
+            raise ShortForgeError(
+                f"Output language '{target_lang}' differs from source '{src_lang}' "
+                f"but no translation backend is available. Install argostranslate "
+                f"(offline) or set ANTHROPIC_API_KEY, or pass --allow-untranslated. "
+                f"(Silently emitting source-language captions is not allowed.)"
+            )
+        cache_key = f"transcript_{target_lang}_{_slug(bname)}_{_slug(bver)}.json"
+        cached_tr = None if (no_cache or refresh) else cache.load_json(cache_key)
         if cached_tr:
             from .models import Transcript
             caption_transcript = Transcript.from_dict(cached_tr)
-            log.info("using cached %s translation", target_lang)
+            translation_backend = bname
+            log.info("using cached %s translation (%s)", target_lang, bname)
         else:
-            log.info("translating captions %s -> %s", src_lang, target_lang)
-            caption_transcript = build_translated_transcript(transcript, target_lang, cfg)
-            cache.save_json(cache_key, caption_transcript.to_dict())
+            log.info("translating captions %s -> %s (%s)", src_lang, target_lang, bname)
+            caption_transcript, tr_result = build_translated_transcript(
+                transcript, target_lang, cfg, allow_untranslated)
+            translation_backend = tr_result.backend
+            # A2: never cache a failed/passthrough/suspect translation.
+            if tr_result.cacheable and not no_cache:
+                cache.save_json(cache_key, caption_transcript.to_dict())
+            else:
+                log.info("not caching translation (passthrough/suspect or --no-cache)")
         clip_lang = target_lang
         # RTL scripts: karaoke/reveal per-word tags can mis-order; use fade.
         if target_lang.split("-")[0] in _RTL_LANGS and _cap_style and \
@@ -360,6 +381,8 @@ def run_pipeline(
             "localized": localize_on,
             "dubbed": dub_on,
             "lipsync": lipsync_on,
+            "translation_backend": translation_backend,
+            "stems_separated": bool(accompaniment_source),
         },
         "recommendation": {"recommended_clips": n_rec, "rationale": rationale},
         "review": {

@@ -13,7 +13,7 @@ from ..config import Config
 from ..models import Clip, Segment, Transcript, Word
 from ..utils import ShortForgeError, log
 from . import stems, tts
-from .translate import translate_segments
+from .translate import TranslationResult, translate_segments
 
 
 def _even_words(text: str, start: float, end: float) -> list[Word]:
@@ -26,15 +26,23 @@ def _even_words(text: str, start: float, end: float) -> list[Word]:
     ]
 
 
-def build_translated_transcript(transcript: Transcript, tgt: str, cfg: Config) -> Transcript:
-    """Translate all segments and rebuild even word-timing for captions."""
+def build_translated_transcript(
+    transcript: Transcript, tgt: str, cfg: Config, allow_untranslated: bool = False,
+) -> tuple[Transcript, TranslationResult]:
+    """Translate all segments; return (transcript, provenance) for the caller.
+
+    The provenance (backend/version/passthrough) lets the pipeline build a
+    cache key that distinguishes a real translation from a failure, and refuse
+    to cache a passthrough (A2).
+    """
     src = transcript.language or "en"
-    translated = translate_segments(transcript.segments, src, tgt, cfg)
+    result = translate_segments(transcript.segments, src, tgt, cfg, allow_untranslated)
     segs = [
         Segment(s.start, s.end, s.text, _even_words(s.text, s.start, s.end))
-        for s in translated
+        for s in result.segments
     ]
-    return Transcript(language=tgt, duration=transcript.duration, segments=segs)
+    tr = Transcript(language=tgt, duration=transcript.duration, segments=segs)
+    return tr, result
 
 
 def dub_clip(

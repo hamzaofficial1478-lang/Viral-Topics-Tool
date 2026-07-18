@@ -142,8 +142,15 @@ Hook detection combines **what's said** and **what's shown**:
 
 - `--language es --dub` = Spanish captions **and** voiceover; `--language es`
   alone = Spanish captions only. Languages: en/de/it/es/ja/ar (+ more).
-- **Translation**: Claude when `ANTHROPIC_API_KEY` is set, else offline **Argos**
-  (`pip install argostranslate`), else source text kept with a warning.
+- **Translation (A2, fail-loud)**: Claude when keyed, else offline **Argos**
+  (auto-installs the language pair). If the output language differs from the
+  source and no backend is available, the run **aborts** with an actionable
+  message rather than silently emitting source-language captions
+  (`--allow-untranslated` overrides, loudly). Failed/passthrough translations
+  are never cached; the cache key includes the backend + version, so installing
+  a backend after a failed run recomputes instead of serving the poisoned entry.
+  Controls: `--no-cache`, `--refresh-translation`, `shortforge cache clear
+  [--translation|--transcript|--all]`.
 - **TTS** (`--tts`): `espeak` (offline, robotic — the default fallback),
   `edge` (natural neural voices, needs network), `xtts` (clones *your* voice —
   needs `TTS` + a GPU + `--voice-sample`).

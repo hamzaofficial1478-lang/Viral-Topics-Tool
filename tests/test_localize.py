@@ -9,9 +9,10 @@ from shortforge import qc
 
 def test_translate_identity_when_same_lang():
     segs = [Segment(0, 1, "hello"), Segment(1, 2, "world")]
-    out = translate_segments(segs, "en", "en", Config.load())
-    assert [s.text for s in out] == ["hello", "world"]
-    assert out[0] is not segs[0]  # returns copies
+    res = translate_segments(segs, "en", "en", Config.load())
+    assert [s.text for s in res.segments] == ["hello", "world"]
+    assert res.segments[0] is not segs[0]  # returns copies
+    assert res.backend == "identity" and res.cacheable is False
 
 
 def test_lang_names_cover_targets():

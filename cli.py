@@ -69,6 +69,10 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.override("localize.allow_voice_bleed", True)
     if getattr(args, "allow_untranslated", False):
         cfg.override("localize.allow_untranslated", True)
+    if getattr(args, "no_cache", False):
+        cfg.override("cache.disabled", True)
+    if getattr(args, "refresh_translation", False):
+        cfg.override("cache.refresh_translation", True)
     if getattr(args, "lipsync", False):
         cfg.override("lipsync.enabled", True)
     cfg.override("lipsync.wav2lip_repo", getattr(args, "wav2lip_repo", None))
@@ -261,6 +265,25 @@ def cmd_niches(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cache(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose)
+    cfg = Config.load(args.config)
+    from shortforge.cache import clear_cache
+    work_dir = getattr(args, "work_dir", None) or cfg.get("paths.work_dir", ".shortforge")
+    if args.cache_action == "clear":
+        if args.translation:
+            what = "translation"
+        elif args.transcript:
+            what = "transcript"
+        else:
+            what = "all"
+        n = clear_cache(work_dir, what)
+        print(f"cleared {n} cached item(s) [{what}] from {work_dir}")
+        return 0
+    log.error("unknown cache action")
+    return 2
+
+
 def _ask(prompt: str, default: str | None = None) -> str:
     suffix = f" [{default}]" if default is not None else ""
     try:
@@ -381,6 +404,16 @@ def build_parser() -> argparse.ArgumentParser:
     nsub.add_argument("--interests",
                       help="Your interests/channel for a personalized pick (needs Claude)")
     nsub.set_defaults(func=cmd_niches)
+
+    csub = sub.add_parser("cache", help="Inspect / clear ShortForge caches")
+    csub.add_argument("cache_action", choices=["clear"], help="cache operation")
+    csub.add_argument("--translation", action="store_true",
+                      help="Clear only cached translations")
+    csub.add_argument("--transcript", action="store_true",
+                      help="Clear only cached transcripts")
+    csub.add_argument("--all", action="store_true", help="Clear the whole cache (default)")
+    csub.add_argument("--work-dir", help="Cache directory (default from config)")
+    csub.set_defaults(func=cmd_cache)
     return p
 
 
@@ -426,6 +459,10 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
                    help="Dub without stems by ducking the original (accepts two voices)")
     r.add_argument("--allow-untranslated", action="store_true",
                    help="Continue if translation fails (keeps source text; loud warning)")
+    r.add_argument("--no-cache", action="store_true",
+                   help="Never read or write caches for this run")
+    r.add_argument("--refresh-translation", action="store_true",
+                   help="Recompute the translation only (keep transcript + visual analysis)")
     r.add_argument("--voice-sample", help="Your-voice reference clip for --tts xtts")
     r.add_argument("--translate-backend", choices=["auto", "llm", "argos"],
                    help="Translation backend (Claude / offline Argos)")

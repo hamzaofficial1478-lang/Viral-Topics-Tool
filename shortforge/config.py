@@ -135,6 +135,10 @@ DEFAULTS: dict[str, Any] = {
         "resize_factor": 1,          # downscale before inference for speed
         "nosmooth": False,           # disable temporal mouth smoothing
     },
+    "cache": {                       # A2 cache controls
+        "disabled": False,           # --no-cache: never read or write caches
+        "refresh_translation": False,  # --refresh-translation: recompute translation only
+    },
     "review": {"enabled": True},     # M12 QC review gate
     "render": {
         "crf": 20,

@@ -30,8 +30,8 @@ def sidecar_text(md: dict[str, Any]) -> str:
     """Render the human, copy-paste-ready title/description/tags block."""
     title = (md.get("title") or "").strip()
     description = _clean_description(md.get("description") or "")
-    tags = md.get("hashtags") or []
-    tag_line = " ".join(tags)
+    tags = md.get("tags") or []                 # plain keywords (YouTube tag field)
+    hashtags = md.get("hashtags") or []         # hashtag form (Shorts/TikTok/Reels)
     first = (md.get("first_comment") or "").strip()
 
     parts = [
@@ -41,8 +41,11 @@ def sidecar_text(md: dict[str, Any]) -> str:
         "DESCRIPTION",
         description or "(none)",
         "",
-        "TAGS",
-        tag_line or "(none)",
+        "TAGS (comma-separated, e.g. YouTube tag field)",
+        ", ".join(tags) if tags else "(none)",
+        "",
+        "HASHTAGS (captions / Shorts / TikTok / Reels)",
+        " ".join(hashtags) if hashtags else "(none)",
     ]
     if first:
         parts += ["", "FIRST COMMENT", first]

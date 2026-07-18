@@ -44,7 +44,27 @@ def test_metadata_heuristic():
     assert 1 <= len(md["hashtags"]) <= 8
     assert all(h.startswith("#") for h in md["hashtags"])
     assert any("startup" in h for h in md["hashtags"])
+    # Analysis-based plain tags exist and are not hashtags.
+    assert md["tags"] and all(not t.startswith("#") for t in md["tags"])
+    # Description is detailed (more than one sentence) and carries a CTA.
+    assert md["description"].count(".") >= 2
+    assert "Follow for more" in md["description"]
     assert md["backend"] == "heuristic"
+
+
+def test_metadata_tags_are_content_specific_per_clip():
+    cfg = Config.load()
+    cfg.override("metadata.backend", "heuristic")
+    a = generate(Clip("01", "h", 0, 30, 0.9,
+                 caption_text="Compound interest is how small savings grow into wealth "
+                              "over decades of patient investing in index funds."), cfg)
+    b = generate(Clip("02", "h", 0, 30, 0.9,
+                 caption_text="Cast iron pans need seasoning with oil and heat so the "
+                              "surface becomes naturally nonstick for cooking eggs."), cfg)
+    # Tags reflect each clip's actual content, so the two sets differ clearly.
+    assert set(a["tags"]) != set(b["tags"])
+    assert any("interest" in t or "investing" in t or "index" in t for t in a["tags"])
+    assert any("cast iron" in t or "seasoning" in t or "nonstick" in t for t in b["tags"])
 
 
 def test_karaoke_event_has_k_tags():

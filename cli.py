@@ -18,6 +18,7 @@ from shortforge.captions.templates import ANIMATIONS, list_templates
 from shortforge.config import Config
 from shortforge.pipeline import run_pipeline
 from shortforge.publish import write_index
+from shortforge.research import categories as niche_categories, personalize, suggest
 from shortforge.utils import ShortForgeError, load_env_file, setup_logging, log
 
 
@@ -202,6 +203,50 @@ def cmd_batch(args: argparse.Namespace) -> int:
     return 0 if not failures else 1
 
 
+def _print_niches(results: list[dict], sort_by: str) -> None:
+    print("\n" + "=" * 68)
+    print(f"  Growing short-form niches  (sorted by {sort_by})")
+    print("  score = growth + monetization + room-to-grow (less competition)")
+    print("=" * 68)
+    for i, n in enumerate(results, 1):
+        print(f"{i:2d}. {n['name']}  [{n['category']}]   score {n['opportunity']}")
+        print(f"      growth: {n['growth']} · competition: {n['competition']} · "
+              f"pays: {n['monetization']}")
+        print(f"      who: {n['audience']}")
+        print(f"      why: {n['why']}")
+        print(f"      angles: {', '.join(n['subniches'])}")
+    print("=" * 68)
+    print("  Tip: the lower-competition sub-niche 'angles' are usually where a")
+    print("  new channel grows fastest. Filter with --category / --low-competition.")
+    print("=" * 68)
+
+
+def cmd_niches(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+    cfg = Config.load(args.config)
+    results = suggest(
+        cfg,
+        category=args.category,
+        top=args.top,
+        sort_by=args.sort,
+        low_competition=args.low_competition,
+    )
+    if not results:
+        log.error("No niches matched. Categories: %s", ", ".join(niche_categories()))
+        return 2
+    _print_niches(results, args.sort)
+    if args.interests:
+        note = personalize(args.interests, cfg, results)
+        if note:
+            print("\nPersonalized for you (Claude):\n")
+            print(note)
+        else:
+            print("\n(Personalization needs ANTHROPIC_API_KEY + `pip install anthropic`; "
+                  "showing the curated ranking above.)")
+    return 0
+
+
 def _ask(prompt: str, default: str | None = None) -> str:
     suffix = f" [{default}]" if default is not None else ""
     try:
@@ -309,6 +354,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     w = sub.add_parser("wizard", help="Interactive operator wizard")
     w.set_defaults(func=cmd_wizard)
+
+    nsub = sub.add_parser("niches",
+                          help="Suggest growing short-form niches (where to grow)")
+    nsub.add_argument("--category",
+                      help="Filter by category (e.g. " + ", ".join(niche_categories()) + ")")
+    nsub.add_argument("--top", type=int, default=8, help="How many niches to show")
+    nsub.add_argument("--sort", choices=["opportunity", "growth", "monetization"],
+                      default="opportunity", help="Ranking lever (default: opportunity)")
+    nsub.add_argument("--low-competition", action="store_true",
+                      help="Only show low-competition niches")
+    nsub.add_argument("--interests",
+                      help="Your interests/channel for a personalized pick (needs Claude)")
+    nsub.set_defaults(func=cmd_niches)
     return p
 
 

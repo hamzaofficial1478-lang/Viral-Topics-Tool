@@ -76,6 +76,15 @@ Every rendered clip gets a companion **`<video>.txt`** with a ready-to-paste
 travels next to each video. `--num-clips 0` (default) makes the tool **recommend
 how many strong clips** the source can yield; set a number to force it.
 
+Not sure what to make? Ask for growing niches:
+
+```bash
+python cli.py niches                       # ranked by opportunity
+python cli.py niches --low-competition     # easiest lanes to break into
+python cli.py niches --category Finance --sort monetization
+python cli.py niches --interests "I'm a nurse who likes budgeting"   # Claude-personalized
+```
+
 Key flags: `--duration`, `--tolerance`, `--num-clips` (0 = auto-recommend),
 `--aspect` (`9:16` / `1:1` / `16:9` / `WxH`), `--fill` (`crop` / `blur`),
 `--reframe-mode` (`track` / `center`),
@@ -104,8 +113,9 @@ See `python cli.py run --help`.
 | `localize/`  | M6  | translate + **dub** (voiceover over preserved music/SFX); target-lang captions |
 | `lipsync/`   | opt | Wav2Lip mouth-sync for cross-language dubs (GPU; graceful skip) |
 | `brand/`     | M8  | logo overlay (corner / size / opacity) |
-| `metadata/`  | M10 | per-clip title / description / hashtags (heuristic or Claude) |
+| `metadata/`  | M10 | **SEO** title / detailed description / analysis-based tags (heuristic or Claude) |
 | `publish/`   | M14 | per-video title/description/tags **sidecar** + batch index |
+| `research/`  | —   | growing-niche suggestions (`niches` command; opportunity-ranked) |
 | `thumbnail/` | M11 | expressive-keyframe cover at output aspect |
 | `qc/`        | M12 | review gate: pending-review status + brand-safety flags |
 | `render/`    | M13 | ffmpeg compose/export to H.264/AAC (plain + tracked pipe) |
@@ -168,8 +178,18 @@ Hook detection combines **what's said** and **what's shown**:
 Kept intentionally light — no job queue, no database, no worker pool (overkill
 for a creator running on one machine):
 
+- **SEO metadata** (`metadata/`, M10): titles/descriptions/tags are built from
+  what each clip actually says — a hooked, keyword-front-loaded title, a
+  detailed searchable description, and analysis-based tags (clean keyphrases,
+  not a genre list) that differ per clip. Plain tags (YouTube) and hashtags
+  (Shorts/TikTok/Reels) are produced separately. Claude sharpens all of it.
 - **Publishing sidecars** (`publish/`, M14): each clip gets a `<video>.txt` with
-  copy-paste-ready Title / Description / Tags. Toggle with `--no-sidecar`.
+  copy-paste-ready Title / Description / Tags + Hashtags. Toggle with `--no-sidecar`.
+- **Niche suggestions** (`research/`, `niches` command): an opportunity-ranked
+  guide to growing short-form niches — scored on growth, competition, and
+  monetization, with lower-competition sub-niche angles. Curated + offline
+  (a live trend feed would need an external data source); `--interests` adds a
+  Claude-personalized pick.
 - **Batch** (`run-batch`): process many of your own videos sequentially; keeps
   going if one fails and writes a combined `batch_<date>_index.json`.
 - **Resume** (`--resume`): skip clips whose output already exists, so a re-run

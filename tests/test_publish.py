@@ -8,6 +8,7 @@ from shortforge.publish import sidecar_text, write_sidecar, write_index
 _MD = {
     "title": "The one habit that changed everything",
     "description": "Here is the single habit that made the difference.\n\n#focus #habits",
+    "tags": ["morning habits", "focus", "productivity"],
     "hashtags": ["#shorts", "#focus", "#habits"],
     "first_comment": "What's your #1 habit? 👇",
 }
@@ -17,8 +18,9 @@ def test_sidecar_text_has_all_blocks():
     txt = sidecar_text(_MD)
     assert "TITLE" in txt and _MD["title"] in txt
     assert "DESCRIPTION" in txt
-    assert "TAGS" in txt
-    assert "#shorts #focus #habits" in txt
+    # Plain tags (comma-separated) and hashtags appear in separate blocks.
+    assert "TAGS" in txt and "morning habits, focus, productivity" in txt
+    assert "HASHTAGS" in txt and "#shorts #focus #habits" in txt
     assert "FIRST COMMENT" in txt
 
 

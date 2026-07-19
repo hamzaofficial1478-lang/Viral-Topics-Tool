@@ -144,8 +144,15 @@ localize:                        # M6 localization (Phase 3)
   # accompaniment under the new voice. Without Demucs the run ABORTS (it will not
   # play two voices) unless allow_voice_bleed is set.
   stem_separation: auto          # auto | true | false
-  stem_model: htdemucs           # Demucs model; lighter/faster CPU option: mdx_extra_q
+  stem_model: htdemucs           # Demucs model; better: htdemucs_ft; lighter/faster: mdx_extra_q
   demucs_model: htdemucs         # back-compat alias
+  # G1 — Demucs mis-routes some ambience/reverb into the VOCALS stem; discarding
+  # it (-inf) leaves some scenes dead-silent. 'partial' keeps the vocals stem low
+  # so that ambience survives (with a little original-voice bleed); 'full' drops
+  # it entirely (cleanest, but scenes may go silent). Use --debug-audio to listen.
+  vocal_removal_strength: partial   # partial | full | <dB e.g. -18>
+  vocal_retain_db: -18.0            # level to keep the vocals stem at (partial)
+  debug_audio: false                # --debug-audio: export vocals/accompaniment/bed WAVs
   accompaniment_gain_db: 0.0     # music/SFX bed level
   duck_db: -6.0                  # how far the bed dips under the dub voice
   duck_attack_ms: 5

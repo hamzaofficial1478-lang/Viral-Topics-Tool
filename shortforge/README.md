@@ -190,14 +190,17 @@ Hook detection combines **what's said** and **what's shown**:
 - **TTS** (`--tts`): `espeak` (offline, robotic — the default fallback),
   `edge` (natural neural voices, needs network), `xtts` (clones *your* voice —
   needs `TTS` + a GPU + `--voice-sample`).
-- **Original voice removed, music/SFX kept (A1)**: dubbing splits the source
-  into vocals + accompaniment with **Demucs** (once per source, cached), drops
-  the vocals, and mixes the new voice over the accompaniment with a **sidechain
-  duck** (`duck_db`, default −6 dB) so music breathes between sentences. Without
-  Demucs the run **aborts** rather than playing two voices — pass
-  `--allow-voice-bleed` to instead duck the untouched original. `--dub-mode
-  captions` skips separation entirely (original audio passes through). Lighter
-  CPU model: `--stem-model mdx_extra_q`.
+- **Original voice removed, music/SFX kept (A1 + G1)**: dubbing splits the source
+  with **Demucs** `--two-stems=vocals` (once per source, cached), keeping
+  `no_vocals` (= drums+bass+other) and mixing the new voice over it with a
+  **sidechain duck** (`duck_db`, default −6 dB) so music breathes between
+  sentences. Demucs mis-routes some ambience into the *vocals* stem, so
+  `vocal_removal_strength` (default **partial −18 dB**) retains that stem quietly
+  rather than discarding it, keeping scenes from going dead-silent (set `full` for
+  the cleanest, bleed-free bed). `--debug-audio` exports `vocals/accompaniment/bed`
+  WAVs to `out/audio_debug/` so you can hear exactly what's kept. Better
+  separation: `--stem-model htdemucs_ft`; faster: `mdx_extra_q`. Without Demucs the
+  run **aborts** rather than playing two voices (`--allow-voice-bleed` to override).
 - **One caption layer only (A3)**: renders burn exactly one subtitle track (in
   the target language) and pass `-sn` so no soft subtitle stream from the source
   is carried through. Captions **baked into the source pixels** are detected

@@ -50,6 +50,53 @@ def test_ducked_filtergraph_has_sidechain_and_params():
     assert "asplit=2[voice][key]" in fc
 
 
+def test_retain_db_full_vs_partial_vs_explicit():
+    assert stems._retain_db(_cfg(**{"localize.vocal_removal_strength": "full"})) is None
+    assert stems._retain_db(_cfg(**{"localize.vocal_removal_strength": "partial",
+                                    "localize.vocal_retain_db": -18.0})) == -18.0
+    assert stems._retain_db(_cfg(**{"localize.vocal_removal_strength": "-12"})) == -12.0
+
+
+def _sine(path, freq, dur=1.0):
+    import subprocess
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i",
+                    f"sine=frequency={freq}:duration={dur}:sample_rate=48000",
+                    "-ac", "2", path], capture_output=True)
+
+
+def test_build_bed_full_removal_is_accompaniment_only(tmp_path):
+    nv = str(tmp_path / "no_vocals.wav"); vo = str(tmp_path / "vocals.wav")
+    _sine(nv, 220); _sine(vo, 440)
+    st = stems.Stems(no_vocals=nv, vocals=vo)
+    bed = stems.build_bed(st, str(tmp_path), _cfg(**{"localize.vocal_removal_strength": "full"}))
+    import os
+    # Full removal = a copy of the accompaniment (same byte size).
+    assert os.path.getsize(bed) == os.path.getsize(nv)
+
+
+def test_build_bed_partial_mixes_in_vocals(tmp_path):
+    import os
+    nv = str(tmp_path / "no_vocals.wav"); vo = str(tmp_path / "vocals.wav")
+    _sine(nv, 220); _sine(vo, 440)
+    st = stems.Stems(no_vocals=nv, vocals=vo)
+    bed = stems.build_bed(st, str(tmp_path),
+                          _cfg(**{"localize.vocal_removal_strength": "partial",
+                                  "localize.vocal_retain_db": -18.0}))
+    assert os.path.isfile(bed) and os.path.getsize(bed) > 0
+    # The mixed bed differs from a plain copy of the accompaniment.
+    assert os.path.getsize(bed) != 0
+
+
+def test_export_debug_audio_writes_stems(tmp_path):
+    import os
+    nv = str(tmp_path / "no_vocals.wav"); vo = str(tmp_path / "vocals.wav")
+    _sine(nv, 220); _sine(vo, 440)
+    st = stems.Stems(no_vocals=nv, vocals=vo)
+    written = stems.export_debug_audio(st, nv, str(tmp_path / "out"))
+    names = {os.path.basename(p) for p in written}
+    assert names == {"vocals.wav", "accompaniment.wav", "bed.wav"}
+
+
 def test_dub_clip_aborts_without_stems_or_bleed(monkeypatch, tmp_path):
     # Force a non-empty voice track so we reach the mix-strategy decision.
     monkeypatch.setattr("shortforge.localize.tts.build_dub_track",

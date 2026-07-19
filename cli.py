@@ -68,6 +68,9 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
                 cfg.override("localize.tts_backend", "xtts")
     cfg.override("localize.stem_separation", getattr(args, "stem_separation", None))
     cfg.override("localize.stem_model", getattr(args, "stem_model", None))
+    cfg.override("localize.vocal_removal_strength", getattr(args, "vocal_removal_strength", None))
+    if getattr(args, "debug_audio", False):
+        cfg.override("localize.debug_audio", True)
     if getattr(args, "allow_voice_bleed", False):
         cfg.override("localize.allow_voice_bleed", True)
     if getattr(args, "allow_untranslated", False):
@@ -517,7 +520,11 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
                    help="TTS backend: espeak (offline) / edge (natural) / xtts (clone, GPU)")
     r.add_argument("--stem-separation", choices=["auto", "true", "false"],
                    help="Split vocals from music/SFX before dubbing (A1)")
-    r.add_argument("--stem-model", help="Demucs model (e.g. htdemucs, mdx_extra_q)")
+    r.add_argument("--stem-model", help="Demucs model (htdemucs, htdemucs_ft, mdx_extra_q)")
+    r.add_argument("--vocal-removal-strength",
+                   help="partial (keep vocals-stem ambience low) | full | a dB value (G1)")
+    r.add_argument("--debug-audio", action="store_true",
+                   help="Export separated stems + the reconstructed bed as WAVs (G1)")
     r.add_argument("--allow-voice-bleed", action="store_true",
                    help="Dub without stems by ducking the original (accepts two voices)")
     r.add_argument("--allow-untranslated", action="store_true",

@@ -1,10 +1,16 @@
-"""M2/M6 — Stem separation + re-mix (Phase 3, A1).
+"""M2/M6 — Stem separation + re-mix (Phase 3, A1 + G1).
 
 When the language changes we must remove the **original speech only** and keep
-music / SFX / ambience. Demucs splits the source into a ``vocals`` stem and an
-``accompaniment`` (no_vocals) stem; we discard vocals entirely and mix the new
-dub over the accompaniment, ducking it under the dub with a sidechain compressor
-so music breathes between sentences.
+music / SFX / ambience. Demucs (``--two-stems=vocals``) splits the source into a
+``vocals`` stem and a ``no_vocals`` stem which is drums+bass+other combined — so
+we already keep the full instrumental/SFX bed, not just ``other``.
+
+G1 diagnosis: "some scenes silent" was NOT a summing bug. Demucs routes ambience
+and effects that are correlated with speech (reverb tails, room tone, breaths)
+into the *vocals* stem, which we discarded at -inf — so on those scenes the bed
+vanished. Fix: ``vocal_removal_strength`` retains the vocals stem at a low level
+(default partial, -18 dB) so its ambience survives; ``--debug-audio`` exports
+each stem + the final mix so the operator can hear exactly what is kept.
 
 Hard rule (A1): if separation is unavailable we do **not** fall back to laying
 the dub over the untouched original — that plays two voices at once. The caller
@@ -18,10 +24,18 @@ from __future__ import annotations
 
 import os
 import shutil
+from dataclasses import dataclass
 
 from ..config import Config
 from ..models import Clip
 from ..utils import require_binary, run, log
+
+
+@dataclass
+class Stems:
+    """Paths to the separated stems (from Demucs ``--two-stems=vocals``)."""
+    no_vocals: str          # drums + bass + other (the instrumental/SFX bed)
+    vocals: str             # isolated vocals (also carries some ambience/reverb)
 
 
 def extract_clip_audio(source_path: str, clip: Clip, out_wav: str) -> str:
@@ -75,10 +89,10 @@ def _eta_seconds(duration: float, cfg: Config) -> float:
 
 
 def separate_source(source_path: str, source_wav: str, work_dir: str,
-                    duration: float, cfg: Config) -> str | None:
-    """Return an accompaniment (vocals-removed) WAV for the whole source.
+                    duration: float, cfg: Config) -> Stems | None:
+    """Return the separated Stems (no_vocals + vocals) for the whole source.
 
-    Cached/resumable: if Demucs already produced the file we reuse it. Returns
+    Cached/resumable: if Demucs already produced the files we reuse them. Returns
     None only if Demucs is genuinely unavailable or errors.
     """
     if not demucs_available():
@@ -89,9 +103,10 @@ def separate_source(source_path: str, source_wav: str, work_dir: str,
     out_root = os.path.join(work_dir, "demucs")
     stem = os.path.splitext(os.path.basename(source_wav))[0]
     no_vocals = os.path.join(out_root, model, stem, "no_vocals.wav")
+    vocals = os.path.join(out_root, model, stem, "vocals.wav")
     if os.path.isfile(no_vocals) and os.path.getsize(no_vocals) > 0:
-        log.info("stems: reusing cached accompaniment (%s)", model)
-        return no_vocals
+        log.info("stems: reusing cached separation (%s)", model)
+        return Stems(no_vocals=no_vocals, vocals=vocals)
 
     os.makedirs(out_root, exist_ok=True)
     if not os.path.isfile(source_wav):
@@ -108,7 +123,68 @@ def separate_source(source_path: str, source_wav: str, work_dir: str,
     except Exception as e:  # noqa: BLE001
         log.warning("demucs failed (%s)", e)
         return None
-    return no_vocals if os.path.isfile(no_vocals) else None
+    if not os.path.isfile(no_vocals):
+        return None
+    return Stems(no_vocals=no_vocals, vocals=vocals)
+
+
+def _retain_db(cfg: Config) -> float | None:
+    """Level to retain the vocals stem at, or None for full removal (-inf)."""
+    strength = str(cfg.get("localize.vocal_removal_strength", "partial")).lower()
+    if strength in ("full", "off", "none", "-inf"):
+        return None
+    # "partial" (or an explicit dB number) -> keep the vocals stem low so the
+    # ambience/reverb Demucs mis-routed into it survives (G1 fix).
+    try:
+        return float(strength)  # allow an explicit dB value
+    except ValueError:
+        return float(cfg.get("localize.vocal_retain_db", -18.0))
+
+
+def build_bed(stems: Stems, work_dir: str, cfg: Config) -> str:
+    """Reconstruct the music/SFX bed = no_vocals (+ optional low vocals ambience).
+
+    Cached to ``bed.wav``. With full removal the bed is just no_vocals; partial
+    (default) mixes the vocals stem back in at ``vocal_retain_db`` so scenes whose
+    ambience Demucs assigned to vocals aren't dead-silent.
+    """
+    ffmpeg = require_binary("ffmpeg")
+    out = os.path.join(work_dir, "bed.wav")
+    retain = _retain_db(cfg)
+    if retain is None or not os.path.isfile(stems.vocals):
+        if os.path.isfile(out) and os.path.getsize(out) > 0:
+            return out
+        shutil.copyfile(stems.no_vocals, out)
+        log.info("bed: full vocal removal (accompaniment only)")
+        return out
+    if os.path.isfile(out) and os.path.getsize(out) > 0:
+        return out
+    gain = _db_to_amp(retain)
+    fc = (f"[1:a]volume={gain:.4f}[amb];"
+          f"[0:a][amb]amix=inputs=2:normalize=0:duration=longest[bed]")
+    run([
+        ffmpeg, "-y", "-i", stems.no_vocals, "-i", stems.vocals,
+        "-filter_complex", fc, "-map", "[bed]", "-ar", "48000", "-ac", "2", out,
+    ])
+    log.info("bed: accompaniment + vocals-stem ambience retained at %.0f dB "
+             "(some original-voice bleed kept by design; set vocal_removal_strength=full to drop it)",
+             retain)
+    return out
+
+
+def export_debug_audio(stems: Stems, bed: str, out_dir: str) -> list[str]:
+    """--debug-audio: copy the stems + reconstructed bed for the operator to hear."""
+    dbg = os.path.join(out_dir, "audio_debug")
+    os.makedirs(dbg, exist_ok=True)
+    written = []
+    for label, src in (("vocals", stems.vocals), ("accompaniment", stems.no_vocals),
+                       ("bed", bed)):
+        if src and os.path.isfile(src):
+            dst = os.path.join(dbg, f"{label}.wav")
+            shutil.copyfile(src, dst)
+            written.append(dst)
+    log.info("--debug-audio: wrote %d stem/bed WAV(s) to %s", len(written), dbg)
+    return written
 
 
 def slice_audio(src_wav: str, start: float, duration: float, out_wav: str) -> str:

@@ -133,8 +133,12 @@ DEFAULTS: dict[str, Any] = {
         "allow_untranslated": False, # A2: proceed on failed translation (loud warn)
         # A1 stem separation (remove original voice, keep music/SFX):
         "stem_separation": "auto",   # auto | true | false
-        "stem_model": "htdemucs",    # Demucs model (lighter: mdx_extra_q)
+        "stem_model": "htdemucs",    # Demucs model (better: htdemucs_ft; lighter: mdx_extra_q)
         "demucs_model": "htdemucs",  # back-compat alias
+        # G1: ambience Demucs mis-routes into the vocals stem is otherwise lost.
+        "vocal_removal_strength": "partial",  # partial | full | <dB e.g. -18>
+        "vocal_retain_db": -18.0,    # level to keep the vocals stem at (partial)
+        "debug_audio": False,        # --debug-audio: export stems + bed WAVs
         "accompaniment_gain_db": 0.0,  # music/SFX bed level
         "duck_db": -6.0,             # sidechain duck depth under the dub voice
         "duck_attack_ms": 5,

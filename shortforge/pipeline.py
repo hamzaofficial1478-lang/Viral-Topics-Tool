@@ -163,10 +163,15 @@ def run_pipeline(
         should_stem, stem_reason = stems.stem_separation_enabled(cfg)
         if should_stem:
             src_wav = cache.path("source_48k.wav")
-            accompaniment_source = stems.separate_source(
+            stem_result = stems.separate_source(
                 meta.file_path, src_wav, cache.dir,
                 transcript.duration or meta.duration, cfg,
             )
+            if stem_result is not None:
+                # G1: reconstruct the bed (accompaniment + retained ambience).
+                accompaniment_source = stems.build_bed(stem_result, cache.dir, cfg)
+                if bool(cfg.get("localize.debug_audio", False)):
+                    stems.export_debug_audio(stem_result, accompaniment_source, out_dir)
             if accompaniment_source is None and not allow_voice_bleed:
                 raise ShortForgeError(
                     "Dub requested but Demucs stem separation failed, so the "
@@ -383,8 +388,11 @@ def run_pipeline(
     #        which code path actually ran) ---------------------------------- #
     captions_on = bool(cfg.get("captions.enabled", True))
     if dub_on:
-        stem_state = ("stems separated" if accompaniment_source
-                      else "voice-bleed" if allow_voice_bleed else "no-stems")
+        if accompaniment_source:
+            _strength = str(cfg.get("localize.vocal_removal_strength", "partial")).lower()
+            stem_state = "stems d+b+o" + ("" if _strength in ("full", "off", "none") else "+amb")
+        else:
+            stem_state = "voice-bleed" if allow_voice_bleed else "no-stems"
         dub_desc = f"dub ({cfg.get('localize.tts_backend', 'auto')}, {stem_state})"
     else:
         dub_desc = "dub none"

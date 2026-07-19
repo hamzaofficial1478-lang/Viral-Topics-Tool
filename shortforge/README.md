@@ -63,6 +63,16 @@ LLM_MODEL=...
 still works (back-compat). Test the connection with `python cli.py check-llm`
 (prints provider, base URL, model, and latency — the key is always redacted).
 
+**Multi-provider TTS + audio library (Part L).** `shortforge/providers/` is a
+capability-driven layer: `TTS_PROVIDERS` lists providers in priority order, each
+declares what it can do (languages, SSML, emotion, cloning, cost) in `.env`, and
+the router picks a capable one, **fails over** on error, tracks **cost per
+provider**, chunks long input, and caches identical lines. `edge` is the built-in
+free option; any other name maps to an OpenAI-compatible `/audio/speech` gateway.
+An `AudioLibraryProvider` (`local` folder or `api`) supplies music/SFX beds (G2).
+See `.env.example`, then run `python cli.py check-providers` to test everything
+(capabilities, latency, a sample synthesis — keys redacted).
+
 ## Use
 
 ### Web dashboard (no terminal needed)

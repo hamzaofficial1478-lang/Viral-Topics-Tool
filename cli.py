@@ -292,6 +292,14 @@ def cmd_check_llm(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_check_providers(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+    from shortforge.providers import check_providers
+    print(check_providers())
+    return 0
+
+
 def cmd_cache(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     cfg = Config.load(args.config)
@@ -476,6 +484,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     lsub = sub.add_parser("check-llm", help="Test the configured LLM provider (E)")
     lsub.set_defaults(func=cmd_check_llm)
+
+    psub = sub.add_parser("check-providers",
+                          help="Test all configured LLM/TTS/audio providers + capabilities (L)")
+    psub.set_defaults(func=cmd_check_providers)
     return p
 
 

@@ -31,15 +31,29 @@ def _persist(store):
     st.session_state.prov_store = store
 
 
+def _m(v):
+    return "✓" if v is True else "✗" if v is False else "?"
+
+
 def _caps_summary(p: dict) -> str:
     c = p.get("capabilities") or {}
     if not c:
         return "not detected"
-    def m(v):
-        return "✓" if v is True else "✗" if v is False else "?"
+    if p.get("category") in ("llm", "vision"):
+        # LLM/vision: no SSML/emotion/clone (TTS concepts).
+        vis = c.get("multimodal")
+        parts = [f"reachable {_m(c.get('reachable'))}",
+                 f"responds {_m(c.get('model_responds'))}",
+                 f"vision {_m(vis if vis in (True, False) else None)}",
+                 f"shape {c.get('api_shape', '?')}"]
+        if c.get("context_length"):
+            parts.append(f"ctx {c['context_length']}")
+        if c.get("status_code"):
+            parts.append(f"HTTP {c['status_code']}")
+        return " · ".join(parts)
     langs = c.get("languages") or []
-    return (f"SSML {m(c.get('ssml'))} · emotion {m(c.get('emotion'))} · "
-            f"clone {m(c.get('cloning'))}"
+    return (f"SSML {_m(c.get('ssml'))} · emotion {_m(c.get('emotion'))} · "
+            f"clone {_m(c.get('cloning'))}"
             + (f" · langs {','.join(langs[:6])}" if langs else ""))
 
 
@@ -107,12 +121,19 @@ def _render_card(store, p, idx, count):
         # detected capabilities detail
         caps = p.get("capabilities") or {}
         if caps:
-            st.markdown("**Detected:** " + _caps_summary(p)
-                        + (f"  ·  emotion params: `{', '.join(caps.get('emotion_params', []))}`"
-                           if caps.get("emotion_params") else "")
-                        + f"  ·  API shape: `{p.get('api_shape','unknown')}`")
+            extra = ""
+            if p["category"] == "tts" and caps.get("emotion_params"):
+                extra = f"  ·  emotion params: `{', '.join(caps['emotion_params'])}`"
+            st.markdown("**Detected:** " + _caps_summary(p) + extra)
             for note in caps.get("notes", []):
                 st.caption("• " + note)
+            # Raw probe request/response (redacted) — makes failures diagnosable.
+            if caps.get("request_excerpt") or caps.get("response_excerpt"):
+                with st.expander("Raw probe request / response (keys redacted)"):
+                    if caps.get("request_excerpt"):
+                        st.code(caps["request_excerpt"])
+                    if caps.get("response_excerpt"):
+                        st.code(caps["response_excerpt"])
 
         b = st.columns(6)
         if b[0].button("💾 Save", key=f"sv_{pid}"):

@@ -13,7 +13,14 @@ Never raises — every probe is best-effort and returns a structured result.
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
+
+from .base import redact
+
+# 1x1 PNG (red dot) as a data URL — used to probe multimodal/vision support.
+_TEST_IMAGE = ("data:image/png;base64,"
+               "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 
 # Known-vendor signatures keyed on a substring of the base URL or provider name.
 # emotion_params lists the exact request fields that carry style/emotion.
@@ -132,14 +139,10 @@ def detect(category: str, base_url: str, api_key: str, model: str = "") -> dict:
             result["api_shape"] = "openai"
         return result
 
-    if category == "llm":
-        # Try OpenAI chat shape, then Anthropic messages shape.
-        shape, ok = _probe_llm(base_url, api_key, model)
-        result["api_shape"] = shape
-        result["reachable"] = ok
-        result["models"] = _probe_models(base_url, api_key)
-        result["notes"].append(f"LLM probe: shape={shape}, reachable={ok}")
-        return result
+    if category in ("llm", "vision"):
+        # Real chat-completion probe with full diagnostics (no SSML/emotion flags —
+        # those are TTS concepts and only confuse for LLM providers).
+        return probe_llm(base_url, api_key, model)
 
     # vision / audio_library: reachability only
     result["reachable"] = bool(_get(base_url.rstrip("/") + "/models", api_key)
@@ -148,35 +151,131 @@ def detect(category: str, base_url: str, api_key: str, model: str = "") -> dict:
     return result
 
 
-def _probe_llm(base_url: str, api_key: str, model: str) -> tuple[str, bool]:
-    base = base_url.rstrip("/")
-    payload = json.dumps({"model": model or "gpt-4o-mini",
-                          "messages": [{"role": "user", "content": "ping"}],
-                          "max_tokens": 5}).encode()
-    for ep, shape, hdr in (
-        ("/chat/completions", "openai", {"Authorization": f"Bearer {api_key}"}),
-        ("/v1/chat/completions", "openai", {"Authorization": f"Bearer {api_key}"}),
-    ):
-        try:
-            req = urllib.request.Request(base + ep, data=payload,
-                                         headers={**hdr, "content-type": "application/json"},
-                                         method="POST")
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                if resp.status < 400:
-                    return shape, True
-        except Exception:  # noqa: BLE001
-            continue
-    # Anthropic messages
+def _post_json(url: str, headers: dict, payload: dict, api_key: str,
+               timeout: int = 60) -> dict:
+    """POST JSON and ALWAYS return {status, body, error} — never raise.
+
+    Captures the real HTTP status and response body even on error so the UI can
+    show why a probe failed ("unknown/False" is undiagnosable). Key redacted.
+    """
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, headers={**headers, "content-type": "application/json"},
+        method="POST")
     try:
-        ap = json.dumps({"model": model or "claude-3-5-haiku", "max_tokens": 5,
-                         "messages": [{"role": "user", "content": "ping"}]}).encode()
-        req = urllib.request.Request(base + "/v1/messages", data=ap,
-                                     headers={"x-api-key": api_key,
-                                              "anthropic-version": "2023-06-01",
-                                              "content-type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            if resp.status < 400:
-                return "anthropic", True
-    except Exception:  # noqa: BLE001
-        pass
-    return "unknown", False
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", "replace")
+            return {"status": getattr(resp, "status", 200), "body": redact(body, api_key), "error": None}
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            body = ""
+        return {"status": e.code, "body": redact(body, api_key), "error": None}
+    except urllib.error.URLError as e:
+        return {"status": None, "body": "", "error": f"network: {e.reason}"}
+    except Exception as e:  # noqa: BLE001 (e.g. socket.timeout)
+        return {"status": None, "body": "", "error": redact(str(e) or type(e).__name__, api_key)}
+
+
+def _has_choices(body: str) -> bool:
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    ch = data.get("choices") if isinstance(data, dict) else None
+    if isinstance(ch, list) and ch:
+        return True
+    # anthropic shape
+    return isinstance(data, dict) and isinstance(data.get("content"), list)
+
+
+def _chat_url(base: str) -> tuple[str, str]:
+    """Return (primary, fallback) chat-completions URLs for a base."""
+    base = base.rstrip("/")
+    if base.endswith("/v1"):
+        return base + "/chat/completions", base + "/v1/chat/completions"
+    return base + "/v1/chat/completions", base + "/chat/completions"
+
+
+def probe_llm(base_url: str, api_key: str, model: str) -> dict:
+    """Real minimal chat completion probe with full diagnostics.
+
+    Returns: reachable, model_responds, api_shape, multimodal, context_length,
+    status_code, request/response excerpts (redacted), notes.
+    """
+    res = {"api_shape": "unknown", "reachable": False, "model_responds": False,
+           "multimodal": "unknown", "context_length": None, "status_code": None,
+           "request_excerpt": "", "response_excerpt": "", "notes": []}
+    if not base_url or not api_key:
+        res["notes"].append("base URL and API key required to probe")
+        return res
+
+    # OpenAI-compatible chat completion (real short prompt, generous timeout for
+    # reasoning models that burn internal tokens before responding).
+    payload = {"model": model or "gpt-4o-mini", "max_tokens": 8, "stream": False,
+               "messages": [{"role": "user", "content": "Reply with the single word OK."}]}
+    primary, fallback = _chat_url(base_url)
+    res["request_excerpt"] = f"POST {primary}\n{json.dumps(payload)}"
+    r = _post_json(primary, {"Authorization": f"Bearer {api_key}"}, payload, api_key)
+    if r["status"] in (404, 405):
+        r = _post_json(fallback, {"Authorization": f"Bearer {api_key}"}, payload, api_key)
+        res["request_excerpt"] = f"POST {fallback}\n{json.dumps(payload)}"
+    res["status_code"] = r["status"]
+    res["response_excerpt"] = (r["body"] or r["error"] or "")[:1000]
+
+    if r["status"] == 200 and _has_choices(r["body"]):
+        res.update({"api_shape": "openai", "reachable": True, "model_responds": True})
+        res["multimodal"] = _probe_multimodal(base_url, api_key, model)
+        res["context_length"] = _context_from_models(base_url, api_key, model)
+        res["notes"].append(f"chat completion OK (200); multimodal={res['multimodal']}")
+        return res
+
+    # Try Anthropic messages shape before giving up.
+    a_payload = {"model": model or "claude-3-5-haiku-latest", "max_tokens": 8,
+                 "messages": [{"role": "user", "content": "Reply with the single word OK."}]}
+    a_url = base_url.rstrip("/") + ("/messages" if base_url.rstrip("/").endswith("/v1")
+                                    else "/v1/messages")
+    ar = _post_json(a_url, {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                    a_payload, api_key)
+    if ar["status"] == 200 and _has_choices(ar["body"]):
+        res.update({"api_shape": "anthropic", "reachable": True, "model_responds": True})
+        res["status_code"] = 200
+        res["response_excerpt"] = ar["body"][:1000]
+        res["notes"].append("anthropic messages OK (200)")
+        return res
+
+    # Not reachable — surface the real reason.
+    if res["status_code"] == 401 or res["status_code"] == 403:
+        res["notes"].append(f"auth failed (HTTP {res['status_code']}) — check the API key")
+    elif r["error"]:
+        res["notes"].append(f"probe error: {r['error']} (reasoning models can be slow — "
+                            f"the probe waits up to 60s)")
+    elif res["status_code"]:
+        res["notes"].append(f"HTTP {res['status_code']} — see raw response")
+    else:
+        res["notes"].append("no response — check base URL / network")
+    return res
+
+
+def _probe_multimodal(base_url: str, api_key: str, model: str) -> bool:
+    payload = {"model": model or "gpt-4o-mini", "max_tokens": 8,
+               "messages": [{"role": "user", "content": [
+                   {"type": "text", "text": "Reply with one word."},
+                   {"type": "image_url", "image_url": {"url": _TEST_IMAGE}}]}]}
+    primary, fallback = _chat_url(base_url)
+    r = _post_json(primary, {"Authorization": f"Bearer {api_key}"}, payload, api_key)
+    if r["status"] in (404, 405):
+        r = _post_json(fallback, {"Authorization": f"Bearer {api_key}"}, payload, api_key)
+    return bool(r["status"] == 200 and _has_choices(r["body"]))
+
+
+def _context_from_models(base_url: str, api_key: str, model: str) -> int | None:
+    data = _get(base_url.rstrip("/") + "/models", api_key)
+    if isinstance(data, dict):
+        for m in (data.get("data") or data.get("models") or []):
+            if isinstance(m, dict) and (m.get("id") == model or m.get("name") == model):
+                for k in ("context_length", "context_window", "max_context_length"):
+                    if isinstance(m.get(k), int):
+                        return m[k]
+    return None

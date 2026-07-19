@@ -79,14 +79,23 @@ See `.env.example`, then run `python cli.py check-providers` to test everything
 
 ```bash
 pip install streamlit
-streamlit run app.py          # opens a dashboard in your browser
+python cli.py ui              # (or: streamlit run app.py) opens the dashboard
 ```
 
-Fill in the form (URL or file upload, ownership, aspect, length, language, dub
-mode, caption template, reframe, logo), click **Run**, watch live per-stage
-progress, then preview each clip inline with its title/description/tags and
-download buttons. It's a thin layer over the same pipeline — the CLI below still
-works identically.
+Two screens (sidebar):
+
+- **New job** — URL or file upload, ownership, aspect, length, language, dub mode,
+  caption template, reframe, logo → **Run** → live per-stage progress → each clip
+  previewed inline with title/description/tags and download buttons.
+- **Settings → API providers** — add your voice / LLM / analysis / audio providers
+  visually (no `.env` editing). For each: **Test & Detect** auto-discovers the API
+  shape, SSML/emotion/cloning support, languages and voices; **Test** runs a real
+  sample call (with an audio player for TTS). Order them for failover, enable/
+  disable, see everything in one table. Keys are saved to a **gitignored** local
+  file (`config/providers.local.json`), masked after saving, never logged. The
+  provider layer reads this store first, falling back to `.env`.
+
+It's a thin layer over the same pipeline — the CLI below still works identically.
 
 ### Command line
 

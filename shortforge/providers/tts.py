@@ -30,20 +30,50 @@ class ProviderError(ShortForgeError):
 # --- concrete providers ----------------------------------------------------- #
 
 class OpenAICompatibleTTSProvider(TTSProvider):
-    def __init__(self, name: str, prefix: str):
+    def __init__(self, name: str, *, base_url: str, api_key: str, model: str,
+                 caps: Capabilities, voices_by_lang: dict[str, str] | None = None,
+                 default_voice: str | None = None):
         self.name = name
-        self._prefix = prefix
-        self.base_url = _env(f"{prefix}_BASE_URL") or "https://api.openai.com/v1"
-        self.api_key = _env(f"{prefix}_API_KEY")
-        self.model = _env(f"{prefix}_MODEL") or "tts-1"
-        self.caps = Capabilities.from_env(prefix)
+        self.base_url = base_url or "https://api.openai.com/v1"
+        self.api_key = api_key
+        self.model = model or "tts-1"
+        self.caps = caps
+        self._voices_by_lang = voices_by_lang or {}
+        self._default_voice = default_voice
+
+    @classmethod
+    def from_env(cls, name: str, prefix: str) -> "OpenAICompatibleTTSProvider":
+        voices = {}
+        for code in ("EN", "DE", "ES", "IT", "FR", "JA", "PT", "AR"):
+            v = _env(f"{prefix}_VOICE_{code}")
+            if v:
+                voices[code.lower()] = v
+        return cls(name, base_url=_env(f"{prefix}_BASE_URL"), api_key=_env(f"{prefix}_API_KEY"),
+                   model=_env(f"{prefix}_MODEL"), caps=Capabilities.from_env(prefix),
+                   voices_by_lang=voices, default_voice=_env(f"{prefix}_VOICE") or None)
+
+    @classmethod
+    def from_config(cls, cfg: dict) -> "OpenAICompatibleTTSProvider":
+        caps_d = cfg.get("capabilities") or {}
+        langs = caps_d.get("languages")
+        caps = Capabilities(
+            languages=set(langs) if isinstance(langs, list) and langs else None,
+            ssml=caps_d.get("ssml") is True,
+            emotion=caps_d.get("emotion") is True,
+            cloning=caps_d.get("cloning") is True,
+            max_chars=int(caps_d.get("max_chars", 4000)),
+            cost_per_1k_chars=float(caps_d.get("cost_per_1k_chars", 0.0)),
+        )
+        return cls(cfg.get("name", "provider"), base_url=cfg.get("base_url", ""),
+                   api_key=cfg.get("api_key", ""), model=cfg.get("model", ""),
+                   caps=caps, default_voice=cfg.get("voice") or None)
 
     def available(self) -> bool:
         return bool(self.api_key)
 
     def voice_for(self, language: str) -> str | None:
-        lang = (language or "en").split("-")[0].upper()
-        return _env(f"{self._prefix}_VOICE_{lang}") or _env(f"{self._prefix}_VOICE") or None
+        lang = (language or "en").split("-")[0].lower()
+        return self._voices_by_lang.get(lang) or self._default_voice
 
     def synthesize(self, text, *, language, out_path, voice=None, ssml=False, style=None):
         voice = voice or self.voice_for(language)
@@ -205,15 +235,27 @@ class TTSRouter:
 
 
 def build_tts_router(cache_dir: str | None = None) -> TTSRouter:
-    """Construct the router from ``TTS_PROVIDERS`` (priority-ordered names)."""
-    order = [n.strip() for n in _env("TTS_PROVIDERS", "edge").split(",") if n.strip()]
+    """Construct the router from the UI store if present, else from env.
+
+    Store (settings UI) is the source of truth; env is the headless/CI fallback.
+    """
+    from .store import load_store, providers_in
+    store = load_store()
+    configured = providers_in(store, "tts", enabled_only=True)
     providers: list[TTSProvider] = []
-    for name in order:
-        if name.lower() == "edge":
-            providers.append(EdgeTTSProvider("edge"))
-        else:
-            prefix = "TTS_" + name.upper()
-            providers.append(OpenAICompatibleTTSProvider(name, prefix))
+    if configured:
+        for cfg in configured:
+            if (cfg.get("name", "").lower() == "edge") or cfg.get("api_shape") == "edge":
+                providers.append(EdgeTTSProvider(cfg.get("name", "edge")))
+            else:
+                providers.append(OpenAICompatibleTTSProvider.from_config(cfg))
+    else:
+        order = [n.strip() for n in _env("TTS_PROVIDERS", "edge").split(",") if n.strip()]
+        for name in order:
+            if name.lower() == "edge":
+                providers.append(EdgeTTSProvider("edge"))
+            else:
+                providers.append(OpenAICompatibleTTSProvider.from_env(name, "TTS_" + name.upper()))
     if not providers:
         providers.append(EdgeTTSProvider("edge"))
     return TTSRouter(providers, cache_dir=cache_dir)

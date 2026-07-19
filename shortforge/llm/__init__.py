@@ -55,8 +55,31 @@ def redact(text: str) -> str:
     return _redact(text, resolve().api_key)
 
 
+def _from_store() -> "LLMConfig | None":
+    """Prefer an enabled LLM provider configured through the settings UI."""
+    try:
+        from ..providers.store import load_store, providers_in
+        configured = providers_in(load_store(), "llm", enabled_only=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if not configured:
+        return None
+    p = configured[0]
+    if not p.get("api_key"):
+        return None
+    shape = p.get("api_shape")
+    provider = "anthropic" if shape == "anthropic" else "openai"
+    return LLMConfig(provider, p.get("api_key", ""),
+                     p.get("model") or (_DEFAULT_ANTHROPIC_MODEL if provider == "anthropic"
+                                        else _DEFAULT_OPENAI_MODEL),
+                     p.get("base_url") or None)
+
+
 def resolve() -> LLMConfig:
-    """Resolve provider config from the environment (with back-compat)."""
+    """Resolve provider config: settings-UI store first, then environment."""
+    from_store = _from_store()
+    if from_store is not None:
+        return from_store
     provider = (os.environ.get("LLM_PROVIDER") or "").strip().lower()
     key = os.environ.get("LLM_API_KEY", "")
     model = os.environ.get("LLM_MODEL", "")

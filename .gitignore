@@ -1,5 +1,8 @@
 # Secrets — API keys live here, never in git (copy .env.example -> .env)
 .env
+# Provider config written by the settings UI (contains API keys)
+config/providers.local.json
+*.local.json
 
 # Python
 __pycache__/

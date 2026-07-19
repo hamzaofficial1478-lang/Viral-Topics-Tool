@@ -87,6 +87,16 @@ def main() -> None:
     load_env_file(".env")
 
     st.title("🎬 ShortForge")
+
+    with st.sidebar:
+        screen = st.radio("Screen", ["New job", "Settings"], index=0)
+        st.divider()
+
+    if screen == "Settings":
+        from shortforge.ui.settings import render as render_settings
+        render_settings()
+        return
+
     st.caption("Turn your own long-form videos into short vertical clips — captions, "
                "optional dub, SEO titles/tags. Your machine, your content.")
 

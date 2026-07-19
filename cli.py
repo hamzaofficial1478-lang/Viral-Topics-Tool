@@ -292,6 +292,18 @@ def cmd_check_llm(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_ui(args: argparse.Namespace) -> int:
+    """Launch the Streamlit dashboard (job + settings screens)."""
+    import subprocess
+    import shutil
+    app = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
+    if shutil.which("streamlit") is None:
+        log.error("Streamlit is not installed. Run: pip install streamlit")
+        return 1
+    log.info("launching ShortForge UI (Ctrl+C to stop) …")
+    return subprocess.call(["streamlit", "run", app])
+
+
 def cmd_check_providers(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     load_env_file(getattr(args, "env_file", None) or ".env")
@@ -488,6 +500,9 @@ def build_parser() -> argparse.ArgumentParser:
     psub = sub.add_parser("check-providers",
                           help="Test all configured LLM/TTS/audio providers + capabilities (L)")
     psub.set_defaults(func=cmd_check_providers)
+
+    usub = sub.add_parser("ui", help="Launch the web dashboard (job + settings screens)")
+    usub.set_defaults(func=cmd_ui)
     return p
 
 

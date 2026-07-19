@@ -16,6 +16,12 @@ def _clear(mp):
             mp.delenv(k, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_store(tmp_path, monkeypatch):
+    # Isolate from any real UI store so env-based construction is exercised.
+    monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(tmp_path / "none.json"))
+
+
 # --- Capabilities ----------------------------------------------------------- #
 
 def test_capabilities_from_env(monkeypatch):

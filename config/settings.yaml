@@ -12,10 +12,13 @@ ingest:
   cookies: null
 
 transcribe:
-  model: base                    # tiny | base | small | medium | large-v3
+  # 'base' garbles hard sources; 'small' is the sane CPU default. 'medium'/'large-v3'
+  # are more accurate but much slower on CPU.
+  model: small                   # tiny | base | small | medium | large-v3
   device: auto                   # auto | cpu | cuda
   compute_type: auto             # auto | int8 | int8_float16 | float16 | float32
-  language: null                 # null = autodetect; else ISO code e.g. "en"
+  language: null                 # null = autodetect; else ISO code e.g. "fr" (forces source language)
+  min_confidence: 0.0            # >0 drops low-confidence segments from clip selection (STEP 3.5)
 
 detect:
   backend: auto                  # auto | llm | heuristic

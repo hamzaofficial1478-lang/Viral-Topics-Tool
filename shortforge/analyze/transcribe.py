@@ -90,21 +90,36 @@ def transcribe(meta, cfg: Config, cache: Cache) -> Transcript:
         vad_filter=True,
     )
 
+    import math
+
+    min_conf = float(cfg.get("transcribe.min_confidence", 0.0) or 0.0)
     segments: list[Segment] = []
+    low_conf = 0
     for s in seg_iter:
         words = [
             Word(start=float(w.start), end=float(w.end), text=w.word.strip())
             for w in (s.words or [])
             if w.word and w.word.strip()
         ]
+        # STEP 3.5: per-segment confidence from Whisper's avg_logprob, damped by
+        # the no-speech probability. exp(logprob) ~ a 0..1 probability.
+        alp = getattr(s, "avg_logprob", None)
+        nsp = float(getattr(s, "no_speech_prob", 0.0) or 0.0)
+        conf = None
+        if alp is not None:
+            conf = max(0.0, min(1.0, math.exp(float(alp)))) * (1.0 - min(1.0, nsp))
+            conf = round(conf, 3)
         seg = Segment(
             start=float(s.start),
             end=float(s.end),
             text=s.text.strip(),
             words=words,
+            confidence=conf,
         )
         if seg.text:
             segments.append(seg)
+            if conf is not None and conf < max(min_conf, 0.35):
+                low_conf += 1
 
     transcript = Transcript(
         language=info.language or (language or "en"),
@@ -113,11 +128,13 @@ def transcribe(meta, cfg: Config, cache: Cache) -> Transcript:
     )
     cache.save_json(_CACHE_NAME, transcript.to_dict())
     log.info(
-        "transcript: %d segments, %d words, lang=%s",
-        len(segments),
-        len(transcript.words()),
-        transcript.language,
+        "transcript: %d segments, %d words, lang=%s (model=%s)",
+        len(segments), len(transcript.words()), transcript.language, model_size,
     )
+    if low_conf:
+        log.warning("%d/%d segments look low-confidence — a garbled transcript "
+                    "produces bad clips/translations. Consider --whisper-model small|medium "
+                    "or a source-language hint (--source-lang).", low_conf, len(segments))
     return transcript
 
 

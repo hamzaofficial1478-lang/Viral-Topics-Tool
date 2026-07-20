@@ -100,7 +100,38 @@ def _probe_models(base_url: str, api_key: str):
     if isinstance(data, dict):
         items = data.get("data") or data.get("models") or []
         return [str(m.get("id") or m.get("name")) for m in items if isinstance(m, dict)][:200]
+    if isinstance(data, list):
+        return [str(m.get("model_id") or m.get("id") or m.get("name"))
+                for m in data if isinstance(m, dict)][:200]
     return []
+
+
+def _probe_model_languages(base_url: str, api_key: str) -> dict:
+    """Return {model_id: [lang_codes]} from a /models endpoint (STEP 3).
+
+    ElevenLabs' /v1/models returns each model's ``languages`` list, so we can
+    report exactly which languages a chosen model supports.
+    """
+    base = base_url.rstrip("/")
+    data = _get(base + "/v1/models", api_key) or _get(base + "/models", api_key)
+    items = data if isinstance(data, list) else (
+        (data.get("data") or data.get("models") or []) if isinstance(data, dict) else [])
+    out: dict[str, list[str]] = {}
+    for m in items:
+        if not isinstance(m, dict):
+            continue
+        mid = m.get("model_id") or m.get("id") or m.get("name")
+        codes = []
+        for l in (m.get("languages") or []):
+            if isinstance(l, dict):
+                c = l.get("language_id") or l.get("code") or l.get("id")
+                if c:
+                    codes.append(str(c).split("-")[0].lower())
+            elif isinstance(l, str):
+                codes.append(l.split("-")[0].lower())
+        if mid and codes:
+            out[str(mid)] = sorted(set(codes))
+    return out
 
 
 def detect(category: str, base_url: str, api_key: str, model: str = "") -> dict:
@@ -126,6 +157,22 @@ def detect(category: str, base_url: str, api_key: str, model: str = "") -> dict:
         if models:
             result["reachable"] = True
             result["models"] = models
+        # STEP 3: language coverage is a MODEL property (e.g. ElevenLabs
+        # multilingual). Read per-model languages and make the configured model's
+        # list authoritative, so coverage is accurate and validatable.
+        model_langs = _probe_model_languages(base_url, api_key)
+        if model_langs:
+            result["reachable"] = True
+            result["model_languages"] = model_langs
+            if model and model in model_langs:
+                result["languages"] = model_langs[model]
+                result["notes"].append(
+                    f"model '{model}' supports {len(model_langs[model])} language(s): "
+                    f"{', '.join(model_langs[model][:12])}")
+            elif model:
+                result["notes"].append(
+                    f"configured model '{model}' not found in the models list; "
+                    f"languages inferred from voices only")
         if sig:
             result.update({
                 "api_shape": sig["shape"], "ssml": sig["ssml"],

@@ -150,10 +150,22 @@ def _hardware() -> Check:
                  "realtime; voice-clone/lip-sync are impractical without a GPU.")
 
 
+def _whisper_model(cfg: Config) -> Check:
+    model = str(cfg.get("transcribe.model", "small"))
+    if model in ("tiny", "base"):
+        return Check("transcription model", WARN,
+                     f"'{model}' — low accuracy; garbles hard/accented speech, which "
+                     f"breaks translation and clip selection downstream",
+                     "Use 'small' (good CPU balance) or 'medium' (slower, more accurate): "
+                     "--whisper-model small. Force the source language with --source-lang.")
+    return Check("transcription model", OK,
+                 f"'{model}'" + (" (medium/large are slow on CPU)" if model.startswith(("medium", "large")) else ""))
+
+
 def run_checks(cfg: Config) -> list[Check]:
     return [
-        _ffmpeg(), _python(), _ctranslate2(), _ytdlp(), _translation(),
-        _tts(), _demucs(), _disk(cfg), _hardware(),
+        _ffmpeg(), _python(), _ctranslate2(), _whisper_model(cfg), _ytdlp(),
+        _translation(), _tts(), _demucs(), _disk(cfg), _hardware(),
     ]
 
 

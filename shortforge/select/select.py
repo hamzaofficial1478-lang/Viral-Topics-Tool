@@ -98,6 +98,9 @@ def build_clips(
         reverse=True,
     )
 
+    # STEP 3.5: don't anchor clips on low-confidence (likely garbled) segments.
+    min_conf = float(cfg.get("transcribe.min_confidence", 0.0) or 0.0)
+
     used: set[int] = set()
     chosen: list[tuple[int, int, Candidate]] = []  # (lo, hi, anchor candidate)
 
@@ -106,6 +109,10 @@ def build_clips(
             break
         if anchor in used:
             continue
+        if min_conf > 0:
+            c = getattr(segments[anchor], "confidence", None)
+            if c is not None and c < min_conf:
+                continue
         if coherent:
             lo, hi = _grow_coherent(
                 anchor, segments, gaps, used, lower, upper, target, pause_thr

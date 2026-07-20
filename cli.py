@@ -30,6 +30,8 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("reframe.aspect", getattr(args, "aspect", None))
     cfg.override("reframe.fill", getattr(args, "fill", None))
     cfg.override("transcribe.model", getattr(args, "whisper_model", None))
+    cfg.override("transcribe.language", getattr(args, "source_lang", None))
+    cfg.override("transcribe.min_confidence", getattr(args, "min_confidence", None))
     cfg.override("paths.work_dir", getattr(args, "work_dir", None))
     cfg.override("paths.output_dir", getattr(args, "output", None))
     cfg.override("ingest.cookies", getattr(args, "cookies", None))
@@ -705,7 +707,11 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
                    help="Skip the per-video title/description/tags .txt file")
     r.add_argument("--resume", action="store_true",
                    help="Skip clips whose output file already exists")
-    r.add_argument("--whisper-model", help="tiny|base|small|medium|large-v3")
+    r.add_argument("--whisper-model", help="tiny|base|small|medium|large-v3 (default small)")
+    r.add_argument("--source-lang",
+                   help="Force the source language (ISO code, e.g. fr) instead of autodetect")
+    r.add_argument("--min-confidence", type=float,
+                   help="Drop transcript segments below this ASR confidence (0..1)")
     r.add_argument("--cookies", help="Path to cookies.txt for private/unlisted "
                    "videos on your own channel (M1 auth)")
     r.add_argument("--transcript", help="Use a supplied .srt/.json instead of ASR")

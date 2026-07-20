@@ -117,6 +117,13 @@ def main() -> None:
             aspect = st.selectbox("Aspect", ["9:16", "1:1", "16:9"], 0)
             duration = st.slider("Target clip length (s)", 15, 90, 45, 5)
             num = st.number_input("Number of clips (0 = recommend)", 0, 20, 0)
+            whisper_model = st.selectbox(
+                "Transcription accuracy", ["small", "base", "medium", "large-v3"], 0,
+                help="'small' is the balanced CPU default; 'base' is faster but garbles "
+                     "hard speech; 'medium'/'large' are more accurate but slow on CPU.")
+            source_lang = st.text_input(
+                "Source language hint (blank = autodetect)", "",
+                help="Force the spoken language (ISO code, e.g. fr) if autodetect misreads it.")
         with c2:
             language = st.text_input("Output language (blank = keep source)", "")
             dub_mode = st.selectbox(
@@ -152,6 +159,9 @@ def main() -> None:
         cfg.override("captions.animation", animation)
     cfg.override("reframe.mode", "center" if reframe.startswith("center") else "track")
     cfg.override("edit.jumpcuts", bool(jumpcuts))
+    cfg.override("transcribe.model", whisper_model)
+    if source_lang.strip():
+        cfg.override("transcribe.language", source_lang.strip())
     cfg.override("localize.language", language.strip() or None)
     if language.strip() and not dub_mode.startswith("captions"):
         cfg.override("localize.dub", True)

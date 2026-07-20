@@ -130,6 +130,17 @@ def _render_card(store, p, idx, count):
             if p["category"] == "tts" and caps.get("emotion_params"):
                 extra = f"  ·  emotion params: `{', '.join(caps['emotion_params'])}`"
             st.markdown("**Detected:** " + _caps_summary(p) + extra)
+            # STEP 3: TTS language coverage (a MODEL property).
+            if p["category"] == "tts":
+                langs = caps.get("languages") or []
+                if langs:
+                    st.markdown(f"**Languages ({p.get('model') or 'this model'}):** "
+                                + ", ".join(langs))
+                ml = caps.get("model_languages") or {}
+                if ml:
+                    with st.expander("Language coverage per model"):
+                        for mid, ls in sorted(ml.items()):
+                            st.markdown(f"- **{mid}**: {', '.join(ls)}")
             for note in caps.get("notes", []):
                 st.caption("• " + note)
             # Raw probe request/response (redacted) — makes failures diagnosable.

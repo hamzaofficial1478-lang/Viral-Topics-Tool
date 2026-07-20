@@ -34,18 +34,22 @@ class Segment:
     end: float
     text: str
     words: list[Word] = field(default_factory=list)
+    confidence: float | None = None   # 0..1 ASR confidence (None = unknown)
 
     @property
     def duration(self) -> float:
         return max(0.0, self.end - self.start)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "start": self.start,
             "end": self.end,
             "text": self.text,
             "words": [w.to_dict() for w in self.words],
         }
+        if self.confidence is not None:
+            d["confidence"] = round(self.confidence, 3)
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Segment":
@@ -54,6 +58,7 @@ class Segment:
             end=d["end"],
             text=d["text"],
             words=[Word.from_dict(w) for w in d.get("words", [])],
+            confidence=d.get("confidence"),
         )
 
 

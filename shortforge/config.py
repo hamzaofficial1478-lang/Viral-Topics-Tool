@@ -21,10 +21,11 @@ DEFAULTS: dict[str, Any] = {
         "cookies": None,
     },
     "transcribe": {
-        "model": "base",
+        "model": "small",           # tiny|base|small|medium|large-v3 ('base' garbles; 'small' is the sane CPU default)
         "device": "auto",
         "compute_type": "auto",
-        "language": None,
+        "language": None,           # None = autodetect; ISO code forces the source language
+        "min_confidence": 0.0,      # >0 excludes low-confidence segments from clip selection
     },
     "detect": {
         "backend": "auto",

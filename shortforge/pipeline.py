@@ -289,6 +289,16 @@ def run_pipeline(
     log.info("reframe mode: %s%s", "track" if use_track else "center",
              " + logo" if logo else "")
 
+    # --- STEP 3: fail loud if no voice provider covers the dub language ----- #
+    if dub_on:
+        from .providers import dub_language_check
+        from .providers.store import load_store
+        ok_lang, lang_msg = dub_language_check(load_store(), clip_lang)
+        if not ok_lang:
+            raise ShortForgeError(
+                lang_msg + " (Requesting a dub in an unsupported language is refused "
+                "rather than synthesized in the wrong language or a flat fallback.)")
+
     # --- STEP 1: cost pre-flight (before any paid synthesis) ---------------- #
     from .cost import estimate_tts
     from .providers import build_tts_router

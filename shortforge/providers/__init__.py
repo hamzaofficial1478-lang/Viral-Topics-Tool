@@ -24,8 +24,44 @@ __all__ = [
     "TTSRouter", "ProviderError", "EdgeTTSProvider", "OpenAICompatibleTTSProvider",
     "build_llm_provider", "build_tts_router", "build_audio_library",
     "check_providers", "detect_mod", "store_mod",
-    "test_tts_provider", "capability_warnings",
+    "test_tts_provider", "capability_warnings", "dub_language_check",
 ]
+
+
+def dub_language_check(store: dict, language: str) -> tuple[bool, str]:
+    """STEP 3: does an enabled TTS provider support the dub target language?
+
+    Returns (ok, message). ok=False means fail-loud (no configured voice provider
+    can speak this language with its configured model). If no TTS providers are
+    configured at all, returns ok=True (the offline engine handles it).
+    """
+    from .store import providers_in
+    lang = (language or "").split("-")[0].lower()
+    tts = providers_in(store, "tts", enabled_only=True)
+    if not tts or not lang:
+        return True, ""
+    for p in tts:
+        caps = p.get("capabilities") or {}
+        langs = caps.get("languages")
+        # None/empty = unknown coverage → permissive (can't prove unsupported).
+        if not langs or lang in [str(x).split("-")[0].lower() for x in langs]:
+            return True, ""
+    # None supports it — suggest a model (from model_languages) that does.
+    suggestion = ""
+    for p in tts:
+        ml = (p.get("capabilities") or {}).get("model_languages") or {}
+        for mid, mlangs in ml.items():
+            if lang in mlangs:
+                suggestion = f" Provider '{p['name']}' model '{mid}' supports it — set that model."
+                break
+        if suggestion:
+            break
+    names = ", ".join(p.get("name", "?") for p in tts)
+    if not suggestion:
+        suggestion = (" Use a multilingual model (e.g. eleven_multilingual_v2 on "
+                      "ElevenLabs) or add a provider that supports this language.")
+    return False, (f"No configured voice provider ({names}) supports dub language "
+                   f"'{language}' with its current model.{suggestion}")
 
 
 def test_tts_provider(cfg: dict, out_path: str) -> dict:

@@ -22,11 +22,72 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
 from ..utils import log
+
+
+# --- shared OpenAI-compatible client (used by BOTH production calls and the
+#     capability probe, so URL/model handling can never drift) --------------- #
+
+def normalize_chat_url(base_url: str) -> str:
+    """Canonical ``/chat/completions`` URL for an OpenAI-compatible base.
+
+    Handles a trailing slash and a base that already ends in a version segment
+    so we never double it:
+      https://host.com/v1        -> https://host.com/v1/chat/completions
+      https://host.com/v1/       -> https://host.com/v1/chat/completions
+      https://host.com           -> https://host.com/v1/chat/completions
+      https://gw.vercel.sh/v1    -> https://gw.vercel.sh/v1/chat/completions
+    """
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        base = "https://api.openai.com/v1"
+    if re.search(r"/v\d+$", base):      # already versioned (…/v1, /v2, …)
+        return base + "/chat/completions"
+    return base + "/v1/chat/completions"
+
+
+def openai_chat_raw(base_url: str, api_key: str, model: str, messages: list, *,
+                    max_tokens: int = 512, timeout: int = 60,
+                    extra: dict | None = None) -> dict:
+    """Low-level OpenAI-compatible chat call shared by production + probe.
+
+    Always returns {status, body, error, url, model}. Never raises. Requires a
+    model — no silent default (a wrong/absent model is a common 404 cause).
+    """
+    if not model:
+        return {"status": None, "body": "", "error": "no model configured for this provider",
+                "url": normalize_chat_url(base_url), "model": ""}
+    url = normalize_chat_url(base_url)
+    payload = {"model": model, "messages": messages, "max_tokens": max_tokens, "stream": False}
+    if extra:
+        payload.update(extra)
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data,
+        headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return {"status": getattr(resp, "status", 200),
+                    "body": resp.read().decode("utf-8", "replace"),
+                    "error": None, "url": url, "model": model}
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            body = ""
+        return {"status": e.code, "body": body, "error": None, "url": url, "model": model}
+    except urllib.error.URLError as e:
+        return {"status": None, "body": "", "error": f"network: {e.reason}", "url": url, "model": model}
+    except Exception as e:  # noqa: BLE001 (socket.timeout, etc.)
+        return {"status": None, "body": "", "error": str(e) or type(e).__name__,
+                "url": url, "model": model}
 
 _DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
 _DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
@@ -164,10 +225,15 @@ def _http_post(url: str, headers: dict, payload: dict, timeout: int = 60) -> dic
         return json.loads(resp.read().decode("utf-8"))
 
 
+def anthropic_messages_url(base_url: str) -> str:
+    """Canonical ``/messages`` URL, version-aware (no doubled /v1)."""
+    base = (base_url or "https://api.anthropic.com").strip().rstrip("/")
+    return base + "/messages" if re.search(r"/v\d+$", base) else base + "/v1/messages"
+
+
 def _anthropic_json_http(c: LLMConfig, prompt: str, schema: dict,
                          system: str | None, max_tokens: int) -> str:
-    base = (c.base_url or "https://api.anthropic.com").rstrip("/")
-    url = base + "/v1/messages"
+    url = anthropic_messages_url(c.base_url)
     headers = {
         "x-api-key": c.api_key, "anthropic-version": "2023-06-01",
         "content-type": "application/json",
@@ -187,20 +253,20 @@ def _anthropic_json_http(c: LLMConfig, prompt: str, schema: dict,
 
 def _openai_json(c: LLMConfig, prompt: str, schema: dict,
                  system: str | None, max_tokens: int) -> str:
-    base = (c.base_url or "https://api.openai.com/v1").rstrip("/")
-    url = base + "/chat/completions"
-    headers = {"Authorization": f"Bearer {c.api_key}", "content-type": "application/json"}
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt +
                      "\n\nReturn ONLY valid JSON matching this schema:\n"
                      + json.dumps(schema)})
-    payload = {
-        "model": c.model, "max_tokens": max_tokens, "messages": messages,
-        "response_format": {"type": "json_object"},
-    }
-    data = _http_post(url, headers, payload)
+    # Same shared client path the probe uses — URL/model handling can't drift.
+    r = openai_chat_raw(c.base_url, c.api_key, c.model, messages,
+                        max_tokens=max_tokens, extra={"response_format": {"type": "json_object"}})
+    if r["error"]:
+        raise LLMError(r["error"])
+    if r["status"] != 200:
+        raise LLMError(f"HTTP {r['status']}: {r['body'][:200]}")
+    data = json.loads(r["body"])
     return data["choices"][0]["message"]["content"]
 
 

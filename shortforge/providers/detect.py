@@ -190,39 +190,35 @@ def _has_choices(body: str) -> bool:
     return isinstance(data, dict) and isinstance(data.get("content"), list)
 
 
-def _chat_url(base: str) -> tuple[str, str]:
-    """Return (primary, fallback) chat-completions URLs for a base."""
-    base = base.rstrip("/")
-    if base.endswith("/v1"):
-        return base + "/chat/completions", base + "/v1/chat/completions"
-    return base + "/v1/chat/completions", base + "/chat/completions"
-
-
 def probe_llm(base_url: str, api_key: str, model: str) -> dict:
     """Real minimal chat completion probe with full diagnostics.
 
-    Returns: reachable, model_responds, api_shape, multimodal, context_length,
-    status_code, request/response excerpts (redacted), notes.
+    Uses the SAME shared client (``llm.openai_chat_raw``) as production, so URL
+    and model handling can never drift. Returns: reachable, model_responds,
+    api_shape, multimodal, context_length, status_code, request/response
+    excerpts (redacted), notes.
     """
+    from ..llm import openai_chat_raw, anthropic_messages_url, normalize_chat_url
+
     res = {"api_shape": "unknown", "reachable": False, "model_responds": False,
            "multimodal": "unknown", "context_length": None, "status_code": None,
            "request_excerpt": "", "response_excerpt": "", "notes": []}
     if not base_url or not api_key:
         res["notes"].append("base URL and API key required to probe")
         return res
+    if not model:
+        # No silent default — a wrong/absent model is a common 404 cause.
+        res["request_excerpt"] = f"POST {normalize_chat_url(base_url)}\n(no model set)"
+        res["notes"].append("no model configured for this provider — set the model ID "
+                            "(e.g. minimaxai/minimax-m3) before testing")
+        return res
 
-    # OpenAI-compatible chat completion (real short prompt, generous timeout for
-    # reasoning models that burn internal tokens before responding).
-    payload = {"model": model or "gpt-4o-mini", "max_tokens": 8, "stream": False,
-               "messages": [{"role": "user", "content": "Reply with the single word OK."}]}
-    primary, fallback = _chat_url(base_url)
-    res["request_excerpt"] = f"POST {primary}\n{json.dumps(payload)}"
-    r = _post_json(primary, {"Authorization": f"Bearer {api_key}"}, payload, api_key)
-    if r["status"] in (404, 405):
-        r = _post_json(fallback, {"Authorization": f"Bearer {api_key}"}, payload, api_key)
-        res["request_excerpt"] = f"POST {fallback}\n{json.dumps(payload)}"
+    msgs = [{"role": "user", "content": "Reply with the single word OK."}]
+    r = openai_chat_raw(base_url, api_key, model, msgs, max_tokens=8)
+    res["request_excerpt"] = f"POST {r['url']}\n" + json.dumps(
+        {"model": model, "max_tokens": 8, "messages": msgs})
     res["status_code"] = r["status"]
-    res["response_excerpt"] = (r["body"] or r["error"] or "")[:1000]
+    res["response_excerpt"] = redact(r["body"] or r["error"] or "", api_key)[:1000]
 
     if r["status"] == 200 and _has_choices(r["body"]):
         res.update({"api_shape": "openai", "reachable": True, "model_responds": True})
@@ -231,26 +227,27 @@ def probe_llm(base_url: str, api_key: str, model: str) -> dict:
         res["notes"].append(f"chat completion OK (200); multimodal={res['multimodal']}")
         return res
 
-    # Try Anthropic messages shape before giving up.
-    a_payload = {"model": model or "claude-3-5-haiku-latest", "max_tokens": 8,
-                 "messages": [{"role": "user", "content": "Reply with the single word OK."}]}
-    a_url = base_url.rstrip("/") + ("/messages" if base_url.rstrip("/").endswith("/v1")
-                                    else "/v1/messages")
-    ar = _post_json(a_url, {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+    # Anthropic messages shape as a fallback (version-aware URL, shared helper).
+    a_payload = {"model": model, "max_tokens": 8, "messages": msgs}
+    ar = _post_json(anthropic_messages_url(base_url),
+                    {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
                     a_payload, api_key)
     if ar["status"] == 200 and _has_choices(ar["body"]):
-        res.update({"api_shape": "anthropic", "reachable": True, "model_responds": True})
-        res["status_code"] = 200
+        res.update({"api_shape": "anthropic", "reachable": True, "model_responds": True,
+                    "status_code": 200})
         res["response_excerpt"] = ar["body"][:1000]
         res["notes"].append("anthropic messages OK (200)")
         return res
 
     # Not reachable — surface the real reason.
-    if res["status_code"] == 401 or res["status_code"] == 403:
+    if res["status_code"] in (401, 403):
         res["notes"].append(f"auth failed (HTTP {res['status_code']}) — check the API key")
     elif r["error"]:
         res["notes"].append(f"probe error: {r['error']} (reasoning models can be slow — "
                             f"the probe waits up to 60s)")
+    elif res["status_code"] == 404:
+        res["notes"].append(f"HTTP 404 at {r['url']} — check the base URL and that the "
+                            f"model '{model}' exists on this provider")
     elif res["status_code"]:
         res["notes"].append(f"HTTP {res['status_code']} — see raw response")
     else:
@@ -259,14 +256,11 @@ def probe_llm(base_url: str, api_key: str, model: str) -> dict:
 
 
 def _probe_multimodal(base_url: str, api_key: str, model: str) -> bool:
-    payload = {"model": model or "gpt-4o-mini", "max_tokens": 8,
-               "messages": [{"role": "user", "content": [
-                   {"type": "text", "text": "Reply with one word."},
-                   {"type": "image_url", "image_url": {"url": _TEST_IMAGE}}]}]}
-    primary, fallback = _chat_url(base_url)
-    r = _post_json(primary, {"Authorization": f"Bearer {api_key}"}, payload, api_key)
-    if r["status"] in (404, 405):
-        r = _post_json(fallback, {"Authorization": f"Bearer {api_key}"}, payload, api_key)
+    from ..llm import openai_chat_raw
+    msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "Reply with one word."},
+        {"type": "image_url", "image_url": {"url": _TEST_IMAGE}}]}]
+    r = openai_chat_raw(base_url, api_key, model, msgs, max_tokens=8)
     return bool(r["status"] == 200 and _has_choices(r["body"]))
 
 

@@ -455,8 +455,20 @@ def cmd_benchmark_llm(args: argparse.Namespace) -> int:
         log.error("%s", e)
         return 2
 
-    from shortforge.benchmark import enabled_llms, render_markdown, run_hooks, run_translate
+    from shortforge.benchmark import (candidate_entries, enabled_llms, render_markdown,
+                                       run_hooks, run_translate)
     providers = enabled_llms(cfg)
+    if getattr(args, "models", None):
+        if not providers:
+            log.error("--models needs one configured LLM provider to borrow the endpoint + key "
+                      "from. Add one in the settings UI (python cli.py ui) first.")
+            return 2
+        providers = candidate_entries(args.models, providers[0])
+        if not providers:
+            log.error("--models was empty. Pass e.g. --models minimaxai/minimax-m3,z-ai/glm-5.2")
+            return 2
+        log.info("candidate models on %s: %s", providers[0].base_url,
+                 ", ".join(p.model for p in providers))
     if not providers:
         log.error("No enabled LLM providers found. Add one in the settings UI (python cli.py ui) "
                   "or configure LLM_* in .env.")
@@ -685,6 +697,10 @@ def build_parser() -> argparse.ArgumentParser:
     bl.add_argument("--segments", type=int, default=5, help="How many segments to compare")
     bl.add_argument("--task", choices=["translate", "hooks", "transcribe"], default="translate",
                     help="translate/hooks compare LLMs; transcribe compares ASR backends (STEP 3.5b)")
+    bl.add_argument("--models",
+                    help="Comma-separated model ids to benchmark on the first configured "
+                         "provider's endpoint + key (test candidates without adding each as a "
+                         "provider). LLM tasks only.")
     bl.add_argument("--output", help="Output directory for the results files")
     bl.add_argument("--whisper-model", help="tiny|base|small|... (only if it must transcribe)")
     bl.add_argument("--work-dir", help="Cache/intermediate directory")

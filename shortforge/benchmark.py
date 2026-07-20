@@ -73,6 +73,22 @@ def enabled_llms(cfg: Config) -> list[LLMEntry]:
     return out
 
 
+def candidate_entries(models: str, borrow: LLMEntry) -> list[LLMEntry]:
+    """Comma-separated model ids → benchmark entries that reuse ``borrow``'s
+    endpoint + key, so candidate models need no settings-UI provider row.
+
+    The short name is the model's last path segment (``minimaxai/minimax-m3`` →
+    ``minimax-m3``) to keep the results table readable.
+    """
+    out: list[LLMEntry] = []
+    for m in (models or "").split(","):
+        m = m.strip()
+        if m:
+            out.append(LLMEntry(m.split("/")[-1], borrow.base_url, borrow.api_key,
+                                m, borrow.api_shape))
+    return out
+
+
 def _call(entry: LLMEntry, prompt: str, *, max_tokens: int = 400,
           json_mode: bool = False) -> dict:
     """One LLM call, timed. Returns {text, latency_ms, status, error}."""

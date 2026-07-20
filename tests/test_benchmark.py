@@ -16,6 +16,17 @@ def _providers():
             B.LLMEntry("vercel", "https://y/v1", "k", "anthropic/claude", "openai")]
 
 
+def test_candidate_entries_reuse_borrowed_creds():
+    borrow = B.LLMEntry("nvidia", "https://integrate.api.nvidia.com/v1", "nvapi-k",
+                        "minimaxai/minimax-m3", "openai")
+    ents = B.candidate_entries(" minimaxai/minimax-m3 , z-ai/glm-5.2 ,", borrow)
+    assert [e.model for e in ents] == ["minimaxai/minimax-m3", "z-ai/glm-5.2"]
+    assert [e.name for e in ents] == ["minimax-m3", "glm-5.2"]          # short, readable
+    assert all(e.base_url == borrow.base_url and e.api_key == borrow.api_key
+               and e.api_shape == "openai" for e in ents)
+    assert B.candidate_entries("", borrow) == []
+
+
 def test_pick_segments_spreads():
     segs = B.pick_segments(_tr(), 4)
     assert len(segs) == 4

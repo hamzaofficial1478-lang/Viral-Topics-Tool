@@ -17,10 +17,10 @@ STEP 3.5b (pluggable ASR) is **done, unverified**. Next up: **STEP 3.6 — UI fi
 | 1 | Cost controls (pre-flight estimate, per-job ceiling, spend tracking, synthesis cache, `--dry-run-cost`) | 🟡 |
 | 2 | `benchmark-llm` command | ✅ |
 | 3 | ElevenLabs language coverage (en, de, it, es, ja, ar) | 🟡 |
-| 3.5 | Transcription quality — Whisper default `small`, min-confidence flagging | 🟡 |
+| 3.5 | Transcription quality — Whisper default `small`, min-confidence flagging | ✅ |
 | 3.5b | Pluggable ASR — provider category, local/API backends, detection, `benchmark-llm --task transcribe` | 🟡 |
 | 3.6 | **UI fixes** — remove hardcoded 90s duration cap, audit other hardcoded limits, beginner-friendly Basic/Advanced layout with plain-language labels + inline help | ⬜ **NEXT** |
-| 4 | H1 — translate for speech (spoken register, length-matched ±15%, glossary, separate dub vs caption translation) + wire LLM failover chain | ⬜ |
+| 4 | H1 — translate for speech: **merge ASR segments into 5–12s dub chunks** (sentence/speaker/scene boundaries) before translating; length-match at chunk level (±15%); spoken register; glossary; separate dub vs caption translation (captions keep the fine ASR segments). **Concurrent** segment translation (configurable parallelism, rate-limit aware, log wall-clock). **Configurable LLM timeout + retry-with-backoff + failover cascade** (minimax → Vercel) | ⬜ |
 | 5 | H2 — prosody transfer onto ElevenLabs `voice_settings`, segment chunking mirroring original pauses | ⬜ |
 | 6 | H4 — diarization, distinct voice per speaker, cloning path, feed active speaker into reframe | ⬜ |
 | 7 | H3 — timing, formant-preserving stretch capped ±8% | ⬜ |
@@ -50,13 +50,14 @@ STEP 3.5b (pluggable ASR) is **done, unverified**. Next up: **STEP 3.6 — UI fi
 - L multi-provider layer + Settings UI (masked keys, gitignored store) · `018bf32`,`c7a0ebc` · verified
 - STEP 0 LLM detection (/v1/v1 + hardcoded model) · `3d46834`,`5dc0ae5` · **verified (NVIDIA 200)**
 - STEP 1 cost controls · `f4f8509` · unverified
-- STEP 2 benchmark-llm · `93b12ce` · verified (ran on real French source)
-- STEP 3 ElevenLabs lang coverage + STEP 3.5 Whisper `small` default · `64403e6` · unverified
-- STEP 3.5b pluggable ASR + `--task transcribe` · `f1d3cf2` · unverified (199 tests pass)
+- STEP 2 benchmark-llm (+ `--models` candidate flag) · `93b12ce` · verified (ran on real French source)
+- STEP 3.5 Whisper `small` default · `64403e6` · **verified** — pirate source: base 42 seg/511 words garbled → small 76 seg/534 words correct French; translations improved
+- STEP 3 ElevenLabs lang coverage · `64403e6` · unverified
+- STEP 3.5b pluggable ASR + `--task transcribe` · `f1d3cf2` · unverified (199+ tests pass)
 
 ## Decisions (settled)
 - **Primary LLM `minimaxai/minimax-m3`** — won STEP 2 (natural spoken English, 0 failures / 5 segs).
-- **Failover chain: minimax → Vercel AI Gateway → `z-ai/glm-5.2`** — GLM hard-failed once and mistranslated *le plus chargé* as "most populated ship".
+- **Failover chain: minimax → Vercel AI Gateway.** `z-ai/glm-5.2` **DROPPED & disabled** — timed out 5/5 on the verified re-run, plus an earlier hard fail and "most populated ship" mistranslation. Keep it configured but toggled **off** in the settings UI.
 - **Vision slot: Vercel AI Gateway** (`https://ai-gateway.vercel.sh/v1`).
 - **TTS: ElevenLabs** — emotion ✓ (`stability`/`similarity_boost`/`style`), cloning ✓, SSML ✗.
 - **v0** (`https://api.v0.dev/v1`) **disabled** — web-code model, wrong for translation/vision.
@@ -65,10 +66,11 @@ STEP 3.5b (pluggable ASR) is **done, unverified**. Next up: **STEP 3.6 — UI fi
 - **Studio Voice** = audio *enhancer* (gRPC), applied to **source** audio before transcription only — never to synthesized dub audio.
 
 ## Open threads
-- **LLM failover not yet wired** — priority order honoured but errors don't cascade. Fold into STEP 4.
-- STEP 2's translation benchmark ran on the **garbled `base` transcript** — re-run after a `small`/API transcript is confirmed; ranking may change.
-- ElevenLabs multilingual (de/it/es/ja/ar), cost controls, STEP 3.5/3.5b — all **unverified on a real paid run**.
-- Confirm ASR benchmark on real footage: `benchmark-llm --source <video> --owner-confirmed --task transcribe`.
+- **LLM failover not yet wired** — priority order honoured but errors don't cascade. STEP 4.
+- **STEP 4 must fix segment length-matching**: on the `small` transcript, dub drift was +40/−6/+131/+22/−52% (1 of 5 in ±15%). Root cause is **segmentation, not translation** — `small` yields 1.3–4.4s fragments that can't be length-matched ("Un sentier du capitaine!" 2.5s → "A captain's path!" 1.2s is correct but unfittable). Merge into 5–12s chunks before translating.
+- **Latency is a scaling risk**: MiniMax 19/39/43/66/35s per segment — prohibitive at 200 clips/day. STEP 4 needs concurrent translation + per-job wall-clock logging.
+- Re-run the translation benchmark on the corrected transcript — now easy via `benchmark-llm --models minimaxai/minimax-m3,...` (no per-model provider rows needed).
+- ElevenLabs multilingual (de/it/es/ja/ar), cost controls, STEP 3.5b ASR — all **unverified on a real paid run**. Confirm ASR on footage: `benchmark-llm --source <video> --owner-confirmed --task transcribe`.
 
 ## How to run (Windows)
 ```

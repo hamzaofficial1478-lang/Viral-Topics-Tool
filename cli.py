@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
 import os
 import sys
 
@@ -333,6 +334,90 @@ def cmd_check_providers(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_benchmark(results: dict) -> None:
+    print("\n" + "=" * 78)
+    if results["task"] == "translate":
+        print(f"  LLM BENCHMARK — translate  {results['src_lang']} → {results['target_lang']}"
+              f"   (±15% duration target)")
+        for i, seg in enumerate(results["segments"], 1):
+            print("=" * 78)
+            print(f"  Segment {i}  (source {seg['source_s']}s):")
+            print(f"    « {seg['source_text'][:100]} »")
+            print(f"    {'provider/model':<34} {'chars':>5} {'est/src':>9} {'drift':>7} {'lat':>7}  fit")
+            print("    " + "-" * 70)
+            for r in seg["results"]:
+                pm = f"{r['provider']}/{r['model']}"[:34]
+                fit = "OK" if r["within_tol"] else "!!"
+                if r["status"] != 200:
+                    print(f"    {pm:<34} {'ERR':>5}  {str(r.get('error',''))[:40]}")
+                    continue
+                print(f"    {pm:<34} {r['chars']:>5} {r['est_spoken_s']:>4}/{r['source_s']:<4} "
+                      f"{r['drift_pct']:>+6}% {r['latency_ms']:>5}ms  {fit}")
+                print(f"      → {r['output'][:120]}")
+    else:
+        print("  LLM BENCHMARK — hooks")
+        for r in results["providers"]:
+            print("=" * 78)
+            print(f"  {r['provider']}/{r['model']}   ({r['latency_ms']}ms)"
+                  + (f"   ERROR: {r['error']}" if r.get("error") else ""))
+            for s in r.get("top", []):
+                print(f"    [{s.get('score')}] #{s.get('index')}  {s.get('reason','')[:80]}")
+    print("=" * 78)
+
+
+def cmd_benchmark_llm(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+    cfg = Config.load(args.config)
+    _apply_common_overrides(cfg, args)
+
+    src = args.source
+    ext = os.path.splitext(src)[1].lower()
+    try:
+        if ext in (".json", ".srt"):
+            from shortforge.analyze import load_external_transcript
+            transcript = load_external_transcript(src, 0.0, "auto")
+        else:
+            from shortforge.analyze import transcribe
+            from shortforge.cache import Cache
+            from shortforge.ingest import ingest
+            if not args.owner_confirmed:
+                log.error("--owner-confirmed is required when --source is a media file/URL "
+                          "(or pass a cached transcript .json/.srt to --source).")
+                return 2
+            meta = ingest(src, cfg, owner_confirmed=True)
+            cache = Cache(cfg.get("paths.work_dir", ".shortforge"), meta.hash)
+            transcript = transcribe(meta, cfg, cache)   # reuses the cached transcript
+    except ShortForgeError as e:
+        log.error("%s", e)
+        return 2
+
+    from shortforge.benchmark import enabled_llms, render_markdown, run_hooks, run_translate
+    providers = enabled_llms(cfg)
+    if not providers:
+        log.error("No enabled LLM providers found. Add one in the settings UI (python cli.py ui) "
+                  "or configure LLM_* in .env.")
+        return 2
+    log.info("benchmarking %d provider(s): %s", len(providers),
+             ", ".join(f"{p.name}/{p.model}" for p in providers))
+
+    if args.task == "hooks":
+        results = run_hooks(transcript, providers, args.segments, cfg)
+    else:
+        results = run_translate(transcript, args.target_lang, providers, args.segments, cfg)
+    _print_benchmark(results)
+
+    out_dir = cfg.get("paths.output_dir", "out")
+    os.makedirs(out_dir, exist_ok=True)
+    base = os.path.join(out_dir, f"benchmark_{args.task}_{_dt.date.today():%Y%m%d}")
+    with open(base + ".json", "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False, indent=2)
+    with open(base + ".md", "w", encoding="utf-8") as f:
+        f.write(render_markdown(results))
+    print(f"\nWritten: {base}.json  and  {base}.md")
+    return 0
+
+
 def cmd_cache(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     cfg = Config.load(args.config)
@@ -525,6 +610,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     usub = sub.add_parser("ui", help="Launch the web dashboard (job + settings screens)")
     usub.set_defaults(func=cmd_ui)
+
+    bl = sub.add_parser("benchmark-llm",
+                        help="Compare enabled LLM providers on translation or hooks (STEP 2)")
+    bl.add_argument("--source", required=True,
+                    help="A cached transcript (.json/.srt) or your own media file/URL")
+    bl.add_argument("--owner-confirmed", action="store_true",
+                    help="Required when --source is media (reuses the cached transcript)")
+    bl.add_argument("--target-lang", default="en", help="Target language for translate (default en)")
+    bl.add_argument("--segments", type=int, default=5, help="How many segments to compare")
+    bl.add_argument("--task", choices=["translate", "hooks"], default="translate")
+    bl.add_argument("--output", help="Output directory for the results files")
+    bl.add_argument("--whisper-model", help="tiny|base|small|... (only if it must transcribe)")
+    bl.add_argument("--work-dir", help="Cache/intermediate directory")
+    bl.set_defaults(func=cmd_benchmark_llm)
     return p
 
 

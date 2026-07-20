@@ -8,7 +8,7 @@ Windows · ⏳ in progress · ⬜ pending.
 Branch: `claude/nifty-cray-n8l888` → PR #1 to `main`.
 
 ## Current position
-STEP 3.5b (pluggable ASR) is **done, unverified**. Next up: **STEP 3.6 — UI fixes**.
+STEP 3.6 (dashboard UI fixes) is **done, unverified**. Next up: **STEP 4 — H1 translate for speech**.
 
 ## Steps
 | # | Description | Status |
@@ -19,8 +19,8 @@ STEP 3.5b (pluggable ASR) is **done, unverified**. Next up: **STEP 3.6 — UI fi
 | 3 | ElevenLabs language coverage (en, de, it, es, ja, ar) | 🟡 |
 | 3.5 | Transcription quality — Whisper default `small`, min-confidence flagging | ✅ |
 | 3.5b | Pluggable ASR — provider category, local/API backends, detection, `benchmark-llm --task transcribe` | 🟡 |
-| 3.6 | **UI fixes** — remove hardcoded 90s duration cap, audit other hardcoded limits, beginner-friendly Basic/Advanced layout with plain-language labels + inline help | ⬜ **NEXT** |
-| 4 | H1 — translate for speech: **merge ASR segments into 5–12s dub chunks** (sentence/speaker/scene boundaries) before translating; length-match at chunk level (±15%); spoken register; glossary; separate dub vs caption translation (captions keep the fine ASR segments). **Concurrent** segment translation (configurable parallelism, rate-limit aware, log wall-clock). **Configurable LLM timeout + retry-with-backoff + failover cascade** (minimax → Vercel) | ⬜ |
+| 3.6 | UI fixes — removed 90s duration cap + 20-clip cap, Basic/Advanced layout, plain-language labels + inline help, live "what happens next" + cost/speed flags, ownership gate | 🟡 |
+| 4 | **H1 — translate for speech**: **merge ASR segments into 5–12s dub chunks** (sentence/speaker/scene boundaries) before translating; length-match at chunk level (±15%); spoken register; glossary; separate dub vs caption translation (captions keep the fine ASR segments). **Concurrent** segment translation (configurable parallelism, rate-limit aware, log wall-clock). **Configurable LLM timeout + retry-with-backoff + failover cascade** (minimax → Vercel) | ⬜ |
 | 5 | H2 — prosody transfer onto ElevenLabs `voice_settings`, segment chunking mirroring original pauses | ⬜ |
 | 6 | H4 — diarization, distinct voice per speaker, cloning path, feed active speaker into reframe | ⬜ |
 | 7 | H3 — timing, formant-preserving stretch capped ±8% | ⬜ |
@@ -54,6 +54,7 @@ STEP 3.5b (pluggable ASR) is **done, unverified**. Next up: **STEP 3.6 — UI fi
 - STEP 3.5 Whisper `small` default · `64403e6` · **verified** — pirate source: base 42 seg/511 words garbled → small 76 seg/534 words correct French; translations improved
 - STEP 3 ElevenLabs lang coverage · `64403e6` · unverified
 - STEP 3.5b pluggable ASR + `--task transcribe` · `f1d3cf2` · unverified (199+ tests pass)
+- STEP 3.6 dashboard: removed 90s/20-clip caps (explicit num_clips now honoured in `select.py` — was a silent-degrade bug), Basic/Advanced layout, plain labels + help, live plan + cost/speed flags, ownership-gated Run, headless AppTest smoke tests · unverified (208 tests pass)
 
 ## Decisions (settled)
 - **Primary LLM `minimaxai/minimax-m3`** — won STEP 2 (natural spoken English, 0 failures / 5 segs).

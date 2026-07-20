@@ -77,7 +77,10 @@ def build_clips(
 
     requested = int(cfg.get("select.num_clips", 0) or 0)
     if requested > 0:
-        n = min(requested, _MAX_CLIPS)
+        # Honour an explicit request (no silent cap) — the operator asked for N.
+        # We can only ever emit as many clips as there are non-overlapping
+        # passages, so the real ceiling is the source, not an arbitrary number.
+        n = requested
     else:
         n, _ = recommend_clip_count(transcript, candidates, cfg)
 

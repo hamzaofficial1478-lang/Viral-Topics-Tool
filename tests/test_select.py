@@ -14,6 +14,19 @@ def _cfg(**over):
     return c
 
 
+def test_explicit_clip_count_is_not_capped_at_20():
+    """STEP 3.6: an explicit num_clips is honoured (no silent cap) — never degrade."""
+    from shortforge.models import Segment, Transcript
+    segs, t = [], 0.0
+    for i in range(25):                                   # 25 isolated 7s thoughts
+        segs.append(Segment(t, t + 7.0, f"Complete standalone thought number {i} here."))
+        t += 8.0                                          # 1s pause between each
+    tr = Transcript("en", t, segs)
+    cfg = _cfg(**{"select.target_duration": 7, "select.tolerance": 1, "select.num_clips": 22})
+    clips = build_clips(tr, [], cfg, "hash")
+    assert len(clips) == 22                               # > old hardcoded ceiling of 20
+
+
 def test_recommend_counts_strong_moments(sample_transcript):
     cfg = _cfg()
     cfg.override("select.target_duration", 20)

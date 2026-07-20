@@ -160,6 +160,11 @@ DEFAULTS: dict[str, Any] = {
         "disabled": False,           # --no-cache: never read or write caches
         "refresh_translation": False,  # --refresh-translation: recompute translation only
     },
+    "cost": {                        # STEP 1 cost controls (paid TTS)
+        "max_usd_per_job": 0.0,      # per-job ceiling; 0 = no limit. Abort if exceeded.
+        "confirm": True,             # prompt for confirmation when estimate > $0 (CLI)
+        "dry_run": False,            # --dry-run-cost: estimate only, no synthesis/render
+    },
     "review": {"enabled": True},     # M12 QC review gate
     "render": {
         "crf": 20,

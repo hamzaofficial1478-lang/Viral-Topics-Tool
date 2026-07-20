@@ -117,6 +117,11 @@ def _render_card(store, p, idx, count):
             else:
                 voice = st.text_input("Voice / voice ID", p.get("voice", ""), key=f"vt_{pid}")
             enabled = st.checkbox("Enabled", p.get("enabled", True), key=f"e_{pid}")
+            cost1k = None
+            if p["category"] == "tts":
+                cur_cost = float((p.get("capabilities") or {}).get("cost_per_1k_chars", 0.0) or 0.0)
+                cost1k = st.number_input("Cost per 1000 characters (USD)", min_value=0.0,
+                                         value=cur_cost, step=0.01, format="%.4f", key=f"c1k_{pid}")
 
         # detected capabilities detail
         caps = p.get("capabilities") or {}
@@ -142,6 +147,10 @@ def _render_card(store, p, idx, count):
             if key_in:
                 fields["api_key"] = key_in
             S.update_provider(store, pid, **fields)
+            if cost1k is not None:
+                caps = dict(S.get_provider(store, pid).get("capabilities") or {})
+                caps["cost_per_1k_chars"] = float(cost1k)
+                S.update_provider(store, pid, capabilities=caps)
             _persist(store)
             st.success("Saved.")
             st.rerun()
@@ -153,6 +162,10 @@ def _render_card(store, p, idx, count):
             with st.spinner("Probing provider…"):
                 res = D.detect(cur["category"], cur.get("base_url", ""),
                                cur.get("api_key", ""), cur.get("model", ""))
+            # Preserve the operator-set price (not auto-detectable).
+            prev_cost = (cur.get("capabilities") or {}).get("cost_per_1k_chars")
+            if prev_cost is not None:
+                res["cost_per_1k_chars"] = prev_cost
             S.update_provider(store, pid, capabilities=res, api_shape=res.get("api_shape"),
                               voices=res.get("voices", []), models=res.get("models", []))
             _persist(store)

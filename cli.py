@@ -77,6 +77,11 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.override("localize.allow_untranslated", True)
     if getattr(args, "no_cache", False):
         cfg.override("cache.disabled", True)
+    if getattr(args, "dry_run_cost", False):
+        cfg.override("cost.dry_run", True)
+    cfg.override("cost.max_usd_per_job", getattr(args, "cost_ceiling", None))
+    if getattr(args, "yes", False):
+        cfg.override("cost.confirm", False)
     if getattr(args, "refresh_translation", False):
         cfg.override("cache.refresh_translation", True)
     if getattr(args, "lipsync", False):
@@ -126,6 +131,20 @@ def _print_summary(manifest: dict) -> None:
     print("=" * 64)
 
 
+def _cost_confirm(cfg):
+    """Return a callback the pipeline calls with a cost estimate before spending."""
+    if not bool(cfg.get("cost.confirm", True)):
+        return lambda est: True
+
+    def confirm(est) -> bool:
+        try:
+            ans = input(f"\nEstimated dub cost: {est.human()}\nProceed? (yes/no): ")
+        except EOFError:
+            return True   # non-interactive (piped): don't block
+        return ans.strip().lower().startswith("y")
+    return confirm
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     load_env_file(getattr(args, "env_file", None) or ".env")
@@ -137,6 +156,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             cfg,
             owner_confirmed=args.owner_confirmed,
             transcript_path=args.transcript,
+            confirm_cost=_cost_confirm(cfg),
         )
     except ShortForgeError as e:
         log.error("%s", e)
@@ -185,7 +205,8 @@ def cmd_batch(args: argparse.Namespace) -> int:
         _apply_common_overrides(cfg, args)
         out_dir = cfg.get("paths.output_dir", "out")
         try:
-            manifest = run_pipeline(src, cfg, owner_confirmed=True, transcript_path=None)
+            manifest = run_pipeline(src, cfg, owner_confirmed=True, transcript_path=None,
+                                    confirm_cost=lambda est: True)  # batch: ceiling still applies
         except ShortForgeError as e:
             log.error("source failed (%s): %s", src, e)
             failures.append({"source": src, "error": str(e)})
@@ -425,7 +446,8 @@ def cmd_wizard(args: argparse.Namespace) -> int:
 
     try:
         manifest = run_pipeline(
-            source, cfg, owner_confirmed=True, transcript_path=transcript_path
+            source, cfg, owner_confirmed=True, transcript_path=transcript_path,
+            confirm_cost=_cost_confirm(cfg),
         )
     except ShortForgeError as e:
         log.error("%s", e)
@@ -558,6 +580,12 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
                    help="Continue if translation fails (keeps source text; loud warning)")
     r.add_argument("--no-cache", action="store_true",
                    help="Never read or write caches for this run")
+    r.add_argument("--dry-run-cost", action="store_true",
+                   help="Estimate spend + show the clip plan, render nothing (STEP 1)")
+    r.add_argument("--cost-ceiling", type=float,
+                   help="Abort if the estimated dub cost exceeds this many USD")
+    r.add_argument("-y", "--yes", action="store_true",
+                   help="Skip the cost-confirmation prompt")
     r.add_argument("--refresh-translation", action="store_true",
                    help="Recompute the translation only (keep transcript + visual analysis)")
     r.add_argument("--voice-sample", help="Your-voice reference clip for --tts xtts")

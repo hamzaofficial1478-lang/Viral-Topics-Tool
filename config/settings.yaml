@@ -178,6 +178,11 @@ cache:                           # A2 cache controls (also --no-cache / --refres
   disabled: false                # never read or write caches
   refresh_translation: false     # recompute translation only, keep transcript/analysis
 
+cost:                            # STEP 1 — cost controls for paid TTS
+  max_usd_per_job: 0.0           # per-job ceiling; 0 = no limit. Run aborts if the estimate exceeds it.
+  confirm: true                  # CLI prompts for confirmation when the estimate is > $0
+  dry_run: false                 # --dry-run-cost: report projected spend, render nothing
+
 review:                          # M12 QC review gate
   enabled: true
 

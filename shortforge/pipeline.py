@@ -51,14 +51,44 @@ def _find_fontsdir() -> str | None:
     return None
 
 
+def _dry_run_manifest(meta, clips, clip_lang, cost_estimate, out_dir, slug, date) -> dict:
+    """STEP 1: --dry-run-cost — the plan + projected spend, nothing rendered."""
+    manifest = {
+        "source": {"source": meta.source, "title": meta.title,
+                   "duration": round(meta.duration, 2), "hash": meta.hash},
+        "dry_run": True,
+        "output_language": clip_lang,
+        "cost_estimate": cost_estimate.to_dict() if cost_estimate else None,
+        "planned_clips": [
+            {"clip_id": c.clip_id, "start": round(c.start, 2), "end": round(c.end, 2),
+             "duration": round(c.duration, 2),
+             "text": (c.caption_text or "")[:160]} for c in clips
+        ],
+        "summary": (f"DRY RUN: {len(clips)} clip(s) planned"
+                    + (f" | est {cost_estimate.human()}" if cost_estimate else "")),
+    }
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"{slug}_{date}_dryrun.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    manifest["manifest_path"] = os.path.abspath(path)
+    log.info(manifest["summary"])
+    return manifest
+
+
 def run_pipeline(
     source: str,
     cfg: Config,
     *,
     owner_confirmed: bool,
     transcript_path: str | None = None,
+    confirm_cost=None,
 ) -> dict:
-    """Execute the full Phase 1 pipeline. Returns a manifest dict."""
+    """Execute the full Phase 1 pipeline. Returns a manifest dict.
+
+    ``confirm_cost`` (optional) is called with a CostEstimate before any paid
+    synthesis; returning False aborts the run (STEP 1 cost controls).
+    """
     from .doctor import preflight
     preflight(cfg)  # C1: fail fast with actionable messages
     require_binary("ffmpeg")
@@ -259,6 +289,32 @@ def run_pipeline(
     log.info("reframe mode: %s%s", "track" if use_track else "center",
              " + logo" if logo else "")
 
+    # --- STEP 1: cost pre-flight (before any paid synthesis) ---------------- #
+    from .cost import estimate_tts
+    from .providers import build_tts_router
+    cost_estimate = None
+    if dub_on:
+        dub_texts: list[str] = []
+        for clip in clips:
+            for s in caption_transcript.segments:
+                if s.end > clip.start and s.start < clip.end and s.text.strip():
+                    dub_texts.append(s.text)
+        router = build_tts_router(cache.path("tts"))
+        cost_estimate = estimate_tts(dub_texts, router, clip_lang)
+        log.info("cost estimate: %s", cost_estimate.human())
+        ceiling = float(cfg.get("cost.max_usd_per_job", 0) or 0)
+        if ceiling > 0 and cost_estimate.cost_usd > ceiling:
+            raise ShortForgeError(
+                f"Estimated dub cost ${cost_estimate.cost_usd:g} exceeds the per-job "
+                f"ceiling ${ceiling:g}. Raise cost.max_usd_per_job / --cost-ceiling, "
+                f"reduce clips, or use a cheaper voice provider.")
+        if confirm_cost is not None and cost_estimate.cost_usd > 0:
+            if not confirm_cost(cost_estimate):
+                raise ShortForgeError("Cancelled at cost confirmation.")
+    if bool(cfg.get("cost.dry_run", False)):
+        log.info("--dry-run-cost: reporting the plan only, no synthesis or render.")
+        return _dry_run_manifest(meta, clips, clip_lang, cost_estimate, out_dir, slug, date)
+
     rendered: list[dict] = []
     for clip in clips:
         # Localized caption text drives captions, metadata, QC, and the manifest.
@@ -405,7 +461,8 @@ def run_pipeline(
         f"captions {clip_lang if captions_on else 'off'}",
         f"reframe {'track' if use_track else 'center'}",
     ] + (["jumpcuts"] if jumpcuts_on else [])
-      + (["lipsync"] if lipsync_on else []))
+      + (["lipsync"] if lipsync_on else [])
+      + ([f"cost ~${cost_estimate.cost_usd:.2f}"] if cost_estimate and cost_estimate.priced else []))
     log.info(summary)
 
     # --- manifest --------------------------------------------------------- #
@@ -440,6 +497,7 @@ def run_pipeline(
             "stems_separated": bool(accompaniment_source),
             "burned_in": burned_mode if burned_band else "none",
         },
+        "cost_estimate": cost_estimate.to_dict() if cost_estimate else None,
         "recommendation": {"recommended_clips": n_rec, "rationale": rationale},
         "review": {
             "gate": "pending_review" if do_review else "disabled",

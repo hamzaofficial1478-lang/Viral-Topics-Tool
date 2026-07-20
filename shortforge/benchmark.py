@@ -49,11 +49,11 @@ def enabled_llms(cfg: Config) -> list[LLMEntry]:
     """Every enabled LLM/vision provider from the settings store; env fallback."""
     out: list[LLMEntry] = []
     try:
-        from .providers.store import load_store, providers_in
+        from .providers.store import load_store, models_in
         store = load_store()
         seen = set()
         for cat in ("llm", "vision"):
-            for p in providers_in(store, cat, enabled_only=True):
+            for p in models_in(store, cat, enabled_only=True):
                 key = (p.get("base_url"), p.get("model"), p.get("api_key"))
                 if key in seen or not p.get("api_key"):
                     continue

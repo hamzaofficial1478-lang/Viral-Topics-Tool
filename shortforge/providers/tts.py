@@ -239,9 +239,9 @@ def build_tts_router(cache_dir: str | None = None) -> TTSRouter:
 
     Store (settings UI) is the source of truth; env is the headless/CI fallback.
     """
-    from .store import load_store, providers_in
+    from .store import load_store, models_in
     store = load_store()
-    configured = providers_in(store, "tts", enabled_only=True)
+    configured = models_in(store, "tts", enabled_only=True)
     providers: list[TTSProvider] = []
     if configured:
         for cfg in configured:

@@ -35,9 +35,9 @@ def dub_language_check(store: dict, language: str) -> tuple[bool, str]:
     can speak this language with its configured model). If no TTS providers are
     configured at all, returns ok=True (the offline engine handles it).
     """
-    from .store import providers_in
+    from .store import models_in
     lang = (language or "").split("-")[0].lower()
-    tts = providers_in(store, "tts", enabled_only=True)
+    tts = models_in(store, "tts", enabled_only=True)
     if not tts or not lang:
         return True, ""
     for p in tts:
@@ -90,9 +90,9 @@ def test_tts_provider(cfg: dict, out_path: str) -> dict:
 
 def capability_warnings(store: dict) -> list[str]:
     """Warn when no enabled provider in a category supports a needed capability."""
-    from .store import providers_in
+    from .store import models_in
     warns = []
-    tts = providers_in(store, "tts", enabled_only=True)
+    tts = models_in(store, "tts", enabled_only=True)
     if not any(p.get("capabilities", {}).get("emotion") is True or p.get("name", "").lower() != "edge"
                and p.get("capabilities", {}).get("emotion") for p in tts):
         if not any(p.get("capabilities", {}).get("emotion") is True for p in tts):
@@ -104,7 +104,7 @@ def capability_warnings(store: dict) -> list[str]:
     if not any(p.get("capabilities", {}).get("cloning") is True for p in tts):
         warns.append("No configured voice provider supports cloning — dub mode 'clone' (H4) "
                      "is unavailable.")
-    if not providers_in(store, "llm", enabled_only=True):
+    if not models_in(store, "llm", enabled_only=True):
         warns.append("No LLM provider configured — hook detection, translation and metadata "
                      "use local heuristics only.")
     return warns

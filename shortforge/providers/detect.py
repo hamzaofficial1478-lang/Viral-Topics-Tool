@@ -106,6 +106,13 @@ def _probe_models(base_url: str, api_key: str):
     return []
 
 
+def fetch_models(base_url: str, api_key: str) -> list[str]:
+    """R6 — public: model ids exposed by ``GET /v1/models`` (for the UI picker)."""
+    if not base_url or not api_key:
+        return []
+    return _probe_models(base_url, api_key)
+
+
 def _probe_model_languages(base_url: str, api_key: str) -> dict:
     """Return {model_id: [lang_codes]} from a /models endpoint (STEP 3).
 

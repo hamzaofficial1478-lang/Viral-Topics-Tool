@@ -119,8 +119,8 @@ def redact(text: str) -> str:
 def _from_store() -> "LLMConfig | None":
     """Prefer an enabled LLM provider configured through the settings UI."""
     try:
-        from ..providers.store import load_store, providers_in
-        configured = providers_in(load_store(), "llm", enabled_only=True)
+        from ..providers.store import load_store, models_in
+        configured = models_in(load_store(), "llm", enabled_only=True)
     except Exception:  # noqa: BLE001
         return None
     if not configured:

@@ -151,8 +151,8 @@ def list_asr_providers(cfg: Config) -> list[ASRProvider]:
     """Enabled ASR providers from the store (priority order); local Whisper always last."""
     providers: list[ASRProvider] = []
     try:
-        from .store import load_store, providers_in
-        for p in providers_in(load_store(), "asr", enabled_only=True):
+        from .store import load_store, models_in
+        for p in models_in(load_store(), "asr", enabled_only=True):
             name = p.get("name", "").lower()
             if "local" in name or "whisper" in name and not p.get("api_key"):
                 providers.append(LocalWhisperASR(cfg))

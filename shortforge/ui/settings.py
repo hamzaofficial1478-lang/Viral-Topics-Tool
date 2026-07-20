@@ -59,42 +59,51 @@ def _caps_summary(p: dict) -> str:
 
 def render() -> None:
     st.header("⚙️ API providers")
-    st.caption("Add your voice / LLM / analysis / audio providers here. Click "
-               "**Test & Detect** to auto-discover what each one can do — no manual "
-               "config needed. Keys are stored locally (gitignored) and masked after saving.")
+    st.caption("Add a **credential** once (base URL + key), then **Fetch available "
+               "models** and enable the ones you want — each with its own category, "
+               "toggle and failover priority. Click **Test & Detect** to auto-discover "
+               "what a model can do. Keys are stored locally (gitignored) and masked.")
 
     store = _load()
 
     for w in capability_warnings(store):
         st.warning(w)
 
-    # --- overview table ---
-    if store["providers"]:
-        rows = []
-        for p in store["providers"]:
+    # --- overview table (credential-models + legacy, one row per model) ---
+    rows = []
+    for cat in _CATS:
+        for p in S.models_in(store, cat, enabled_only=False):
             lt = p.get("last_test") or {}
             rows.append({
-                "Name": p["name"], "Category": S.category_label(p["category"]),
+                "Model": p.get("name", "?"),
+                "Category": S.category_label(p.get("category", "")),
                 "Status": ("✓" if lt.get("ok") else "✗" if lt else "—"),
                 "Capabilities": _caps_summary(p),
                 "Priority": p.get("priority", 0),
                 "Enabled": "on" if p.get("enabled", True) else "off",
             })
+    if rows:
         st.dataframe(rows, use_container_width=True, hide_index=True)
 
     st.divider()
 
-    # --- per-provider cards ---
-    for cat in _CATS:
-        cat_ps = S.providers_in(store, cat, enabled_only=False)
-        if not cat_ps:
-            continue
-        st.subheader(S.category_label(cat))
-        for i, p in enumerate(cat_ps):
-            _render_card(store, p, i, len(cat_ps))
+    # --- credentials (R6: one credential holds many models) ---
+    st.subheader("🔑 Credentials")
+    for cred in S.credentials(store):
+        _render_credential(store, cred)
+    _render_add_credential(store)
 
-    st.divider()
-    _render_add_form(store)
+    # --- legacy single-model providers (still supported, read/edit) ---
+    legacy = store.get("providers", [])
+    if legacy:
+        st.divider()
+        st.subheader("Single-model providers (legacy)")
+        for cat in _CATS:
+            cat_ps = S.providers_in(store, cat, enabled_only=False)
+            for i, p in enumerate(cat_ps):
+                _render_card(store, p, i, len(cat_ps))
+    with st.expander("➕ Add a single-model provider (legacy)"):
+        _render_add_form(store)
 
 
 def _render_card(store, p, idx, count):
@@ -234,3 +243,135 @@ def _render_add_form(store):
                 _persist(store)
                 st.success(f"Added {name}. Open its card to Test & Detect.")
                 st.rerun()
+
+
+# --------------------------------------------------------------------------- #
+# R6 — credential (many models) widgets
+# --------------------------------------------------------------------------- #
+
+def _render_add_credential(store):
+    with st.expander("➕ Add a credential (one key, many models)", expanded=not S.credentials(store)):
+        with st.form("add_cred", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                name = st.text_input("Credential name",
+                                     placeholder="e.g. AgentRouter, Forge AI, NVIDIA")
+                base = st.text_input("Base URL", placeholder="https://agentrouter.org/v1")
+            with c2:
+                key = st.text_input("API key", type="password")
+            if st.form_submit_button("Add credential"):
+                if not name:
+                    st.error("Name is required.")
+                else:
+                    S.add_credential(store, name=name, base_url=base, api_key=key)
+                    _persist(store)
+                    st.success(f"Added {name}. Open it, Fetch available models, then add models.")
+                    st.rerun()
+
+
+def _render_credential(store, cred):
+    cid = cred["id"]
+    n = len(cred.get("models", []))
+    header = f"🔑 {cred['name']}  ·  {cred.get('base_url', '') or 'no URL'}  ·  {n} model(s)"
+    with st.expander(header, expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            name = st.text_input("Name", cred["name"], key=f"cn_{cid}")
+            base = st.text_input("Base URL", cred.get("base_url", ""), key=f"cb_{cid}")
+        with c2:
+            key_in = st.text_input(f"API key (saved: {S.masked(cred.get('api_key'))})",
+                                   "", type="password", key=f"ck_{cid}",
+                                   placeholder="leave blank to keep current")
+            credit = st.text_input("Credit / balance note", cred.get("credit_note", ""),
+                                   key=f"ccr_{cid}",
+                                   help="Promotional credits or a non-standard conversion "
+                                        "rate (some gateways bill ~4x). Shown in cost reports.")
+
+        bb = st.columns(3)
+        if bb[0].button("💾 Save", key=f"csv_{cid}"):
+            fields = {"name": name, "base_url": base, "credit_note": credit}
+            if key_in:
+                fields["api_key"] = key_in
+            S.update_credential(store, cid, **fields)
+            _persist(store)
+            st.success("Saved.")
+            st.rerun()
+        if bb[1].button("📥 Fetch available models", key=f"cf_{cid}"):
+            if key_in:
+                S.update_credential(store, cid, api_key=key_in)
+            S.update_credential(store, cid, name=name, base_url=base)
+            cur = S.get_credential(store, cid)
+            with st.spinner("Querying /v1/models…"):
+                got = D.fetch_models(cur.get("base_url", ""), cur.get("api_key", ""))
+            S.update_credential(store, cid, available_models=got)
+            _persist(store)
+            st.success(f"Found {len(got)} model(s)." if got
+                       else "No models returned — check the URL/key, or add models by hand below.")
+            st.rerun()
+        if bb[2].button("🗑 Delete credential", key=f"cdel_{cid}"):
+            S.delete_credential(store, cid)
+            _persist(store)
+            st.rerun()
+
+        # add a model to this credential
+        st.markdown("**Add a model**")
+        avail = cred.get("available_models") or []
+        mc = st.columns([3, 2, 1])
+        with mc[0]:
+            pick = st.selectbox("From fetched list", ["(type below)"] + avail,
+                                key=f"mp_{cid}") if avail else "(type below)"
+            typed = st.text_input("…or model id", key=f"mt_{cid}",
+                                  placeholder="e.g. minimaxai/minimax-m3")
+        with mc[1]:
+            mcat = st.selectbox("Category", _CATS, format_func=S.category_label, key=f"mc_{cid}")
+        with mc[2]:
+            st.write("")
+            if st.button("Add model", key=f"madd_{cid}"):
+                model_id = typed.strip() or (pick if pick != "(type below)" else "")
+                if model_id:
+                    S.add_model(store, cid, model=model_id, category=mcat)
+                    _persist(store)
+                    st.rerun()
+                else:
+                    st.error("Pick or type a model id.")
+
+        # existing models
+        if cred.get("models"):
+            st.markdown("**Models**")
+            for m in cred["models"]:
+                _render_model_row(store, cred, m)
+
+
+def _render_model_row(store, cred, m):
+    mid = m["id"]
+    summary = _caps_summary({"category": m.get("category"), "model": m.get("model"),
+                             "capabilities": m.get("capabilities", {})})
+    cols = st.columns([4, 2, 1, 1, 1, 1])
+    cols[0].markdown(f"`{m.get('model', '')}`  \n<small>{summary}</small>",
+                     unsafe_allow_html=True)
+    enabled = cols[1].checkbox(S.category_label(m.get("category", "")),
+                               m.get("enabled", True), key=f"me_{mid}")
+    if enabled != m.get("enabled", True):
+        S.update_model(store, mid, enabled=enabled)
+        _persist(store)
+    if cols[2].button("🔍", key=f"mtd_{mid}", help="Test & Detect this model"):
+        cur = S.get_credential(store, cred["id"])
+        with st.spinner("Probing…"):
+            res = D.detect(m.get("category"), cur.get("base_url", ""),
+                           cur.get("api_key", ""), m.get("model", ""))
+        S.update_model(store, mid, capabilities=res, api_shape=res.get("api_shape"),
+                       voices=res.get("voices", []))
+        _persist(store)
+        st.rerun()
+    if cols[3].button("⬆", key=f"mup_{mid}", help="Higher priority"):
+        S.move_model_priority(store, m["category"], mid, -1)
+        _persist(store)
+        st.rerun()
+    if cols[4].button("⬇", key=f"mdn_{mid}", help="Lower priority"):
+        S.move_model_priority(store, m["category"], mid, +1)
+        _persist(store)
+        st.rerun()
+    if cols[5].button("🗑", key=f"mdel_{mid}", help="Remove model"):
+        S.delete_model(store, mid)
+        _persist(store)
+        st.rerun()

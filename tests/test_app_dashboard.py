@@ -45,3 +45,19 @@ def test_settings_screen_renders():
     at = _fresh()
     at.sidebar.radio[0].set_value("Settings").run()
     assert not at.exception
+
+
+def test_settings_shows_credentials_with_a_seeded_model(tmp_path, monkeypatch):
+    """R6: a credential holding a model renders on the Settings screen."""
+    monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(tmp_path / "providers.local.json"))
+    from shortforge.providers import store as S
+    store = {"providers": [], "credentials": []}
+    cred = S.add_credential(store, name="AgentRouter",
+                            base_url="https://agentrouter.org/v1", api_key="ar-xyz")
+    S.add_model(store, cred["id"], model="minimaxai/minimax-m3", category="llm")
+    S.save_store(store)
+
+    at = _fresh()
+    at.sidebar.radio[0].set_value("Settings").run()
+    assert not at.exception
+    assert "🔑 Credentials" in [s.value for s in at.subheader]

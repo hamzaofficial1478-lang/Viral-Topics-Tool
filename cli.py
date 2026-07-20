@@ -338,6 +338,29 @@ def cmd_check_providers(args: argparse.Namespace) -> int:
 
 def _print_benchmark(results: dict) -> None:
     print("\n" + "=" * 78)
+    if results["task"] == "transcribe":
+        print(f"  ASR BENCHMARK — transcribe   audio {results['duration_s']}s"
+              f"   (reference: {results['reference'] or 'n/a'})")
+        print("=" * 78)
+        print(f"    {'backend/model':<32} {'segs':>4} {'words':>5} {'conf':>5} "
+              f"{'low':>4} {'diverge':>7} {'lat':>7}  cost")
+        print("    " + "-" * 74)
+        for r in results["backends"]:
+            bm = f"{r['provider']}/{r['model']}"[:32]
+            if r["error"]:
+                print(f"    {bm:<32} ERR  {str(r['error'])[:44]}")
+                continue
+            mc = f"{r['mean_conf']:.2f}" if r["mean_conf"] is not None else "  — "
+            dv = f"{r['divergence_pct']}%" if r["divergence_pct"] is not None else "  — "
+            cost = f"${r['cost']:g}" if r["cost"] is not None else " n/a"
+            print(f"    {bm:<32} {r['segments']:>4} {r['words']:>5} {mc:>5} "
+                  f"{r['low_conf']:>4} {dv:>7} {r['latency_ms']:>5}ms  {cost}")
+            print(f"      → {r['text'][:130]}")
+        print("=" * 78)
+        print("  Lower divergence vs the reference and higher confidence = cleaner transcript.")
+        print("  There is no ground truth — read the samples above to judge which is right.")
+        print("=" * 78)
+        return
     if results["task"] == "translate":
         print(f"  LLM BENCHMARK — translate  {results['src_lang']} → {results['target_lang']}"
               f"   (±15% duration target)")
@@ -375,6 +398,44 @@ def cmd_benchmark_llm(args: argparse.Namespace) -> int:
 
     src = args.source
     ext = os.path.splitext(src)[1].lower()
+
+    # --task transcribe compares ASR backends and needs actual audio, not a transcript.
+    if args.task == "transcribe":
+        if ext in (".json", ".srt"):
+            log.error("--task transcribe needs an audio/video source (your own footage), "
+                      "not a transcript file.")
+            return 2
+        if not args.owner_confirmed:
+            log.error("--owner-confirmed is required when --source is a media file/URL.")
+            return 2
+        try:
+            from shortforge.analyze.transcribe import extract_audio
+            from shortforge.benchmark import render_markdown, run_transcribe
+            from shortforge.cache import Cache
+            from shortforge.ingest import ingest
+            meta = ingest(src, cfg, owner_confirmed=True)
+            cache = Cache(cfg.get("paths.work_dir", ".shortforge"), meta.hash)
+            wav = extract_audio(meta.file_path, cache.path("audio16k.wav"))
+            results = run_transcribe(wav, cfg, language=cfg.get("transcribe.language"),
+                                     duration=meta.duration)
+        except ShortForgeError as e:
+            log.error("%s", e)
+            return 2
+        if not results["backends"]:
+            log.error("No ASR backend is available. Install faster-whisper "
+                      "(`pip install faster-whisper`) or add an ASR provider in the settings UI.")
+            return 2
+        _print_benchmark(results)
+        out_dir = cfg.get("paths.output_dir", "out")
+        os.makedirs(out_dir, exist_ok=True)
+        base = os.path.join(out_dir, f"benchmark_transcribe_{_dt.date.today():%Y%m%d}")
+        with open(base + ".json", "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+        with open(base + ".md", "w", encoding="utf-8") as f:
+            f.write(render_markdown(results))
+        print(f"\nWritten: {base}.json  and  {base}.md")
+        return 0
+
     try:
         if ext in (".json", ".srt"):
             from shortforge.analyze import load_external_transcript
@@ -614,14 +675,16 @@ def build_parser() -> argparse.ArgumentParser:
     usub.set_defaults(func=cmd_ui)
 
     bl = sub.add_parser("benchmark-llm",
-                        help="Compare enabled LLM providers on translation or hooks (STEP 2)")
+                        help="Compare providers: LLMs on translate/hooks (STEP 2) "
+                             "or ASR backends on transcribe (STEP 3.5b)")
     bl.add_argument("--source", required=True,
                     help="A cached transcript (.json/.srt) or your own media file/URL")
     bl.add_argument("--owner-confirmed", action="store_true",
                     help="Required when --source is media (reuses the cached transcript)")
     bl.add_argument("--target-lang", default="en", help="Target language for translate (default en)")
     bl.add_argument("--segments", type=int, default=5, help="How many segments to compare")
-    bl.add_argument("--task", choices=["translate", "hooks"], default="translate")
+    bl.add_argument("--task", choices=["translate", "hooks", "transcribe"], default="translate",
+                    help="translate/hooks compare LLMs; transcribe compares ASR backends (STEP 3.5b)")
     bl.add_argument("--output", help="Output directory for the results files")
     bl.add_argument("--whisper-model", help="tiny|base|small|... (only if it must transcribe)")
     bl.add_argument("--work-dir", help="Cache/intermediate directory")

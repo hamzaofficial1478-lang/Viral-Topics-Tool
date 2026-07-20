@@ -191,6 +191,33 @@ def detect(category: str, base_url: str, api_key: str, model: str = "") -> dict:
         # those are TTS concepts and only confuse for LLM providers).
         return probe_llm(base_url, api_key, model)
 
+    if category == "asr":
+        # STEP 3.5b: does this endpoint expose a transcription model (Canary /
+        # Whisper / Parakeet)? Probe the models list and flag ASR-capable ones.
+        res = {"api_shape": "openai", "reachable": False, "asr_models": [],
+               "languages": [], "models": [], "notes": []}
+        models = _probe_models(base_url, api_key)
+        res["models"] = models
+        kw = ("canary", "whisper", "parakeet", "riva", "nemo", "asr",
+              "transcri", "stt", "speech-to-text")
+        asr_models = [m for m in models if any(k in (m or "").lower() for k in kw)]
+        res["asr_models"] = asr_models
+        if models:
+            res["reachable"] = True
+        if asr_models:
+            res["notes"].append(f"ASR-capable model(s): {', '.join(asr_models[:8])}")
+            if any("canary" in (m or "").lower() for m in asr_models):
+                res["notes"].append("Canary is multilingual and does speech translation — "
+                                    "a good CPU-offload option for French.")
+            res["notes"].append("Use the model's exact id above, then Test on real audio "
+                                "(POST /audio/transcriptions).")
+        else:
+            res["notes"].append("No obvious ASR model in /models. The endpoint may still "
+                                "accept POST /audio/transcriptions — set the model id and Test "
+                                "on real audio to confirm. NVIDIA Canary may live on a different "
+                                "endpoint (a NIM/gRPC service) than the chat one.")
+        return res
+
     # vision / audio_library: reachability only
     result["reachable"] = bool(_get(base_url.rstrip("/") + "/models", api_key)
                                or _get(base_url.rstrip("/"), api_key))

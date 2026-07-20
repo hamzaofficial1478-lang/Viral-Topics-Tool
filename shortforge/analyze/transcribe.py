@@ -58,83 +58,42 @@ def _resolve_device(device: str, compute_type: str) -> tuple[str, str]:
 
 
 def transcribe(meta, cfg: Config, cache: Cache) -> Transcript:
-    """Transcribe ``meta.file_path`` to a :class:`Transcript` (cached)."""
+    """Transcribe ``meta.file_path`` to a :class:`Transcript` (cached).
+
+    Dispatches to the configured ASR backend (STEP 3.5b): a store ``asr`` provider
+    (local Whisper or an API) or, by default, local faster-whisper.
+    """
     cached = cache.load_json(_CACHE_NAME)
     if cached is not None:
         log.info("using cached transcript (%d segments)", len(cached.get("segments", [])))
         return Transcript.from_dict(cached)
 
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError as e:  # pragma: no cover - dependency guard
+    wav = extract_audio(meta.file_path, cache.path("audio16k.wav"))
+    language = cfg.get("transcribe.language")
+
+    from ..providers.asr import LocalWhisperASR, build_asr_provider
+    asr = build_asr_provider(cfg)
+    if isinstance(asr, LocalWhisperASR) and not asr.available():
         raise ShortForgeError(
             "faster-whisper is not installed. `pip install faster-whisper`, or "
             "supply your own transcript with --transcript file.(srt|json)."
-        ) from e
-
-    model_size = cfg.get("transcribe.model", "base")
-    device, compute_type = _resolve_device(
-        cfg.get("transcribe.device", "auto"),
-        cfg.get("transcribe.compute_type", "auto"),
-    )
-    language = cfg.get("transcribe.language")
-
-    wav = extract_audio(meta.file_path, cache.path("audio16k.wav"))
-
-    log.info("transcribing with whisper '%s' on %s/%s ...", model_size, device, compute_type)
-    model = WhisperModel(model_size, device=device, compute_type=compute_type)
-    seg_iter, info = model.transcribe(
-        wav,
-        word_timestamps=True,
-        language=language,
-        vad_filter=True,
-    )
-
-    import math
-
-    min_conf = float(cfg.get("transcribe.min_confidence", 0.0) or 0.0)
-    segments: list[Segment] = []
-    low_conf = 0
-    for s in seg_iter:
-        words = [
-            Word(start=float(w.start), end=float(w.end), text=w.word.strip())
-            for w in (s.words or [])
-            if w.word and w.word.strip()
-        ]
-        # STEP 3.5: per-segment confidence from Whisper's avg_logprob, damped by
-        # the no-speech probability. exp(logprob) ~ a 0..1 probability.
-        alp = getattr(s, "avg_logprob", None)
-        nsp = float(getattr(s, "no_speech_prob", 0.0) or 0.0)
-        conf = None
-        if alp is not None:
-            conf = max(0.0, min(1.0, math.exp(float(alp)))) * (1.0 - min(1.0, nsp))
-            conf = round(conf, 3)
-        seg = Segment(
-            start=float(s.start),
-            end=float(s.end),
-            text=s.text.strip(),
-            words=words,
-            confidence=conf,
         )
-        if seg.text:
-            segments.append(seg)
-            if conf is not None and conf < max(min_conf, 0.35):
-                low_conf += 1
+    try:
+        transcript = asr.transcribe(wav, language=language, duration=meta.duration)
+    except Exception as e:  # noqa: BLE001
+        raise ShortForgeError(f"Transcription failed via {asr.name}: {e}") from e
 
-    transcript = Transcript(
-        language=info.language or (language or "en"),
-        duration=float(getattr(info, "duration", 0.0) or meta.duration),
-        segments=segments,
-    )
     cache.save_json(_CACHE_NAME, transcript.to_dict())
-    log.info(
-        "transcript: %d segments, %d words, lang=%s (model=%s)",
-        len(segments), len(transcript.words()), transcript.language, model_size,
-    )
+    min_conf = float(cfg.get("transcribe.min_confidence", 0.0) or 0.0)
+    low_conf = sum(1 for s in transcript.segments
+                   if s.confidence is not None and s.confidence < max(min_conf, 0.35))
+    log.info("transcript: %d segments, %d words, lang=%s (asr=%s)",
+             len(transcript.segments), len(transcript.words()), transcript.language, asr.name)
     if low_conf:
         log.warning("%d/%d segments look low-confidence — a garbled transcript "
-                    "produces bad clips/translations. Consider --whisper-model small|medium "
-                    "or a source-language hint (--source-lang).", low_conf, len(segments))
+                    "produces bad clips/translations. Try a better ASR (bigger local "
+                    "model or an API backend) or a source-language hint (--source-lang).",
+                    low_conf, len(transcript.segments))
     return transcript
 
 

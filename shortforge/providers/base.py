@@ -133,6 +133,19 @@ class TTSProvider(ABC):
         return f"{self.name}: {self.caps.to_dict()}"
 
 
+class ASRProvider(ABC):
+    """Transcription backend: local Whisper or an API (OpenAI-compatible / Canary)."""
+    name: str
+
+    @abstractmethod
+    def available(self) -> bool: ...
+
+    @abstractmethod
+    def transcribe(self, audio_path: str, *, language: str | None = None,
+                   duration: float = 0.0):
+        """Return a Transcript (segments with timing, text, confidence)."""
+
+
 class AudioLibraryProvider(ABC):
     name: str
 

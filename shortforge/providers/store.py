@@ -15,10 +15,11 @@ from typing import Any
 
 from ..utils import log
 
-CATEGORIES = ("tts", "llm", "vision", "audio_library")
+CATEGORIES = ("tts", "asr", "llm", "vision", "audio_library")
 _CATEGORY_LABELS = {
-    "tts": "Voice / TTS", "llm": "LLM (text & analysis)",
-    "vision": "Vision / Analysis", "audio_library": "Audio library (music & SFX)",
+    "tts": "Voice / TTS", "asr": "ASR / transcription",
+    "llm": "LLM (text & analysis)", "vision": "Vision / Analysis",
+    "audio_library": "Audio library (music & SFX)",
 }
 
 

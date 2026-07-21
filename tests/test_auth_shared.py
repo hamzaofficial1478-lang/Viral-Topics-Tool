@@ -6,8 +6,9 @@ import json
 
 import pytest
 
-from shortforge.llm import bearer_header, openai_chat_raw
+from shortforge.llm import auth_header, bearer_header, openai_chat_raw
 from shortforge.providers import call_model_chat
+from shortforge.providers import store as S
 from shortforge.utils import ShortForgeError
 
 
@@ -15,6 +16,25 @@ def test_bearer_header_strips_whitespace_and_newline():
     assert bearer_header("  abc\n") == {"Authorization": "Bearer abc"}
     assert bearer_header("key") == {"Authorization": "Bearer key"}
     assert bearer_header(None) == {"Authorization": "Bearer "}
+
+
+def test_auth_header_styles():
+    assert auth_header(" k\n", "bearer") == {"Authorization": "Bearer k"}
+    assert auth_header("k", "x-api-key") == {"x-api-key": "k"}          # Forge fg- consumer keys
+    assert auth_header("k", "token") == {"Authorization": "k"}          # no Bearer prefix
+    assert auth_header("k", "custom", "X-Forge-Key") == {"X-Forge-Key": "k"}
+
+
+def test_credential_auth_style_flows_to_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(tmp_path / "p.json"))
+    store = {"providers": [], "credentials": [], "tasks": {}}
+    c = S.add_credential(store, name="Forge AI", base_url="https://forge-gateway-api.fly.dev/v1",
+                         api_key="fg-xxxx6667")
+    S.update_credential(store, c["id"], auth_style="x-api-key")
+    S.add_model(store, c["id"], model="gpt-5.6-luna", category="llm")
+    m = S.models_in(store, "llm")[0]
+    assert m["auth_style"] == "x-api-key"                              # projected onto the model
+    assert auth_header(m["api_key"], m["auth_style"]) == {"x-api-key": "fg-xxxx6667"}
 
 
 def test_openai_chat_raw_sends_stripped_key(monkeypatch):
@@ -59,4 +79,5 @@ def test_401_diagnostic_names_credential_store_and_redacted_key(monkeypatch, tmp
     assert "401" in msg
     assert "credential=abc123" in msg and "••••1234" in msg          # which credential + which key
     assert "store=" in msg and "gpt-5.6-luna" in msg
+    assert "auth=" in msg                                            # which header shape was used
     assert "forge-secret-1234" not in msg                            # never leak the full key

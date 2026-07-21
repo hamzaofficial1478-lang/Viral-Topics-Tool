@@ -164,6 +164,8 @@ def add_credential(store: dict, *, name: str, base_url: str = "", api_key: str =
         "base_url": normalize_base(base_url),
         "api_key": api_key.strip(),
         "api_shape": api_shape,
+        "auth_style": "bearer",     # bearer | x-api-key | token | custom (per-gateway auth shape)
+        "auth_header_name": "",     # header name when auth_style == custom
         "credit_note": "",          # R5: promotional-credit / conversion-rate note
         "enabled": True,
         "models": [],               # list of model dicts (see add_model)
@@ -285,6 +287,8 @@ def _flatten(cred: dict | None, m: dict) -> dict:
         "voice": m.get("voice", ""),
         "voices": m.get("voices", []),
         "tier": m.get("tier", "unknown"),
+        "auth_style": cred.get("auth_style", "bearer"),
+        "auth_header_name": cred.get("auth_header_name", ""),
         "capabilities": m.get("capabilities", {}),
         "enabled": bool(m.get("enabled", True) and cred.get("enabled", True)),
         "priority": m.get("priority", 0),

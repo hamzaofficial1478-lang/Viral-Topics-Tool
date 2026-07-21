@@ -64,13 +64,14 @@ def call_model_chat(model: dict, messages: list, *, json_mode: bool = False,
     extra = {"response_format": {"type": "json_object"}} if json_mode else None
     r = openai_chat_raw(model.get("base_url", ""), model.get("api_key", ""),
                         model.get("model", ""), messages, max_tokens=max_tokens,
-                        timeout=timeout, extra=extra)
+                        timeout=timeout, extra=extra, auth_style=model.get("auth_style", "bearer"),
+                        auth_header_name=model.get("auth_header_name"))
     if r["status"] != 200:
-        # Diagnostic: which credential + which store + which (redacted) key was
-        # actually used, so a 401 is fixable without a dashboard cross-check.
+        # Diagnostic: which credential + store + (redacted) key + auth header shape
+        # were actually used, so a 401 is fixable without a dashboard cross-check.
         where = (f"credential={model.get('credential_id', 'env/legacy')} "
-                 f"key={masked(model.get('api_key'))} model={model.get('model')} "
-                 f"url={r.get('url')} store={store_path()}")
+                 f"key={masked(model.get('api_key'))} auth={r.get('auth', 'Authorization')} "
+                 f"model={model.get('model')} url={r.get('url')} store={store_path()}")
         raise ShortForgeError(f"{model.get('name') or model.get('model')}: HTTP "
                               f"{r['status']} [{where}] {(r['body'] or r['error'] or '')[:200]}")
     try:

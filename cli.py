@@ -554,6 +554,44 @@ def cmd_hooks(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_providers(args: argparse.Namespace) -> int:
+    """Print stored credentials + task bindings (keys redacted) — the exact host,
+    auth-header shape and chat URL each model will use, for diagnosis."""
+    setup_logging(args.verbose)
+    from shortforge.providers import store as S
+    from shortforge.llm import normalize_chat_url
+    store = S.load_store()
+    print(f"\nStore: {S.store_path()}")
+    print("=" * 78)
+    creds = S.credentials(store)
+    if not creds:
+        print("  (no credentials — add one in the settings UI: python cli.py ui)")
+    for c in creds:
+        print(f"  [{c['id']}] {c['name']}   auth={c.get('auth_style', 'bearer')}"
+              + (f" ({c.get('auth_header_name')})" if c.get('auth_style') == 'custom' else ""))
+        print(f"     base_url : {c.get('base_url', '')!r}")
+        print(f"     chat url : {normalize_chat_url(c.get('base_url', ''))}")
+        print(f"     api_key  : {S.masked(c.get('api_key'))}")
+        for m in c.get("models", []):
+            print(f"       - {m.get('model')}  [{m.get('category')}, {m.get('tier', 'unknown')}, "
+                  f"{'on' if m.get('enabled', True) else 'off'}]  id={m['id']}")
+    if store.get("providers"):
+        print(f"\n  Legacy single-model providers (unmigrated): {len(store['providers'])}")
+    print("-" * 78)
+    print("  Task bindings (non-default):")
+    any_binding = False
+    for meta in S.TASKS:
+        b = S.get_task_binding(store, meta["key"])
+        if b["primary"] or b["secondary"] or b["fallback"]:
+            any_binding = True
+            chain = " -> ".join(m.get("name", "?") for m in S.resolve_task(store, meta["key"])) or "(none)"
+            print(f"    {meta['key']}: {chain}")
+    if not any_binding:
+        print("    (none set — tasks resolve by category priority)")
+    print("=" * 78)
+    return 0
+
+
 def cmd_cache(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     cfg = Config.load(args.config)
@@ -752,6 +790,11 @@ def build_parser() -> argparse.ArgumentParser:
     psub = sub.add_parser("check-providers",
                           help="Test all configured LLM/TTS/audio providers + capabilities (L)")
     psub.set_defaults(func=cmd_check_providers)
+
+    prov = sub.add_parser("providers",
+                          help="Print stored credentials + task bindings (keys redacted) — "
+                               "host, auth shape, chat URL per model, for diagnosis")
+    prov.set_defaults(func=cmd_providers)
 
     usub = sub.add_parser("ui", help="Launch the web dashboard (job + settings screens)")
     usub.set_defaults(func=cmd_ui)

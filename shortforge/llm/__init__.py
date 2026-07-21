@@ -44,12 +44,33 @@ _API_PATHS = (
 )
 
 
+def auth_header(api_key: str, style: str = "bearer", header_name: str | None = None) -> dict:
+    """THE single place an auth header is built (probe, CLI, UI, vision, TTS, ASR).
+
+    The key is stripped, so stray whitespace/newline can never 401 one path but
+    not another. ``style`` selects the header shape a provider expects — some
+    gateways (e.g. Forge's ``fg-`` consumer keys) want ``x-api-key`` or a custom
+    header rather than ``Authorization: Bearer``:
+      bearer (default) -> Authorization: Bearer <key>
+      x-api-key        -> x-api-key: <key>
+      token            -> Authorization: <key>   (no Bearer prefix)
+      custom           -> <header_name>: <key>
+    """
+    key = (api_key or "").strip()
+    s = (style or "bearer").strip().lower()
+    if s in ("x-api-key", "xapikey", "apikey", "api-key", "api_key"):
+        return {"x-api-key": key}
+    if s in ("token", "raw", "bearer_no_prefix"):
+        return {"Authorization": key}
+    if s == "custom" and header_name:
+        return {header_name.strip(): key}
+    return {"Authorization": f"Bearer {key}"}
+
+
 def bearer_header(api_key: str) -> dict:
-    """THE single place a Bearer auth header is built (probe, CLI, UI, vision,
-    TTS, ASR all use this). The key is stripped, so stray whitespace or a trailing
-    newline in a stored key can never cause a spurious 401 on one path but not
-    another — the exact shared-code-path bug this prevents."""
-    return {"Authorization": f"Bearer {(api_key or '').strip()}"}
+    """Back-compat shim — Bearer style. New code passes an explicit style to
+    :func:`auth_header`."""
+    return auth_header(api_key, "bearer")
 
 
 def normalize_base_url(base_url: str) -> str:
@@ -100,40 +121,44 @@ def normalize_chat_url(base_url: str) -> str:
 
 def openai_chat_raw(base_url: str, api_key: str, model: str, messages: list, *,
                     max_tokens: int = 512, timeout: int = 60,
-                    extra: dict | None = None) -> dict:
+                    extra: dict | None = None, auth_style: str = "bearer",
+                    auth_header_name: str | None = None) -> dict:
     """Low-level OpenAI-compatible chat call shared by production + probe.
 
-    Always returns {status, body, error, url, model}. Never raises. Requires a
-    model — no silent default (a wrong/absent model is a common 404 cause).
+    Always returns {status, body, error, url, model, auth}. Never raises. Requires
+    a model — no silent default (a wrong/absent model is a common 404 cause).
+    ``auth_style`` selects the auth header shape (bearer / x-api-key / custom).
     """
     if not model:
         return {"status": None, "body": "", "error": "no model configured for this provider",
-                "url": normalize_chat_url(base_url), "model": ""}
+                "url": normalize_chat_url(base_url), "model": "", "auth": auth_style}
     url = normalize_chat_url(base_url)
     payload = {"model": model, "messages": messages, "max_tokens": max_tokens, "stream": False}
     if extra:
         payload.update(extra)
     data = json.dumps(payload).encode("utf-8")
+    hdr = auth_header(api_key, auth_style, auth_header_name)
+    auth_name = next(iter(hdr))                      # which header carried the key
     req = urllib.request.Request(
-        url, data=data,
-        headers={**bearer_header(api_key), "content-type": "application/json"},
-        method="POST")
+        url, data=data, headers={**hdr, "content-type": "application/json"}, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return {"status": getattr(resp, "status", 200),
                     "body": resp.read().decode("utf-8", "replace"),
-                    "error": None, "url": url, "model": model}
+                    "error": None, "url": url, "model": model, "auth": auth_name}
     except urllib.error.HTTPError as e:
         try:
             body = e.read().decode("utf-8", "replace")
         except Exception:  # noqa: BLE001
             body = ""
-        return {"status": e.code, "body": body, "error": None, "url": url, "model": model}
+        return {"status": e.code, "body": body, "error": None, "url": url,
+                "model": model, "auth": auth_name}
     except urllib.error.URLError as e:
-        return {"status": None, "body": "", "error": f"network: {e.reason}", "url": url, "model": model}
+        return {"status": None, "body": "", "error": f"network: {e.reason}", "url": url,
+                "model": model, "auth": auth_name}
     except Exception as e:  # noqa: BLE001 (socket.timeout, etc.)
         return {"status": None, "body": "", "error": str(e) or type(e).__name__,
-                "url": url, "model": model}
+                "url": url, "model": model, "auth": auth_name}
 
 _DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8"
 _DEFAULT_OPENAI_MODEL = "gpt-4o-mini"

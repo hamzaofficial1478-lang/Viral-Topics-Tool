@@ -280,10 +280,23 @@ def _render_credential(store, cred):
     n = len(cred.get("models", []))
     header = f"🔑 {cred['name']}  ·  {cred.get('base_url', '') or 'no URL'}  ·  {n} model(s)"
     with st.expander(header, expanded=False):
+        _AUTH_STYLES = ["bearer", "x-api-key", "token", "custom"]
         c1, c2 = st.columns(2)
         with c1:
             name = st.text_input("Name", cred["name"], key=f"cn_{cid}")
             base = st.text_input("Base URL", cred.get("base_url", ""), key=f"cb_{cid}")
+            cur_style = cred.get("auth_style", "bearer")
+            auth_style = st.selectbox(
+                "Auth header", _AUTH_STYLES,
+                index=_AUTH_STYLES.index(cur_style) if cur_style in _AUTH_STYLES else 0,
+                key=f"cas_{cid}",
+                help="How the key is sent. bearer = Authorization: Bearer <key> (default); "
+                     "x-api-key = x-api-key: <key>; token = Authorization: <key> (no prefix); "
+                     "custom = your own header name. Forge 'fg-' consumer keys may need x-api-key.")
+            auth_header_name = ""
+            if auth_style == "custom":
+                auth_header_name = st.text_input("Custom header name",
+                                                 cred.get("auth_header_name", ""), key=f"cahn_{cid}")
         with c2:
             key_in = st.text_input(f"API key (saved: {S.masked(cred.get('api_key'))})",
                                    "", type="password", key=f"ck_{cid}",
@@ -302,7 +315,8 @@ def _render_credential(store, cred):
 
         bb = st.columns(3)
         if bb[0].button("💾 Save", key=f"csv_{cid}"):
-            fields = {"name": name, "base_url": base, "credit_note": credit}
+            fields = {"name": name, "base_url": base, "credit_note": credit,
+                      "auth_style": auth_style, "auth_header_name": auth_header_name}
             if key_in:
                 fields["api_key"] = key_in
             S.update_credential(store, cid, **fields)
@@ -495,7 +509,9 @@ def _render_model_row(store, cred, m):
         cur = S.get_credential(store, cred["id"])
         with st.spinner("Probing…"):
             res = D.detect(m.get("category"), cur.get("base_url", ""),
-                           cur.get("api_key", ""), m.get("model", ""))
+                           cur.get("api_key", ""), m.get("model", ""),
+                           auth_style=cur.get("auth_style", "bearer"),
+                           auth_header_name=cur.get("auth_header_name"))
         S.update_model(store, mid, capabilities=res, api_shape=res.get("api_shape"),
                        voices=res.get("voices", []))
         _persist(store)

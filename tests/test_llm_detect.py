@@ -46,7 +46,7 @@ def _install_fake(monkeypatch, *, chat_status=200, chat_body=None, image_status=
     chat_body = chat_body if chat_body is not None else json.dumps(
         {"choices": [{"message": {"content": "OK"}}]})
 
-    def fake_raw(base_url, api_key, model, messages, *, max_tokens=512, timeout=60, extra=None):
+    def fake_raw(base_url, api_key, model, messages, *, max_tokens=512, timeout=60, extra=None, **kw):
         url = L.normalize_chat_url(base_url)
         if not model:
             return {"status": None, "body": "", "error": "no model configured for this provider",
@@ -67,7 +67,7 @@ def _install_fake(monkeypatch, *, chat_status=200, chat_body=None, image_status=
 def test_probe_success_sends_configured_model_and_correct_url(monkeypatch):
     seen = {}
 
-    def fake_raw(base_url, api_key, model, messages, *, max_tokens=512, timeout=60, extra=None):
+    def fake_raw(base_url, api_key, model, messages, *, max_tokens=512, timeout=60, extra=None, **kw):
         seen["model"] = model
         seen["url"] = L.normalize_chat_url(base_url)
         body = json.dumps({"choices": [{"message": {"content": "OK"}}]})

@@ -212,7 +212,8 @@ def _probe_model_languages(base_url: str, api_key: str) -> dict:
     return out
 
 
-def detect(category: str, base_url: str, api_key: str, model: str = "") -> dict:
+def detect(category: str, base_url: str, api_key: str, model: str = "",
+           auth_style: str = "bearer", auth_header_name: str | None = None) -> dict:
     """Best-effort capability detection. Returns a saved-config-ready dict."""
     result = {
         "api_shape": "unknown", "ssml": "unknown", "emotion": "unknown",
@@ -301,7 +302,7 @@ def detect(category: str, base_url: str, api_key: str, model: str = "") -> dict:
     if category in ("llm", "vision"):
         # Real chat-completion probe with full diagnostics (no SSML/emotion flags —
         # those are TTS concepts and only confuse for LLM providers).
-        return probe_llm(base_url, api_key, model)
+        return probe_llm(base_url, api_key, model, auth_style, auth_header_name)
 
     if category == "asr":
         # STEP 3.5b: does this endpoint expose a transcription model (Canary /
@@ -376,13 +377,14 @@ def _has_choices(body: str) -> bool:
     return isinstance(data, dict) and isinstance(data.get("content"), list)
 
 
-def probe_llm(base_url: str, api_key: str, model: str) -> dict:
+def probe_llm(base_url: str, api_key: str, model: str, auth_style: str = "bearer",
+              auth_header_name: str | None = None) -> dict:
     """Real minimal chat completion probe with full diagnostics.
 
-    Uses the SAME shared client (``llm.openai_chat_raw``) as production, so URL
-    and model handling can never drift. Returns: reachable, model_responds,
-    api_shape, multimodal, context_length, status_code, request/response
-    excerpts (redacted), notes.
+    Uses the SAME shared client (``llm.openai_chat_raw``) as production — same URL,
+    request AND auth-header construction — so probe and CLI can never drift.
+    Returns: reachable, model_responds, api_shape, multimodal, context_length,
+    status_code, request/response excerpts (redacted), notes.
     """
     from ..llm import openai_chat_raw, anthropic_messages_url, normalize_chat_url
 
@@ -400,15 +402,16 @@ def probe_llm(base_url: str, api_key: str, model: str) -> dict:
         return res
 
     msgs = [{"role": "user", "content": "Reply with the single word OK."}]
-    r = openai_chat_raw(base_url, api_key, model, msgs, max_tokens=8)
-    res["request_excerpt"] = f"POST {r['url']}\n" + json.dumps(
-        {"model": model, "max_tokens": 8, "messages": msgs})
+    r = openai_chat_raw(base_url, api_key, model, msgs, max_tokens=8,
+                        auth_style=auth_style, auth_header_name=auth_header_name)
+    res["request_excerpt"] = (f"POST {r['url']}\nauth: {r.get('auth', 'Authorization')}\n"
+                              + json.dumps({"model": model, "max_tokens": 8, "messages": msgs}))
     res["status_code"] = r["status"]
     res["response_excerpt"] = redact(r["body"] or r["error"] or "", api_key)[:1000]
 
     if r["status"] == 200 and _has_choices(r["body"]):
         res.update({"api_shape": "openai", "reachable": True, "model_responds": True})
-        res["multimodal"] = _probe_multimodal(base_url, api_key, model)
+        res["multimodal"] = _probe_multimodal(base_url, api_key, model, auth_style, auth_header_name)
         res["context_length"] = _context_from_models(base_url, api_key, model)
         res["notes"].append(f"chat completion OK (200); multimodal={res['multimodal']}")
         return res
@@ -441,12 +444,14 @@ def probe_llm(base_url: str, api_key: str, model: str) -> dict:
     return res
 
 
-def _probe_multimodal(base_url: str, api_key: str, model: str) -> bool:
+def _probe_multimodal(base_url: str, api_key: str, model: str, auth_style: str = "bearer",
+                      auth_header_name: str | None = None) -> bool:
     from ..llm import openai_chat_raw
     msgs = [{"role": "user", "content": [
         {"type": "text", "text": "Reply with one word."},
         {"type": "image_url", "image_url": {"url": _TEST_IMAGE}}]}]
-    r = openai_chat_raw(base_url, api_key, model, msgs, max_tokens=8)
+    r = openai_chat_raw(base_url, api_key, model, msgs, max_tokens=8,
+                        auth_style=auth_style, auth_header_name=auth_header_name)
     return bool(r["status"] == 200 and _has_choices(r["body"]))
 
 

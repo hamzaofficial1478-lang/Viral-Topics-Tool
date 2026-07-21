@@ -32,7 +32,13 @@ RUBRIC_VERSION = "1"    # bump to invalidate cached hook scores when the prompt 
 
 def _score_cache_path(cfg: Config, transcript: Transcript, model_id: str) -> str:
     """Disk cache key: (transcript content, model, rubric version) — so re-runs and
-    the fusion/transcript modes never re-pay for the same scoring (issue 3)."""
+    the fusion/transcript modes never re-pay for the same scoring (Blocker 1).
+
+    This is content-addressed on the transcript rather than the raw source hash on
+    purpose: a given source always yields the same transcript, so it's equivalent
+    to keying on ``source_hash`` for re-runs — but it *also* invalidates correctly
+    if the operator re-transcribes with a different Whisper model (the segments,
+    hence the scores, change), which a bare source hash would miss (silent-stale)."""
     import hashlib
     h = hashlib.sha1()
     for s in transcript.segments:
@@ -63,13 +69,30 @@ def _json_obj(text: str) -> dict:
     return {}
 
 
+def _is_timeout_error(exc: Exception) -> bool:
+    """A failed batch was a timeout (worth a smaller retry) vs a hard error (4xx,
+    bad response) that a smaller request won't fix. call_model_chat's timeout
+    message says 'timed out after Ns'; run_failover wraps it verbatim."""
+    return "timed out" in str(exc).lower()
+
+
 def score_transcript(transcript: Transcript, cfg: Config, store: dict,
                      batch: int | None = None) -> dict[int, tuple[float, str]]:
-    """Per-segment (score, reason) from the hook LLM, scored in chunks.
+    """Per-segment (score, reason) from the hook LLM, scored in small chunks.
 
-    The transcript is split into ``detect.hook_batch`` (~25) segment chunks so no
-    single call is huge — smaller calls finish under the timeout and report
-    progress per chunk. Scores merge into one global index → (score, reason) map.
+    Reliability (Blocker 1):
+      * The transcript is split into ``detect.hook_batch`` (~12) segment chunks —
+        small, predictable calls finish under the timeout far more reliably than a
+        few large ones.
+      * Chunks run CONCURRENTLY (``detect.hook_concurrency``, default 4).
+      * On a *timeout* (after per-call retries), a chunk is retried at HALF the
+        size — recursively, down to a single segment — instead of re-sending the
+        same oversized request.
+      * If a chunk still can't be scored, the run CONTINUES with the chunks that
+        succeeded and the unscored segments are reported loudly (never a whole-run
+        failure). A partial result is NOT cached, so a re-run retries the gaps.
+
+    Scores merge into one global index → (score, reason) map.
     """
     from ..providers import call_model_chat, run_failover
     from ..providers.store import task_timeout
@@ -93,51 +116,85 @@ def score_transcript(transcript: Transcript, cfg: Config, store: dict,
         except (FileNotFoundError, ValueError, KeyError):
             pass
 
-    batch = int(batch or cfg.get("detect.hook_batch", 25) or 25)
+    batch = int(batch or cfg.get("detect.hook_batch", 12) or 12)
     timeout = int(cfg.get("detect.hook_timeout", 0) or task_timeout("hook_detection"))
     retries = int(cfg.get("providers.retries", 2))
     workers = max(1, int(cfg.get("detect.hook_concurrency", 4) or 1))
     starts = list(range(0, len(segs), batch))
-    n_batches = len(starts)
+    batches = [list(range(b, min(b + batch, len(segs)))) for b in starts]
+    n_batches = len(batches)
     log.info("hook scoring: %d segment(s) in %d batch(es) of %d (timeout %ds, %d retries, "
              "%d parallel)", len(segs), n_batches, batch, timeout, retries, min(workers, n_batches))
 
-    def _do_batch(bi: int, base: int) -> dict[int, tuple[float, str]]:
-        chunk = segs[base:base + batch]
-        listing = "\n".join(f"{base + i}\t[{s.start:.1f}-{s.end:.1f}] {s.text}"
-                            for i, s in enumerate(chunk))
+    def _score_indices(idxs: list[int]) -> tuple[dict[int, tuple[float, str]], list[int]]:
+        """Score the given global segment indices. On timeout, split in half and
+        retry each half (a smaller request) down to one segment. Returns
+        (scores, unscored_indices) and NEVER raises — one dead chunk can't fail
+        the run."""
+        listing = "\n".join(f"{i}\t[{segs[i].start:.1f}-{segs[i].end:.1f}] {segs[i].text}"
+                            for i in idxs)
         prompt = (f"{rubric.LLM_RUBRIC}\n\nScore each numbered line 0.0 (weak) to 1.0 "
                   "(strong short-form hook). Return JSON "
                   '{"scores":[{"index":int,"score":number,"reason":string}]} — one entry '
                   "per line, reason ≤ 12 words.\n\nindex<TAB>[start-end] text:\n" + listing)
-        log.info("hook batch %d/%d (%d segments)…", bi, n_batches, len(chunk))
-        content, _model, fails = run_failover(chain, lambda m: call_model_chat(
-            m, [{"role": "user", "content": prompt}], json_mode=True, max_tokens=1500,
-            timeout=timeout, retries=retries))
+        try:
+            content, _model, fails = run_failover(chain, lambda m: call_model_chat(
+                m, [{"role": "user", "content": prompt}], json_mode=True, max_tokens=1500,
+                timeout=timeout, retries=retries))
+        except ShortForgeError as e:
+            if _is_timeout_error(e) and len(idxs) > 1:
+                mid = len(idxs) // 2
+                log.warning("hook chunk of %d segment(s) timed out — retrying as %d + %d "
+                            "(half size)", len(idxs), mid, len(idxs) - mid)
+                left_s, left_u = _score_indices(idxs[:mid])
+                right_s, right_u = _score_indices(idxs[mid:])
+                left_s.update(right_s)
+                return left_s, left_u + right_u
+            log.warning("hook chunk (segments %d-%d) could not be scored after retries — "
+                        "skipping: %s", idxs[0], idxs[-1], e)
+            return {}, list(idxs)
         for f_m, err in fails:
             log.warning("hook LLM %s failed, cascaded: %s", f_m.get("model"), err)
         res: dict[int, tuple[float, str]] = {}
         for s in _json_obj(content).get("scores", []):
             try:
-                res[int(s["index"])] = (max(0.0, min(1.0, float(s["score"]))),
-                                        str(s.get("reason", "")).strip())
+                gi = int(s["index"])
+                if gi in idxs:                      # ignore stray indices from the model
+                    res[gi] = (max(0.0, min(1.0, float(s["score"]))),
+                               str(s.get("reason", "")).strip())
             except (KeyError, ValueError, TypeError):
                 continue
-        return res
+        return res, []
+
+    def _do_batch(bi: int, idxs: list[int]) -> tuple[dict[int, tuple[float, str]], list[int]]:
+        log.info("hook batch %d/%d (%d segments)…", bi, n_batches, len(idxs))
+        return _score_indices(idxs)
 
     out: dict[int, tuple[float, str]] = {}
+    unscored: list[int] = []
+    work = list(enumerate(batches, 1))
     # issue 4: run the batches concurrently (4 in flight × ~150s ≈ well under 60 RPM).
     if workers > 1 and n_batches > 1:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(workers, n_batches)) as ex:
-            for res in ex.map(lambda t: _do_batch(t[0], t[1]),
-                              [(bi, base) for bi, base in enumerate(starts, 1)]):
-                out.update(res)
+            results = list(ex.map(lambda t: _do_batch(t[0], t[1]), work))
     else:
-        for bi, base in enumerate(starts, 1):
-            out.update(_do_batch(bi, base))
+        results = [_do_batch(bi, idxs) for bi, idxs in work]
+    for res, miss in results:
+        out.update(res)
+        unscored.extend(miss)
 
-    if not cfg.get("cache.disabled", False) and out:
+    if unscored:
+        unscored.sort()
+        shown = ", ".join(f"{i} [{segs[i].start:.1f}-{segs[i].end:.1f}s]" for i in unscored[:12])
+        more = "" if len(unscored) <= 12 else f" … (+{len(unscored) - 12} more)"
+        log.warning("hook scoring: %d of %d segment(s) could NOT be scored after retries and "
+                    "half-size splits — CONTINUING with %d scored. Unscored: %s%s",
+                    len(unscored), len(segs), len(out), shown, more)
+
+    # Cache only a COMPLETE result — never a partial one, so a re-run retries the
+    # gaps instead of returning them from cache.
+    if not cfg.get("cache.disabled", False) and out and not unscored:
         try:
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             with open(cache_path, "w", encoding="utf-8") as f:

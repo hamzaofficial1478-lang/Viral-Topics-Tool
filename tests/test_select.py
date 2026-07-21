@@ -115,3 +115,46 @@ def test_top_clip_is_the_strongest_hook(sample_transcript):
     clips = build_clips(sample_transcript, cands, cfg, "hash")
     assert len(clips) == 1
     assert "Did you know" in clips[0].caption_text
+
+
+# --- Blocker 2: clips, not fragments ---------------------------------------- #
+
+def test_overlapping_hook_anchors_collapse_into_one_clip():
+    """Three adjacent high-scoring segments (191.8-192.8, 192.8-193.5, 193.5-194.8)
+    are the SAME moment — they must collapse into a single clip, not three."""
+    from shortforge.models import Segment, Transcript, Candidate
+    # A run of continuous speech with three neighbouring strong anchors mid-way.
+    segs = [Segment(i * 1.0, i * 1.0 + 1.0, f"and then part {i} of the same idea continues.")
+            for i in range(40)]
+    tr = Transcript("en", 40.0, segs)
+    cands = [Candidate(s.start, s.end, 0.9 if i in (20, 21, 22) else 0.1, "hook")
+             for i, s in enumerate(segs)]
+    cfg = _cfg()
+    cfg.override("select.target_duration", 15)
+    cfg.override("select.tolerance", 5)
+    cfg.override("select.num_clips", 3)          # ask for 3 — the moment is only one
+    clips = build_clips(tr, cands, cfg, "h")
+    # The three overlapping anchors fall inside one grown window → one clip covers
+    # all three; they do not each spawn a clip of the same moment.
+    covering = [c for c in clips if c.start <= 20.0 and c.end >= 23.0]
+    assert len(covering) == 1
+
+
+def test_never_emits_a_sub_minimum_clip():
+    """Even with a tiny target + generous tolerance, no clip is shorter than the
+    minimum (never a 0.7s / 1.6s fragment)."""
+    from shortforge.models import Segment, Transcript, Candidate
+    from shortforge.select.select import _MIN_CLIP_SECONDS
+    segs = [Segment(i * 2.0, i * 2.0 + 2.0, f"standalone thought {i} lands cleanly.")
+            for i in range(20)]
+    tr = Transcript("en", 40.0, segs)
+    cands = [Candidate(s.start, s.end, 0.9 if i % 3 == 0 else 0.2, "hook")
+             for i, s in enumerate(segs)]
+    cfg = _cfg()
+    cfg.override("select.target_duration", 2)     # would be a fragment if honoured literally
+    cfg.override("select.tolerance", 1)
+    cfg.override("select.num_clips", 4)
+    clips = build_clips(tr, cands, cfg, "h")
+    assert clips
+    for c in clips:
+        assert (c.end - c.start) >= _MIN_CLIP_SECONDS - 1e-6

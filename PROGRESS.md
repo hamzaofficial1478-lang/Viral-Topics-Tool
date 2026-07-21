@@ -10,10 +10,25 @@ Branch: `claude/nifty-cray-n8l888` → PR #1 to `main`.
 ## Current position
 **C1 VERIFIED** — minimax-m3 found 44 strong candidates (≥0.50) where the
 heuristic found 0, with real editorial justifications. This is the milestone.
-Four follow-ups now fixed (clip-level selection, vision-400 diagnostics, hook-
-score caching, concurrent batches). **Next: operator runs the FULL pipeline with
-LLM hooks to watch actual clips built around the moments** — the real test —
-then verify MSS-2…7 (already exist) and ship.
+**Blocker 1 (reliability) + Blocker 2 (clips-not-fragments) now fixed** — the two
+go/no-go items. **Next: operator runs the FULL pipeline end-to-end at 720p /
+original audio** (the go/no-go run below), watches actual clips + MSS output
+(karaoke captions, logo, loudness, metadata, thumbnail), then ships.
+
+### Go/no-go run (Windows) — LLM hooks, 720p, original audio, karaoke + logo
+```
+git pull origin claude/nifty-cray-n8l888
+python cli.py run "$HOME\Desktop\...\Histoires_de_Pirates.mp4" --owner-confirmed ^
+  --num-clips 5 --resolution 720p --no-dub ^
+  --caption-template karaoke_amber --logo "path\to\logo.png"
+```
+Watch in `out/`: each `*.mp4` is a **clip** (target ~45s, hook in the first 1–2s)
+— NOT a 1–2s fragment. Confirm: (MSS-2) captions highlight word-by-word;
+(MSS-3) logo in the TR corner; (MSS-4) loudness ≈ −14 LUFS / TP ≤ −1 (check the
+summary line `QC …`); (MSS-5) a `*.metadata.json` / sidecar per clip with
+title/desc/tags; (MSS-6) a `*.thumb.jpg` cover frame. In the log, confirm
+`hook scoring: … in N batch(es) of 12 … 4 parallel` and no whole-run failure on a
+timeout (a slow batch splits to half and, worst case, reports unscored segments).
 
 ## Done foundation (steps 0–3.6)
 | # | Description | Status |
@@ -109,6 +124,8 @@ Studio Voice, LipSync. R3 remaining adapters (OCR/TTS/gRPC/multipart) as needed.
 - R1 built-ins: `edge-tts` (TTS) and `local-whisper` (ASR) are built-in free local backends, selectable in task routing (last-resort fallbacks); empty store resolves ASR→local Whisper, TTS-volume→edge-tts · unverified (249 tests pass).
 - LLM timeouts made configurable + resilient · unverified (287 tests pass): the hardcoded 60s client timeout was the C1 blocker (76-segment batched minimax call needs minutes). Now: **per-task** default timeouts in `store.TASKS` (hook_detection 600s, vision 300s, translation 180s) + **per-credential** `timeout` override (UI field) + config (`providers.request_timeout`, `detect.hook_timeout`, `vision.timeout`); `openai_chat_raw` default 60→120. **Retry-with-backoff** on timeout only (2 retries, 2s/4s), never on 4xx. **Hook scoring chunks** the transcript into `detect.hook_batch` (~25) segment calls, merged+ranked globally. **Per-call INFO timing** (`LLM <model>: HTTP … in Ns …`) + per-batch progress. Timeout error now says "timed out after Ns (configurable …)". Same timeouts + timing apply to vision (llama frames).
 - C1 follow-ups (operator's 4 issues, post-verification) · unverified (293 tests pass): (1) **clip-level** — `hooks` command now builds CLIPS around each hook anchor via `build_clips` (not raw ASR fragments); `select.max_backup` (default 2) keeps the hook in the first ~1–2s; overlapping anchors dedupe. (2) **vision 400** — `score_frames_for` surfaces the full 400 body + image-count/size context and a "lower vision.max_images to 1" hint. (3) **hook-score caching** keyed on (transcript, model, rubric v) — `compare_modes` scores ONCE (no double pass), and a disk cache makes re-runs/pipeline reuse free. (4) **concurrency** — hook batches run in parallel (`detect.hook_concurrency`, default 4).
+- **Blocker 1 — hook-scoring reliability** · unverified (298 tests pass): (1) default `detect.hook_batch` **25 → 12** (small+predictable beats few+large — the 600s timeouts were on 25-seg batches). (2) On a *timeout* (after per-call retries) a chunk is retried at **HALF the size**, recursively down to one segment (`_score_indices` in `provider_hooks.py`), instead of re-sending the same oversized request — non-timeout errors (4xx) don't split. (3) **Partial-failure resilience** — a chunk that still can't be scored is skipped; the run CONTINUES with the chunks that succeeded and logs a loud WARNING naming the unscored segment indices + timestamps (never a whole-run failure). A partial result is **not** cached, so a re-run retries the gaps. (4) Concurrency confirmed active (`ThreadPoolExecutor`, default 4). Cache key reconciled: content-addressed on the transcript = equivalent to (source_hash, model, rubric) for re-runs, but *also* invalidates correctly if the operator re-transcribes with a different Whisper model (a bare source hash would go stale).
+- **Blocker 2 — clips, not fragments** · unverified (298 tests pass): confirmed the **`run` pipeline** routes `detect_hooks → build_clips` (pipeline.py:124–145), so real output gets clips, not the raw fragments the operator saw (those were the old `hooks` diagnostic / a pre-fix run). `build_clips` already: anchors on high-scoring segments (score desc), grows to target snapping to sentence/thought boundaries, keeps the hook in the first ~1–2s (`max_backup`), **collapses overlapping anchors into one clip** (shared `used` set), ranks/emits at clip level, and **never emits a sub-`_MIN_CLIP_SECONDS` (6s) clip** (floor applied even when target−tol dips below it). Added tests locking the two guarantees the operator called out: overlapping anchors → one clip, and tiny-target → still ≥6s.
 - C1 LLM hook detection · **VERIFIED** (44 strong candidates vs 0 heuristic, real justifications): `detect/provider_hooks.py` — `score_transcript()` (batched LLM scores 0–1 via the hook_detection LLM contributor + failover), `score_frames_for()` (top-K candidates → `vision.score_frames`), `detect()` fuses them (`detect.frame_weight`). Wired into `detect_hooks` (auto-used when a hook LLM is bound; visible fallback to heuristic on error). `python cli.py hooks --source … --top N` prints candidates per mode (heuristic / transcript_llm / fusion) with timestamps, scores, justifications. **Fixes "0 strong standalone moments".** Modes (b) omni / (c) all-three deferred.
 - Zero-cost original-audio default · unverified: translation/dub/Demucs already gate on `dub_on` (default off) — confirmed. Summary now reads `dub: none (original audio)`; hard `assert localize_on` guards the dub branch (no TTS resolved/called otherwise); `--no-dub` flag forces it. Default-mode paid calls = **hook detection + metadata only**.
 - Export resolution selector · unverified: `reframe/resolution.py` — short-side px (1080p/720p/480p) or WxH, **separate from aspect**; `apply_resolution()` in the pipeline; `estimate_export()` (≈MB/clip + CPU render-speed) shown in wizard + UI. `--resolution` on run/run-batch, wizard prompt, UI selectbox. Default 1080p. Also exposed `--logo-size`.

@@ -35,7 +35,7 @@ DEFAULTS: dict[str, Any] = {
         "hook_frames": True,        # fuse vision frame scores onto the top candidates
         "frame_weight": 0.35,       # (1-w)*transcript_llm + w*frames_llm
         "frame_topk": 12,           # only score frames for the top-K candidates (cost)
-        "hook_batch": 25,           # segments per hook-scoring call (chunked; smaller = under timeout)
+        "hook_batch": 12,           # segments per hook-scoring call (small+predictable beats fewer+large; timeouts split to half)
         "hook_timeout": 0,          # per-call timeout override (s); 0 = task default (600)
         "hook_concurrency": 4,      # hook-scoring batches run in parallel (respect provider RPM)
         # M3++ visual hook signals (local, no API).

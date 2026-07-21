@@ -88,6 +88,94 @@ def test_concurrent_batches_merge(tmp_path, monkeypatch):
     assert len(out) == 20 and set(out) == set(range(20))       # all merged, none lost
 
 
+# --- Blocker 1: half-size retry on timeout + partial-failure resilience ------ #
+
+def _timeout_resp():
+    return {"status": None, "body": "", "error": "The read operation timed out",
+            "url": "u", "model": "m", "auth": "Authorization"}
+
+
+def test_oversized_batch_times_out_then_splits_to_half(tmp_path, monkeypatch):
+    """A batch that times out at N segments is retried at N/2, not re-sent whole."""
+    monkeypatch.setattr("time.sleep", lambda s: None)          # no real backoff waits
+    sizes_seen = []
+
+    def fake(base, key, model, messages, **kw):
+        import re
+        idxs = [int(x) for x in re.findall(r"(?m)^(\d+)\t", messages[0]["content"])]
+        sizes_seen.append(len(idxs))
+        if len(idxs) >= 8:                                     # the full batch times out
+            return _timeout_resp()
+        scores = [{"index": i, "score": 0.6, "reason": "hook"} for i in idxs]
+        return {"status": 200,
+                "body": json.dumps({"choices": [{"message": {"content": json.dumps({"scores": scores})}}]}),
+                "error": None, "url": base, "model": model, "auth": "Authorization"}
+
+    monkeypatch.setattr("shortforge.llm.openai_chat_raw", fake)
+    cfg = Config.load()
+    cfg.override("paths.work_dir", str(tmp_path))
+    cfg.override("detect.hook_batch", 8)
+    cfg.override("detect.hook_concurrency", 1)
+    cfg.override("providers.retries", 0)                       # go straight to the split
+    out = PH.score_transcript(_tr(8), cfg, _store())
+    assert len(out) == 8 and set(out) == set(range(8))         # every segment scored via the halves
+    assert 8 in sizes_seen and 4 in sizes_seen                 # tried whole, then split to 4
+
+
+def test_dead_batch_does_not_fail_the_run(tmp_path, monkeypatch):
+    """A chunk that keeps timing out (even at size 1) is skipped, not raised — the
+    run continues with the segments that scored."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    def fake(base, key, model, messages, **kw):
+        import re
+        idxs = [int(x) for x in re.findall(r"(?m)^(\d+)\t", messages[0]["content"])]
+        if any(i >= 6 for i in idxs):                         # second batch is permanently dead
+            return _timeout_resp()
+        scores = [{"index": i, "score": 0.6, "reason": "hook"} for i in idxs]
+        return {"status": 200,
+                "body": json.dumps({"choices": [{"message": {"content": json.dumps({"scores": scores})}}]}),
+                "error": None, "url": base, "model": model, "auth": "Authorization"}
+
+    monkeypatch.setattr("shortforge.llm.openai_chat_raw", fake)
+    cfg = Config.load()
+    cfg.override("paths.work_dir", str(tmp_path))
+    cfg.override("detect.hook_batch", 6)
+    cfg.override("detect.hook_concurrency", 1)
+    cfg.override("providers.retries", 0)
+    out = PH.score_transcript(_tr(12), cfg, _store())         # never raises
+    assert set(out) == set(range(6))                          # first batch scored
+    assert all(i not in out for i in range(6, 12))            # dead batch's segments unscored
+
+
+def test_partial_result_is_not_cached(tmp_path, monkeypatch):
+    """A run with unscored segments must NOT write the cache, so a re-run retries."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    state = {"dead": True}
+
+    def fake(base, key, model, messages, **kw):
+        import re
+        idxs = [int(x) for x in re.findall(r"(?m)^(\d+)\t", messages[0]["content"])]
+        if state["dead"] and any(i >= 6 for i in idxs):
+            return _timeout_resp()
+        scores = [{"index": i, "score": 0.6, "reason": "hook"} for i in idxs]
+        return {"status": 200,
+                "body": json.dumps({"choices": [{"message": {"content": json.dumps({"scores": scores})}}]}),
+                "error": None, "url": base, "model": model, "auth": "Authorization"}
+
+    monkeypatch.setattr("shortforge.llm.openai_chat_raw", fake)
+    cfg = Config.load()
+    cfg.override("paths.work_dir", str(tmp_path))
+    cfg.override("detect.hook_batch", 6)
+    cfg.override("detect.hook_concurrency", 1)
+    cfg.override("providers.retries", 0)
+    out1 = PH.score_transcript(_tr(12), cfg, _store())
+    assert len(out1) == 6                                     # partial
+    state["dead"] = False                                     # provider recovers
+    out2 = PH.score_transcript(_tr(12), cfg, _store())        # would be a cache hit if cached
+    assert set(out2) == set(range(12))                        # re-run retried the gap, all scored
+
+
 # --- issue 1: clip-level selection, hook lands early ------------------------ #
 
 def test_build_clips_from_hook_scores_is_clip_length():

@@ -23,13 +23,13 @@ def test_hook_detection_is_a_fusion_task():
 def test_resolve_fusion_combines_primary_and_secondary():
     store = {"providers": [], "credentials": [], "tasks": {}}
     cred = S.add_credential(store, name="NV", base_url="https://x/v1", api_key="k")
-    llm = S.add_model(store, cred["id"], model="forge/gpt-luna-5.6", category="llm")
+    llm = S.add_model(store, cred["id"], model="forge/gpt-5.6-luna", category="llm")
     vis = S.add_model(store, cred["id"], model="meta/llama-3.2-11b-vision-instruct",
                       category="vision", tier="free")
     S.set_task_binding(store, "hook_detection", primary=llm["id"], secondary=vis["id"])
     fus = S.resolve_fusion(store, "hook_detection")
     models = [m["model"] for m in fus["contributors"]]
-    assert "forge/gpt-luna-5.6" in models and "meta/llama-3.2-11b-vision-instruct" in models
+    assert "forge/gpt-5.6-luna" in models and "meta/llama-3.2-11b-vision-instruct" in models
 
 
 def test_resolve_fusion_defaults_to_one_per_category():

@@ -55,6 +55,7 @@ def _match_vendor(base_url: str, name: str) -> dict | None:
 
 def _get(url: str, api_key: str, timeout: int = 15):
     """GET JSON trying a few common auth header styles. None on any failure."""
+    api_key = (api_key or "").strip()
     for hdr in ({"Authorization": f"Bearer {api_key}"}, {"xi-api-key": api_key},
                 {"x-api-key": api_key}):
         try:
@@ -97,6 +98,7 @@ def _probe_voices(base_url: str, api_key: str, voices_ep: str | None):
 def _get_raw(url: str, api_key: str, timeout: int = 15) -> dict:
     """GET returning {status, body, error, url} — captures HTTP errors (unlike
     ``_get``, which hides them). 401/403 retries the next auth-header style."""
+    api_key = (api_key or "").strip()
     last = {"status": None, "body": "", "error": "no response", "url": url}
     for hdr in ({"Authorization": f"Bearer {api_key}"}, {"xi-api-key": api_key},
                 {"x-api-key": api_key}):
@@ -454,14 +456,14 @@ def _probe_tts(base_url: str, api_key: str, model: str) -> dict:
     POSTs a short phrase to ``/audio/speech`` and inspects the response for audio
     bytes. Returns full diagnostics (status, url, payload, response) either way.
     """
-    from ..llm import normalize_api_url
+    from ..llm import bearer_header, normalize_api_url
     url = normalize_api_url(base_url, "/audio/speech")
     payload = {"model": model or "", "input": "ShortForge test.",
                "voice": "alloy", "response_format": "wav"}
     req_excerpt = f"POST {url}\n" + json.dumps(payload)
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json"},
+        headers={**bearer_header(api_key), "content-type": "application/json"},
         method="POST")
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:

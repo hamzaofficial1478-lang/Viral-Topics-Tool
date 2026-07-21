@@ -44,6 +44,14 @@ _API_PATHS = (
 )
 
 
+def bearer_header(api_key: str) -> dict:
+    """THE single place a Bearer auth header is built (probe, CLI, UI, vision,
+    TTS, ASR all use this). The key is stripped, so stray whitespace or a trailing
+    newline in a stored key can never cause a spurious 401 on one path but not
+    another — the exact shared-code-path bug this prevents."""
+    return {"Authorization": f"Bearer {(api_key or '').strip()}"}
+
+
 def normalize_base_url(base_url: str) -> str:
     """The canonical *base* of an OpenAI-style endpoint, with any pasted API path
     stripped off. Idempotent. This is what should be stored.
@@ -108,7 +116,7 @@ def openai_chat_raw(base_url: str, api_key: str, model: str, messages: list, *,
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url, data=data,
-        headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json"},
+        headers={**bearer_header(api_key), "content-type": "application/json"},
         method="POST")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:

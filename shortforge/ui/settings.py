@@ -489,6 +489,9 @@ def _render_model_row(store, cred, m):
         S.update_model(store, mid, tier=tier)
         _persist(store)
     if cols[2].button("🔍", key=f"mtd_{mid}", help="Test & Detect this model"):
+        # Persist first so the probe tests EXACTLY what the CLI/production will load
+        # from disk — no session-vs-disk key drift (the Forge 401 class of bug).
+        _persist(store)
         cur = S.get_credential(store, cred["id"])
         with st.spinner("Probing…"):
             res = D.detect(m.get("category"), cur.get("base_url", ""),

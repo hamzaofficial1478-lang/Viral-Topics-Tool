@@ -55,18 +55,24 @@ def call_model_chat(model: dict, messages: list, *, json_mode: bool = False,
     """One chat-completion against a single flattened store model, via the SHARED
     client (openai_chat_raw). Returns the message content; raises on non-200.
 
-    This is the production LLM path (Forge gpt-luna-5.6, minimax-m3, …) — the
+    This is the production LLM path (Forge gpt-5.6-luna, minimax-m3, …) — the
     same URL/request construction as the probe, so they cannot drift (R7)."""
     import json as _json
     from ..llm import openai_chat_raw
     from ..utils import ShortForgeError
+    from .store import masked, store_path
     extra = {"response_format": {"type": "json_object"}} if json_mode else None
     r = openai_chat_raw(model.get("base_url", ""), model.get("api_key", ""),
                         model.get("model", ""), messages, max_tokens=max_tokens,
                         timeout=timeout, extra=extra)
     if r["status"] != 200:
-        raise ShortForgeError(f"{model.get('name') or model.get('model')}: "
-                              f"HTTP {r['status']} {(r['body'] or r['error'] or '')[:200]}")
+        # Diagnostic: which credential + which store + which (redacted) key was
+        # actually used, so a 401 is fixable without a dashboard cross-check.
+        where = (f"credential={model.get('credential_id', 'env/legacy')} "
+                 f"key={masked(model.get('api_key'))} model={model.get('model')} "
+                 f"url={r.get('url')} store={store_path()}")
+        raise ShortForgeError(f"{model.get('name') or model.get('model')}: HTTP "
+                              f"{r['status']} [{where}] {(r['body'] or r['error'] or '')[:200]}")
     try:
         return _json.loads(r["body"])["choices"][0]["message"]["content"]
     except Exception as e:  # noqa: BLE001

@@ -124,9 +124,10 @@ class OpenAICompatibleASR(ASRProvider):
         if language:
             fields["language"] = language
         body, ctype = _multipart(fields, "file", audio_path)
+        from ..llm import bearer_header as _bearer
         req = urllib.request.Request(
             self._url(), data=body, method="POST",
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": ctype})
+            headers={**_bearer(self.api_key), "Content-Type": ctype})
         log.info("ASR: %s API transcription (%s)", self.name, self.model)
         with urllib.request.urlopen(req, timeout=600) as resp:
             data = json.loads(resp.read().decode("utf-8", "replace"))

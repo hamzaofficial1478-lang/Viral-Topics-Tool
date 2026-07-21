@@ -106,6 +106,8 @@ def update_provider(store: dict, pid: str, **fields) -> dict | None:
         return None
     if fields.get("base_url") is not None:
         fields["base_url"] = normalize_base(fields["base_url"])
+    if fields.get("api_key") is not None:
+        fields["api_key"] = str(fields["api_key"]).strip()
     p.update({k: v for k, v in fields.items() if v is not None})
     return p
 
@@ -183,6 +185,8 @@ def update_credential(store: dict, cid: str, **fields) -> dict | None:
         return None
     if fields.get("base_url") is not None:
         fields["base_url"] = normalize_base(fields["base_url"])
+    if fields.get("api_key") is not None:
+        fields["api_key"] = str(fields["api_key"]).strip()   # no stray whitespace/newline
     c.update({k: v for k, v in fields.items() if v is not None})
     return c
 
@@ -274,8 +278,8 @@ def _flatten(cred: dict | None, m: dict) -> dict:
         "name": (f"{cred.get('name', '')} · {m.get('model', '')}").strip(" ·"),
         "display_name": m.get("display_name", ""),
         "category": m.get("category"),
-        "base_url": cred.get("base_url", ""),
-        "api_key": cred.get("api_key", ""),
+        "base_url": (cred.get("base_url", "") or "").strip(),
+        "api_key": (cred.get("api_key", "") or "").strip(),   # key clean at the single load point
         "api_shape": m.get("api_shape") or cred.get("api_shape") or "unknown",
         "model": m.get("model", ""),
         "voice": m.get("voice", ""),

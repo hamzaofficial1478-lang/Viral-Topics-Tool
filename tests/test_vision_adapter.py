@@ -66,7 +66,7 @@ def _llm_store():
     store = {"providers": [], "credentials": [], "tasks": {}}
     cred = S.add_credential(store, name="Forge AI", base_url="https://www.forge-ai.space/v1",
                             api_key="fk")
-    forge = S.add_model(store, cred["id"], model="gpt-luna-5.6", category="llm")
+    forge = S.add_model(store, cred["id"], model="gpt-5.6-luna", category="llm")
     nv = S.add_credential(store, name="NVIDIA build",
                           base_url="https://integrate.api.nvidia.com/v1", api_key="nv")
     mmx = S.add_model(store, nv["id"], model="minimaxai/minimax-m3", category="llm")
@@ -85,8 +85,8 @@ def test_call_model_chat_uses_shared_client(monkeypatch):
     # patch where call_model_chat imports it
     monkeypatch.setattr("shortforge.llm.openai_chat_raw", fake_chat)
     out = call_model_chat({"base_url": "https://www.forge-ai.space/v1", "api_key": "k",
-                           "model": "gpt-luna-5.6"}, [{"role": "user", "content": "hi"}])
-    assert out == "hi" and captured["model"] == "gpt-luna-5.6"
+                           "model": "gpt-5.6-luna"}, [{"role": "user", "content": "hi"}])
+    assert out == "hi" and captured["model"] == "gpt-5.6-luna"
 
 
 def test_call_task_chat_cascades_forge_then_minimax(monkeypatch):
@@ -96,7 +96,7 @@ def test_call_task_chat_cascades_forge_then_minimax(monkeypatch):
 
     def fake_chat(base, key, model, messages, **kw):
         calls.append(model)
-        if model == "gpt-luna-5.6":
+        if model == "gpt-5.6-luna":
             return {"status": 500, "body": "forge down", "error": None, "url": base, "model": model}
         return {"status": 200, "body": json.dumps({"choices": [{"message": {"content": "translated"}}]}),
                 "error": None, "url": base, "model": model}
@@ -105,8 +105,8 @@ def test_call_task_chat_cascades_forge_then_minimax(monkeypatch):
     content, used, failovers = call_task_chat(store, "dub_translation",
                                               [{"role": "user", "content": "x"}])
     assert content == "translated" and used["model"] == "minimaxai/minimax-m3"
-    assert calls == ["gpt-luna-5.6", "minimaxai/minimax-m3"]     # actually cascaded
-    assert [m["model"] for m, _ in failovers] == ["gpt-luna-5.6"]
+    assert calls == ["gpt-5.6-luna", "minimaxai/minimax-m3"]     # actually cascaded
+    assert [m["model"] for m, _ in failovers] == ["gpt-5.6-luna"]
 
 
 def test_call_task_chat_raises_when_unconfigured():

@@ -85,7 +85,8 @@ class OpenAICompatibleTTSProvider(TTSProvider):
             payload["input_format"] = "ssml"       # honoured by SSML-capable gateways
         if style:
             payload.update(style)                   # emotion/style params, vendor-specific
-        headers = {"Authorization": f"Bearer {self.api_key}", "content-type": "application/json"}
+        from ..llm import bearer_header
+        headers = {**bearer_header(self.api_key), "content-type": "application/json"}
         req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                      headers=headers, method="POST")
         try:

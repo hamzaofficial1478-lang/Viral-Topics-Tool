@@ -26,7 +26,7 @@ def _store_with_llm(vision=False):
     store = {"providers": [], "credentials": [], "tasks": {}}
     cred = S.add_credential(store, name="Forge AI", base_url="https://www.forge-ai.space/v1",
                             api_key="fk")
-    llm = S.add_model(store, cred["id"], model="gpt-luna-5.6", category="llm")
+    llm = S.add_model(store, cred["id"], model="gpt-5.6-luna", category="llm")
     binding = {"primary": llm["id"]}
     if vision:
         v = S.add_model(store, cred["id"], model="meta/llama-3.2-11b-vision-instruct",

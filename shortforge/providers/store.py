@@ -340,6 +340,33 @@ _TASK_BY_KEY = {t["key"]: t for t in TASKS}
 
 TIERS = ("unknown", "free", "paid")
 
+# Always-available local backends (no credential, no key). They are selectable in
+# task routing so the operator can bind e.g. TTS volume -> edge-tts, ASR -> local
+# Whisper, without inventing a fake credential. They are free by definition.
+_BUILTINS = (
+    {"id": "builtin:edge-tts", "name": "edge-tts (local)", "display_name": "edge-tts (local)",
+     "model": "edge", "category": "tts", "tier": "free", "api_shape": "edge",
+     "base_url": "", "api_key": "", "voice": "", "voices": [], "capabilities": {},
+     "enabled": True, "priority": 10000, "builtin": True, "last_test": None, "credit_note": ""},
+    {"id": "builtin:local-whisper", "name": "local Whisper (small)",
+     "display_name": "local Whisper", "model": "small", "category": "asr", "tier": "free",
+     "api_shape": "local", "base_url": "", "api_key": "", "voice": "", "voices": [],
+     "capabilities": {}, "enabled": True, "priority": 10000, "builtin": True,
+     "last_test": None, "credit_note": ""},
+)
+
+
+def builtin_models(category: str) -> list[dict]:
+    """Built-in local backends (edge-tts, local Whisper) for a category — fresh
+    copies so callers can't mutate the templates."""
+    return [dict(m) for m in _BUILTINS if m["category"] == category]
+
+
+def routable_models(store: dict, category: str) -> list[dict]:
+    """Everything bindable to a task in ``category``: stored models (any enable
+    state) + the built-in local backends. Used to populate the routing UI."""
+    return models_in(store, category, enabled_only=False) + builtin_models(category)
+
 
 def task_meta(key: str) -> dict | None:
     return _TASK_BY_KEY.get(key)
@@ -390,6 +417,10 @@ def resolve_task(store: dict, key: str) -> list[dict]:
     ordered: list[dict] = []
     for cat in meta.get("cats", ()):
         for m in models_in(store, cat, enabled_only=True):
+            if m["id"] not in index:
+                index[m["id"]] = m
+                ordered.append(m)
+        for m in builtin_models(cat):        # local backends as last-resort fallbacks
             if m["id"] not in index:
                 index[m["id"]] = m
                 ordered.append(m)

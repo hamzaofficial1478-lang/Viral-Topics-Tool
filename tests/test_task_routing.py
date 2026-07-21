@@ -90,6 +90,37 @@ def test_model_tier_roundtrips_and_flattens():
     assert S.models_in(store, "vision")[0]["tier"] == "paid"
 
 
+def test_builtin_local_backends_are_routable_and_free():
+    assert any(m["id"] == "builtin:edge-tts" and m["tier"] == "free"
+               for m in S.builtin_models("tts"))
+    assert any(m["id"] == "builtin:local-whisper" and m["tier"] == "free"
+               for m in S.builtin_models("asr"))
+    # empty store still resolves the local backends for their tasks
+    store = {"providers": [], "credentials": [], "tasks": {}}
+    assert [m["model"] for m in S.resolve_task(store, "asr")] == ["small"]        # local Whisper
+    assert [m["model"] for m in S.resolve_task(store, "tts_volume")] == ["edge"]  # edge-tts
+
+
+def test_builtins_are_fallbacks_behind_stored_models():
+    store = {"providers": [], "credentials": [], "tasks": {}}
+    cred = S.add_credential(store, name="EL", base_url="https://api.elevenlabs.io", api_key="k")
+    S.add_model(store, cred["id"], model="eleven_multilingual_v2", category="tts", tier="paid")
+    chain = [m["model"] for m in S.resolve_task(store, "tts_quality")]
+    assert chain == ["eleven_multilingual_v2", "edge"]        # stored first, edge builtin last
+
+
+def test_bind_task_to_a_builtin():
+    store = {"providers": [], "credentials": [], "tasks": {}}
+    S.set_task_binding(store, "tts_volume", primary="builtin:edge-tts")
+    assert [m["model"] for m in S.resolve_task(store, "tts_volume")] == ["edge"]
+
+
+def test_routable_models_includes_builtins():
+    store = {"providers": [], "credentials": [], "tasks": {}}
+    ids = [m["id"] for m in S.routable_models(store, "tts")]
+    assert "builtin:edge-tts" in ids
+
+
 def test_task_binding_survives_save_load(tmp_path, monkeypatch):
     path = tmp_path / "p.json"
     monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(path))

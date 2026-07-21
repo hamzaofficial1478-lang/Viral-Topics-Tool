@@ -387,11 +387,12 @@ def _render_task_routing(store):
 
 
 def _task_model_options(store, cats):
-    """(id, label) options for a task's category models, plus an (auto) sentinel."""
+    """(id, label) options for a task's category models + built-in local backends,
+    plus an (auto) sentinel."""
     opts = [("", "(auto by priority)")]
     seen = set()
     for cat in cats:
-        for m in S.models_in(store, cat, enabled_only=False):
+        for m in S.routable_models(store, cat):
             if m["id"] in seen:
                 continue
             seen.add(m["id"])

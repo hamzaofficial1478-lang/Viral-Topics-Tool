@@ -179,6 +179,11 @@ DEFAULTS: dict[str, Any] = {
         "loudnorm_tp": -1.5,
         "loudnorm_lra": 11.0,
     },
+    "vision": {                     # R7: frame scoring adapter
+        "max_images": 6,            # images per request (confirm real endpoint limit live)
+        "frame_width": 768,         # downscale cap
+        "frames_per_clip": 6,       # frames sampled per candidate window
+    },
 }
 
 

@@ -25,6 +25,7 @@ __all__ = [
     "build_llm_provider", "build_tts_router", "build_audio_library",
     "check_providers", "detect_mod", "store_mod",
     "test_tts_provider", "capability_warnings", "dub_language_check", "run_failover",
+    "call_model_chat", "call_task_chat",
 ]
 
 
@@ -47,6 +48,44 @@ def run_failover(chain: list, attempt):
     tried = ", ".join((m.get("name") or m.get("model") or "?") for m, _ in failovers) or "(none)"
     raise ShortForgeError(f"all providers failed ({tried}): "
                           + " | ".join(str(e) for _, e in failovers))
+
+
+def call_model_chat(model: dict, messages: list, *, json_mode: bool = False,
+                    max_tokens: int = 800, timeout: int = 60) -> str:
+    """One chat-completion against a single flattened store model, via the SHARED
+    client (openai_chat_raw). Returns the message content; raises on non-200.
+
+    This is the production LLM path (Forge gpt-luna-5.6, minimax-m3, …) — the
+    same URL/request construction as the probe, so they cannot drift (R7)."""
+    import json as _json
+    from ..llm import openai_chat_raw
+    from ..utils import ShortForgeError
+    extra = {"response_format": {"type": "json_object"}} if json_mode else None
+    r = openai_chat_raw(model.get("base_url", ""), model.get("api_key", ""),
+                        model.get("model", ""), messages, max_tokens=max_tokens,
+                        timeout=timeout, extra=extra)
+    if r["status"] != 200:
+        raise ShortForgeError(f"{model.get('name') or model.get('model')}: "
+                              f"HTTP {r['status']} {(r['body'] or r['error'] or '')[:200]}")
+    try:
+        return _json.loads(r["body"])["choices"][0]["message"]["content"]
+    except Exception as e:  # noqa: BLE001
+        raise ShortForgeError(f"unexpected response from {model.get('model')}: {e}") from None
+
+
+def call_task_chat(store: dict, task_key: str, messages: list, *, json_mode: bool = False,
+                   max_tokens: int = 800):
+    """Resolve a task's provider chain and call chat with failover (R1 + R4 seam).
+
+    Returns (content, model_used, failovers). Raises ShortForgeError if the whole
+    chain fails. Used by hook scoring / translation / metadata / semantic checks."""
+    from .store import resolve_task
+    from ..utils import ShortForgeError
+    chain = resolve_task(store, task_key)
+    if not chain:
+        raise ShortForgeError(f"no provider configured for task '{task_key}'")
+    return run_failover(chain, lambda m: call_model_chat(
+        m, messages, json_mode=json_mode, max_tokens=max_tokens))
 
 
 def dub_language_check(store: dict, language: str) -> tuple[bool, str]:

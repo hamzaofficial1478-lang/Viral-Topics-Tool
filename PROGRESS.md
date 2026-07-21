@@ -8,10 +8,11 @@ Windows · ⏳ in progress · ⬜ pending.
 Branch: `claude/nifty-cray-n8l888` → PR #1 to `main`.
 
 ## Current position
-Executing the **REVISION 2 routing plan** (see below). Item 1 → **R6 (multi-model
-schema) + 4 detection bug-fixes done, unverified** — awaiting operator's NVIDIA
-re-test (llama vision, nemotron-ocr, chatterbox-tts). Next up: **R1 — per-task
-provider binding**.
+Cutting to a **MINIMUM SHIPPABLE SET** (see below) so the operator can publish
+original-language clips at volume ASAP. R6/R1/R2 verified in the UI. **R7 (scoped)
+done, unverified.** Next: **C1 (LLM hook scorer + fusion) — then STOP for operator
+evaluation.** The honest finding: **6 of the 7 MSS items already exist** (Phases
+1–4); C1 is the only real blocker.
 
 ## Done foundation (steps 0–3.6)
 | # | Description | Status |
@@ -46,25 +47,32 @@ frame-level work (tasks 7, 8). Per-task binding — no global LLM setting.
 | 13 | Lip sync | NVIDIA LipSync | free, off by default |
 | 14 | Source audio enhance | Maxine Studio Voice (gRPC) on source only | free, off by default |
 
-## Order of work (REVISION 2 — supersedes old steps 4–14)
+## Plan of record — routing foundation → MINIMUM SHIPPABLE SET
+Foundation (routing) so tasks can call real providers:
+| Item | Status |
+|---|---|
+| R6 multi-model-per-credential schema + fetch-models | 🟡 verified in UI |
+| R1 per-task provider binding (14 tasks) + built-ins (edge-tts, local-whisper) | 🟡 verified in UI |
+| R2 cost-tier guard (model free/paid tier; free_only tasks hard-fail on paid) | 🟡 verified in UI |
+| R7 (scoped) production adapters — Forge/minimax LLM via shared client + failover; **NVIDIA vision image-block adapter** (frame sampling→JPEG→batched request) | 🟡 |
+
+**MINIMUM SHIPPABLE SET** — the operator's cut to publishable clips at volume.
+Most already exist (Phases 1–4); only C1 is a real build:
 | # | Item | Status |
 |---|---|---|
-| 1 | **R6** multi-model-per-credential schema + fetch-models | 🟡 |
-| 1 | R1 per-task provider binding (14 tasks: primary/secondary/fallback/toggle in UI) | 🟡 |
-| 1 | R2 cost-tier guard (model free/paid tier; free_only tasks 7,8,13,14 hard-fail on paid) | 🟡 |
-| 2 | R7 add gateways (AgentRouter, Forge AI) + NVIDIA models with R3 production adapters | ⬜ **NEXT** |
-| 3 | **C1 hook-detection fusion** (transcript LLM + free vision + audio/heuristic, weighted) — top feature | ⬜ |
-| 4 | C2 ASR routing (AgentRouter primary, word-timestamps required) + C3/C4 translation routing | ⬜ |
-| 5 | R8 benchmarks (dub-translation quality-per-second; hook premium vs minimax) → operator confirms | ⬜ |
-| 6 | R4 failover (per-task cascade, visible in log/manifest/summary) + R5 per-task cost tracking | ⬜ |
-| 7 | **STEP 4 (H1)** segment merging into 5–12s chunks + translate-for-speech | ⬜ |
-| 8 | STEP 5 (H2 prosody) → STEP 6 (H4 speakers) → STEP 7 (H3 timing) | ⬜ |
-| 9 | STEP 8 vision-assisted selection (largely delivered by C1) | ⬜ |
+| MSS-1 | **C1 — LLM hook detection** (transcript + llama-3.2 frames fused; mode a) — then STOP for eval | ⬜ **NEXT** |
+| MSS-2 | Karaoke / word-highlight captions | ✅ exists (`captions/ass.py`, templates+animations, word timings) — verify |
+| MSS-3 | Logo overlay (corner, size, opacity) | ✅ exists (`brand/`, `brand.size` frac/px); gap: expose `--logo-size` flag |
+| MSS-4 | Loudness norm ~-14 LUFS, TP ≤ -1 dBTP | ✅ exists (`render.loudnorm_i=-14`, `tp=-1.5` ⇒ satisfies ≤ -1) |
+| MSS-5 | Metadata (title/desc/hashtags) per clip per language | ✅ exists (`metadata.generate`, driven by localized caption text); verify multilingual |
+| MSS-6 | Thumbnail / cover-frame selection | ✅ exists (`thumbnail/`) — verify |
+| MSS-7 | Batch mode (queue sources, resume on crash) | ✅ exists (`run-batch`, `--resume`) — verify |
 
-Adapters still needed (R3): OCR shape, TTS shape, LipSync (video+audio), Studio
-Voice (**gRPC**), vision (image content blocks), ASR (multipart) — several are
-not chat-completions. Gateways are untrusted for production: always keep a
-fallback and fail over on auth/credit errors.
+Deferred until after the MSS ships (operator's call): STEP 4/5/6/7 dubbing polish
+(prosody, diarization, timing — publish original-language first), STEP 9 audio
+beds, STEP 10 transitions/effects, STEP 13 full web UI (CLI works), C1 mode (b)
+`nemotron-omni` raw-media + mode (c) all-three fusion, `nemotron-nano-12b-v2-vl`,
+Studio Voice, LipSync. R3 remaining adapters (OCR/TTS/gRPC/multipart) as needed.
 
 ## Completed log (step · SHA · verified?)
 - Phase 1 — full pipeline ingest→…→manifest · `ef97b24` · verified
@@ -98,6 +106,7 @@ fallback and fail over on auth/credit errors.
   - GENERAL: every probe now records status + full URL + exact payload + response body, shown in the UI.
 - R1 per-task provider binding + R2 cost-tier guard · unverified (245 tests pass): 14 tasks in `store.TASKS`, each with primary/secondary/fallback bindings, enable toggle, and paid_allowed; `resolve_task()` (explicit chain, else category priority order) and `task_paid_violation()`. Models gained a `tier` (free/paid/unknown). `free_only` tasks (vision-scoring, OCR, lip-sync, audio-enhance) can never be flipped to paid and only resolve `tier==free` models — else a hard-fail message. Settings UI "🎛️ Task routing" section + per-model tier selector.
 - R1 built-ins: `edge-tts` (TTS) and `local-whisper` (ASR) are built-in free local backends, selectable in task routing (last-resort fallbacks); empty store resolves ASR→local Whisper, TTS-volume→edge-tts · unverified (249 tests pass).
+- R7 (scoped) production adapters · unverified (264 tests pass): `providers/vision.py` — `sample_frames()` (ffmpeg, verified extracting 6 frames from a test clip), `encode_image()` (JPEG data URL), `build_vision_messages()` (text + image_url blocks), `score_frames()` (batched by `vision.max_images`, default 6) — all via the shared `openai_chat_raw`. `call_model_chat()`/`call_task_chat()` (resolve_task + failover) are the production LLM path for Forge `gpt-luna-5.6` + `minimax-m3`. **Image count/size limits are configurable** (`vision.max_images`/`frame_width`); the real NVIDIA limit must be confirmed on a live call. Deferred: nemotron-omni raw-media, nemotron-12b, Studio Voice, LipSync.
 - R1 follow-ups (5 items) · unverified (258 tests pass): (1) hook_detection is a **fusion** task — `resolve_fusion()` treats the secondary as a parallel contributor whose score combines with the primary (not failover); UI labels it. (2) emotion_labelling flagged **batched** (one call/all segments). (3) `migrate_legacy()` folds legacy flat providers into credentials (grouped by URL+key, ids/priorities/toggles/bindings preserved, NVIDIA→"NVIDIA build"); UI legacy editing removed → one config path via a migrate button. (4) `run_failover()` cascade primitive (returns result + failovers list, raises if all fail) — confirms the chain cascades on error (R4 wires call sites). (5) `edge-tts` always registered as the TTS router's free final fallback (never ElevenLabs-only); volume-vs-quality *selection* still needs the dub path to consume task routing (R4).
 
 ## Decisions (settled)

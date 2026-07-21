@@ -166,6 +166,7 @@ def add_credential(store: dict, *, name: str, base_url: str = "", api_key: str =
         "api_shape": api_shape,
         "auth_style": "bearer",     # bearer | x-api-key | token | custom (per-gateway auth shape)
         "auth_header_name": "",     # header name when auth_style == custom
+        "timeout": 0,               # per-call HTTP timeout (s); 0 = inherit the task default
         "credit_note": "",          # R5: promotional-credit / conversion-rate note
         "enabled": True,
         "models": [],               # list of model dicts (see add_model)
@@ -289,6 +290,7 @@ def _flatten(cred: dict | None, m: dict) -> dict:
         "tier": m.get("tier", "unknown"),
         "auth_style": cred.get("auth_style", "bearer"),
         "auth_header_name": cred.get("auth_header_name", ""),
+        "timeout": int(cred.get("timeout", 0) or 0),   # 0 = inherit task default
         "capabilities": m.get("capabilities", {}),
         "enabled": bool(m.get("enabled", True) and cred.get("enabled", True)),
         "priority": m.get("priority", 0),
@@ -328,16 +330,18 @@ def move_model_priority(store: dict, category: str, mid: str, direction: int) ->
 # tasks) can NEVER be flipped to paid — the guard hard-fails instead of spending.
 # --------------------------------------------------------------------------- #
 
+# ``timeout`` is the default per-call HTTP timeout (seconds). Hook detection is
+# one long batched reasoning call per video, so it needs minutes, not 60s.
 TASKS = (
-    {"key": "asr",                 "label": "Transcription (ASR)",        "cats": ("asr",),                "free_only": False, "on": True},
-    {"key": "hook_detection",      "label": "Hook detection ⭐",           "cats": ("llm", "vision"),       "free_only": False, "on": True, "fusion": True},
-    {"key": "clip_completeness",   "label": "Clip completeness",          "cats": ("llm",),                "free_only": False, "on": True},
-    {"key": "emotion_labelling",   "label": "Emotion labelling",          "cats": ("llm",),                "free_only": False, "on": True, "batched": True},
-    {"key": "dub_translation",     "label": "Dub translation",            "cats": ("llm",),                "free_only": False, "on": True},
-    {"key": "caption_translation", "label": "Caption translation",        "cats": ("llm",),                "free_only": False, "on": True},
-    {"key": "vision_scoring",      "label": "Vision / frame scoring",     "cats": ("vision",),             "free_only": True,  "on": True},
-    {"key": "ocr",                 "label": "OCR / burned-in captions",   "cats": ("ocr", "vision"),       "free_only": True,  "on": True},
-    {"key": "metadata",            "label": "Metadata (title/desc/tags)", "cats": ("llm",),                "free_only": False, "on": True},
+    {"key": "asr",                 "label": "Transcription (ASR)",        "cats": ("asr",),                "free_only": False, "on": True,  "timeout": 600},
+    {"key": "hook_detection",      "label": "Hook detection ⭐",           "cats": ("llm", "vision"),       "free_only": False, "on": True, "fusion": True, "timeout": 600},
+    {"key": "clip_completeness",   "label": "Clip completeness",          "cats": ("llm",),                "free_only": False, "on": True,  "timeout": 300},
+    {"key": "emotion_labelling",   "label": "Emotion labelling",          "cats": ("llm",),                "free_only": False, "on": True, "batched": True, "timeout": 300},
+    {"key": "dub_translation",     "label": "Dub translation",            "cats": ("llm",),                "free_only": False, "on": True,  "timeout": 180},
+    {"key": "caption_translation", "label": "Caption translation",        "cats": ("llm",),                "free_only": False, "on": True,  "timeout": 180},
+    {"key": "vision_scoring",      "label": "Vision / frame scoring",     "cats": ("vision",),             "free_only": True,  "on": True,  "timeout": 300},
+    {"key": "ocr",                 "label": "OCR / burned-in captions",   "cats": ("ocr", "vision"),       "free_only": True,  "on": True,  "timeout": 300},
+    {"key": "metadata",            "label": "Metadata (title/desc/tags)", "cats": ("llm",),                "free_only": False, "on": True,  "timeout": 180},
     {"key": "tts_quality",         "label": "TTS — quality tier",         "cats": ("tts",),                "free_only": False, "on": True},
     {"key": "tts_volume",          "label": "TTS — volume tier",          "cats": ("tts",),                "free_only": False, "on": True},
     {"key": "voice_cloning",       "label": "Voice cloning",              "cats": ("tts",),                "free_only": False, "on": True},
@@ -461,6 +465,11 @@ def is_fusion_task(key: str) -> bool:
 
 def is_batched_task(key: str) -> bool:
     return bool(_TASK_BY_KEY.get(key, {}).get("batched"))
+
+
+def task_timeout(key: str, default: int = 120) -> int:
+    """Default per-call HTTP timeout (seconds) for a task."""
+    return int(_TASK_BY_KEY.get(key, {}).get("timeout") or default)
 
 
 def _candidate_index(store: dict, cats) -> tuple[dict, list]:

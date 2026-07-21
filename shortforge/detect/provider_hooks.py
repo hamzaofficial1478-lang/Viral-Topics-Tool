@@ -50,18 +50,30 @@ def _json_obj(text: str) -> dict:
     return {}
 
 
-def score_transcript(transcript: Transcript, cfg: Config, store: dict, *,
-                     batch: int = 80) -> dict[int, tuple[float, str]]:
-    """Per-segment (score, reason) from the hook LLM. {} if none configured."""
+def score_transcript(transcript: Transcript, cfg: Config, store: dict,
+                     batch: int | None = None) -> dict[int, tuple[float, str]]:
+    """Per-segment (score, reason) from the hook LLM, scored in chunks.
+
+    The transcript is split into ``detect.hook_batch`` (~25) segment chunks so no
+    single call is huge — smaller calls finish under the timeout and report
+    progress per chunk. Scores merge into one global index → (score, reason) map.
+    """
     from ..providers import call_model_chat, run_failover
+    from ..providers.store import task_timeout
     chain = _models_for(store, "llm")
     if not chain:
         raise ShortForgeError(
             "Hook detection needs an LLM — bind one to the 'Hook detection' task in "
             "Settings → Task routing (e.g. minimaxai/minimax-m3).")
     segs = transcript.segments
+    batch = int(batch or cfg.get("detect.hook_batch", 25) or 25)
+    timeout = int(cfg.get("detect.hook_timeout", 0) or task_timeout("hook_detection"))
+    retries = int(cfg.get("providers.retries", 2))
+    n_batches = (len(segs) + batch - 1) // max(1, batch)
+    log.info("hook scoring: %d segment(s) in %d batch(es) of %d (timeout %ds, %d retries)",
+             len(segs), n_batches, batch, timeout, retries)
     out: dict[int, tuple[float, str]] = {}
-    for base in range(0, len(segs), batch):
+    for bi, base in enumerate(range(0, len(segs), batch), start=1):
         chunk = segs[base:base + batch]
         listing = "\n".join(f"{base + i}\t[{s.start:.1f}-{s.end:.1f}] {s.text}"
                             for i, s in enumerate(chunk))
@@ -69,8 +81,10 @@ def score_transcript(transcript: Transcript, cfg: Config, store: dict, *,
                   "(strong short-form hook). Return JSON "
                   '{"scores":[{"index":int,"score":number,"reason":string}]} — one entry '
                   "per line, reason ≤ 12 words.\n\nindex<TAB>[start-end] text:\n" + listing)
+        log.info("hook batch %d/%d (%d segments)…", bi, n_batches, len(chunk))
         content, model, fails = run_failover(chain, lambda m: call_model_chat(
-            m, [{"role": "user", "content": prompt}], json_mode=True, max_tokens=1500))
+            m, [{"role": "user", "content": prompt}], json_mode=True, max_tokens=1500,
+            timeout=timeout, retries=retries))
         for f_m, err in fails:
             log.warning("hook LLM %s failed, cascaded: %s", f_m.get("model"), err)
         for s in _json_obj(content).get("scores", []):
@@ -90,10 +104,12 @@ def score_frames_for(candidates: list[Candidate], indices: list[int], source_pat
     if not chain or not source_path:
         return {}
     from ..providers import run_failover
+    from ..providers.store import task_timeout
     from ..providers.vision import sample_frames, score_frames
     n = int(cfg.get("vision.frames_per_clip", 6))
     fw = int(cfg.get("vision.frame_width", 768))
     max_imgs = int(cfg.get("vision.max_images", 6))
+    vtimeout = int(cfg.get("vision.timeout", 0) or task_timeout("vision_scoring"))
     tmp = tempfile.mkdtemp(prefix="hookframes_")
     prompt = ("Rate the VISUAL interest of these frames for a short-form clip from 0.0 to "
               "1.0 (facial expression intensity, motion, on-screen action, visual variety). "
@@ -107,7 +123,7 @@ def score_frames_for(candidates: list[Candidate], indices: list[int], source_pat
             continue
 
         def attempt(m):
-            results = score_frames(m, frames, prompt, max_images=max_imgs)
+            results = score_frames(m, frames, prompt, max_images=max_imgs, timeout=vtimeout)
             best = 0.0
             reason = ""
             for r in results:

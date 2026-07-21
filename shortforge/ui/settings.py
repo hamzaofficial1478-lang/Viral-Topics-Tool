@@ -305,6 +305,11 @@ def _render_credential(store, cred):
                                    key=f"ccr_{cid}",
                                    help="Promotional credits or a non-standard conversion "
                                         "rate (some gateways bill ~4x). Shown in cost reports.")
+            timeout = st.number_input(
+                "Request timeout (s, 0 = task default)", min_value=0,
+                value=int(cred.get("timeout", 0) or 0), step=30, key=f"cto_{cid}",
+                help="Per-call HTTP timeout. 0 inherits the task default (hook detection "
+                     "600s). Raise for slow reasoning models on long batched calls.")
 
         # BUG1: show exactly what was stored + the endpoint that will be hit, so a
         # pasted full URL (…/chat/completions) is visibly normalized back to base.
@@ -316,7 +321,8 @@ def _render_credential(store, cred):
         bb = st.columns(3)
         if bb[0].button("💾 Save", key=f"csv_{cid}"):
             fields = {"name": name, "base_url": base, "credit_note": credit,
-                      "auth_style": auth_style, "auth_header_name": auth_header_name}
+                      "auth_style": auth_style, "auth_header_name": auth_header_name,
+                      "timeout": int(timeout)}
             if key_in:
                 fields["api_key"] = key_in
             S.update_credential(store, cid, **fields)

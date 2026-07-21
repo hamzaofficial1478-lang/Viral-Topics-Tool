@@ -50,49 +50,77 @@ def run_failover(chain: list, attempt):
                           + " | ".join(str(e) for _, e in failovers))
 
 
+def _is_timeout(r: dict) -> bool:
+    return r.get("status") is None and "tim" in (r.get("error") or "").lower()
+
+
 def call_model_chat(model: dict, messages: list, *, json_mode: bool = False,
-                    max_tokens: int = 800, timeout: int = 60) -> str:
+                    max_tokens: int = 800, timeout: int = 120, retries: int = 2) -> str:
     """One chat-completion against a single flattened store model, via the SHARED
     client (openai_chat_raw). Returns the message content; raises on non-200.
 
-    This is the production LLM path (Forge gpt-5.6-luna, minimax-m3, …) — the
-    same URL/request construction as the probe, so they cannot drift (R7)."""
+    Times each attempt (logged at INFO), retries a *timeout* with exponential
+    backoff (2s, 4s, …), and reports the configured timeout in the error so a slow
+    provider is obvious. The credential's ``timeout`` overrides the argument.
+    Same URL/request construction as the probe, so they cannot drift (R7)."""
     import json as _json
+    import time
     from ..llm import openai_chat_raw
-    from ..utils import ShortForgeError
+    from ..utils import ShortForgeError, log
     from .store import masked, store_path
+
+    timeout = int(model.get("timeout") or timeout)          # per-credential override
     extra = {"response_format": {"type": "json_object"}} if json_mode else None
-    r = openai_chat_raw(model.get("base_url", ""), model.get("api_key", ""),
-                        model.get("model", ""), messages, max_tokens=max_tokens,
-                        timeout=timeout, extra=extra, auth_style=model.get("auth_style", "bearer"),
-                        auth_header_name=model.get("auth_header_name"))
-    if r["status"] != 200:
-        # Diagnostic: which credential + store + (redacted) key + auth header shape
-        # were actually used, so a 401 is fixable without a dashboard cross-check.
-        where = (f"credential={model.get('credential_id', 'env/legacy')} "
-                 f"key={masked(model.get('api_key'))} auth={r.get('auth', 'Authorization')} "
-                 f"model={model.get('model')} url={r.get('url')} store={store_path()}")
-        raise ShortForgeError(f"{model.get('name') or model.get('model')}: HTTP "
-                              f"{r['status']} [{where}] {(r['body'] or r['error'] or '')[:200]}")
-    try:
-        return _json.loads(r["body"])["choices"][0]["message"]["content"]
-    except Exception as e:  # noqa: BLE001
-        raise ShortForgeError(f"unexpected response from {model.get('model')}: {e}") from None
+    r = None
+    for attempt in range(retries + 1):
+        t0 = time.time()
+        r = openai_chat_raw(model.get("base_url", ""), model.get("api_key", ""),
+                            model.get("model", ""), messages, max_tokens=max_tokens,
+                            timeout=timeout, extra=extra,
+                            auth_style=model.get("auth_style", "bearer"),
+                            auth_header_name=model.get("auth_header_name"))
+        elapsed = time.time() - t0
+        log.info("LLM %s: HTTP %s in %.1fs (attempt %d/%d, timeout %ds)",
+                 model.get("model"), r["status"], elapsed, attempt + 1, retries + 1, timeout)
+        if r["status"] == 200:
+            try:
+                return _json.loads(r["body"])["choices"][0]["message"]["content"]
+            except Exception as e:  # noqa: BLE001
+                raise ShortForgeError(f"unexpected response from {model.get('model')}: {e}") from None
+        if _is_timeout(r) and attempt < retries:
+            back = 2 ** (attempt + 1)
+            log.warning("LLM %s timed out after %ds; retry %d/%d in %ds",
+                        model.get("model"), timeout, attempt + 2, retries + 1, back)
+            time.sleep(back)
+            continue
+        break
+
+    where = (f"credential={model.get('credential_id', 'env/legacy')} "
+             f"key={masked(model.get('api_key'))} auth={r.get('auth', 'Authorization')} "
+             f"model={model.get('model')} url={r.get('url')} store={store_path()}")
+    if _is_timeout(r):
+        raise ShortForgeError(
+            f"{model.get('name') or model.get('model')}: timed out after {timeout}s "
+            f"({retries + 1} attempt(s)) — raise the timeout (per-credential 'Request timeout' "
+            f"in Settings, or the task default) [{where}]")
+    raise ShortForgeError(f"{model.get('name') or model.get('model')}: HTTP "
+                          f"{r['status']} [{where}] {(r['body'] or r['error'] or '')[:200]}")
 
 
 def call_task_chat(store: dict, task_key: str, messages: list, *, json_mode: bool = False,
-                   max_tokens: int = 800):
+                   max_tokens: int = 800, timeout: int | None = None, retries: int = 2):
     """Resolve a task's provider chain and call chat with failover (R1 + R4 seam).
 
-    Returns (content, model_used, failovers). Raises ShortForgeError if the whole
-    chain fails. Used by hook scoring / translation / metadata / semantic checks."""
-    from .store import resolve_task
+    The per-call timeout defaults to the task's default (store.task_timeout) unless
+    overridden here or by the credential. Returns (content, model_used, failovers)."""
+    from .store import resolve_task, task_timeout
     from ..utils import ShortForgeError
     chain = resolve_task(store, task_key)
     if not chain:
         raise ShortForgeError(f"no provider configured for task '{task_key}'")
+    eff = int(timeout or task_timeout(task_key))
     return run_failover(chain, lambda m: call_model_chat(
-        m, messages, json_mode=json_mode, max_tokens=max_tokens))
+        m, messages, json_mode=json_mode, max_tokens=max_tokens, timeout=eff, retries=retries))
 
 
 def dub_language_check(store: dict, language: str) -> tuple[bool, str]:

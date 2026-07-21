@@ -74,14 +74,18 @@ def score_frames(model: dict, image_paths: list[str], prompt: str, *,
     urls = [encode_image(p) for p in image_paths if os.path.isfile(p)]
     if not urls:
         return []
+    import time
     results: list[dict] = []
     for i in range(0, len(urls), max(1, max_images)):
         batch = urls[i:i + max(1, max_images)]
         msgs = build_vision_messages(batch, prompt)
+        t0 = time.time()
         r = openai_chat_raw(model.get("base_url", ""), model.get("api_key", ""),
-                            model.get("model", ""), msgs, max_tokens=max_tokens, timeout=timeout)
+                            model.get("model", ""), msgs, max_tokens=max_tokens, timeout=timeout,
+                            auth_style=model.get("auth_style", "bearer"),
+                            auth_header_name=model.get("auth_header_name"))
         r["images"] = len(batch)
         results.append(r)
-        log.info("vision: %d frame(s) -> %s (HTTP %s)", len(batch),
-                 model.get("model", "?"), r.get("status"))
+        log.info("vision %s: %d frame(s) -> HTTP %s in %.1fs (timeout %ds)",
+                 model.get("model", "?"), len(batch), r.get("status"), time.time() - t0, timeout)
     return results

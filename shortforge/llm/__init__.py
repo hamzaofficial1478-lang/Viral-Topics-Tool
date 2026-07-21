@@ -120,7 +120,7 @@ def normalize_chat_url(base_url: str) -> str:
 
 
 def openai_chat_raw(base_url: str, api_key: str, model: str, messages: list, *,
-                    max_tokens: int = 512, timeout: int = 60,
+                    max_tokens: int = 512, timeout: int = 120,
                     extra: dict | None = None, auth_style: str = "bearer",
                     auth_header_name: str | None = None) -> dict:
     """Low-level OpenAI-compatible chat call shared by production + probe.

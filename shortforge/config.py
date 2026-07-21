@@ -35,6 +35,8 @@ DEFAULTS: dict[str, Any] = {
         "hook_frames": True,        # fuse vision frame scores onto the top candidates
         "frame_weight": 0.35,       # (1-w)*transcript_llm + w*frames_llm
         "frame_topk": 12,           # only score frames for the top-K candidates (cost)
+        "hook_batch": 25,           # segments per hook-scoring call (chunked; smaller = under timeout)
+        "hook_timeout": 0,          # per-call timeout override (s); 0 = task default (600)
         # M3++ visual hook signals (local, no API).
         "visual": True,
         "visual_weight": 0.35,          # blend: (1-w)*transcript + w*visual
@@ -188,6 +190,11 @@ DEFAULTS: dict[str, Any] = {
         "max_images": 6,            # images per request (confirm real endpoint limit live)
         "frame_width": 768,         # downscale cap
         "frames_per_clip": 6,       # frames sampled per candidate window
+        "timeout": 0,               # per-call timeout override (s); 0 = task default (300)
+    },
+    "providers": {
+        "retries": 2,               # retries on a *timeout*, with exponential backoff (2s, 4s)
+        "request_timeout": 120,     # global default per-call timeout (s); tasks/credentials override
     },
 }
 

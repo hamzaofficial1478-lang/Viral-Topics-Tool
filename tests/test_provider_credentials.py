@@ -90,8 +90,11 @@ def test_legacy_only_store_still_flattens():
 
 
 def test_fetch_models_guards_empty_and_reads_probe(monkeypatch):
+    import json
     assert D.fetch_models("", "") == []                              # no network call
-    monkeypatch.setattr(D, "_probe_models", lambda b, k: ["a", "b", "c"])
+    body = json.dumps({"data": [{"id": "a"}, {"id": "b"}, {"id": "c"}]})
+    monkeypatch.setattr(D, "_get_raw",
+                        lambda url, key, **kw: {"status": 200, "body": body, "error": None, "url": url})
     assert D.fetch_models("https://x/v1", "k") == ["a", "b", "c"]
 
 

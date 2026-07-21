@@ -9,7 +9,9 @@ Branch: `claude/nifty-cray-n8l888` → PR #1 to `main`.
 
 ## Current position
 Executing the **REVISION 2 routing plan** (see below). Item 1 → **R6 (multi-model
-schema) done, unverified**. Next up: **R1 — per-task provider binding**.
+schema) + 4 detection bug-fixes done, unverified** — awaiting operator's NVIDIA
+re-test (llama vision, nemotron-ocr, chatterbox-tts). Next up: **R1 — per-task
+provider binding**.
 
 ## Done foundation (steps 0–3.6)
 | # | Description | Status |
@@ -88,6 +90,12 @@ fallback and fail over on auth/credit errors.
 - STEP 3.5b pluggable ASR + `--task transcribe` · `f1d3cf2` · unverified (199+ tests pass)
 - STEP 3.6 dashboard: removed 90s/20-clip caps (explicit num_clips now honoured in `select.py` — was a silent-degrade bug), Basic/Advanced layout, plain labels + help, live plan + cost/speed flags, ownership-gated Run, headless AppTest smoke tests · unverified (208 tests pass)
 - R6 multi-model-per-credential store: one credential holds many models (each with category/toggle/priority/caps); `models_in()` flattens credentials + legacy providers so all runtime consumers are unchanged; `detect.fetch_models()` (/v1/models); Settings UI credentials section with Fetch-models + per-model add/toggle/priority/Test&Detect; credit-note field · unverified (217 tests pass)
+- R6 bug-fixes (from operator's NVIDIA re-test) · unverified (235 tests pass):
+  - BUG1 URL doubling regressed → one shared `normalize_base_url`/`normalize_api_url` used by probe + production + ASR + TTS; base normalized **on save** (a pasted `…/chat/completions` is stripped to base and shown); UI shows stored base → chat endpoint.
+  - BUG2 model ids mangled → stored/sent **verbatim**; separate `display_name` field; UI shows the exact model id that will be sent.
+  - BUG3 wrong adapter → `detect()` probes by **category**: TTS does a real `/audio/speech` synth (not "assume"), new **`ocr`** category probes with an image; vision/LLM stay chat. (Detection-level R3; production adapters still pending in R7.)
+  - BUG4 fetch fails silently → `fetch_models_diag()` surfaces HTTP status + URL + body; UI shows the raw `/models` response and keeps manual entry available (fetch is optional).
+  - GENERAL: every probe now records status + full URL + exact payload + response body, shown in the UI.
 
 ## Decisions (settled)
 - **Routing is per-task (REVISION 2)** — no global LLM. Each of the 14 tasks binds its own primary/secondary/fallback. Free tier **enforced** (hard-fail) on tasks 7 (vision) & 8 (OCR); paid allowed where volume is low & impact high.

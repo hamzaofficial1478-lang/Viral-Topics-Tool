@@ -34,22 +34,60 @@ from ..utils import log
 # --- shared OpenAI-compatible client (used by BOTH production calls and the
 #     capability probe, so URL/model handling can never drift) --------------- #
 
-def normalize_chat_url(base_url: str) -> str:
-    """Canonical ``/chat/completions`` URL for an OpenAI-compatible base.
+# API sub-paths that a user might paste as part of the "base URL". They are
+# stripped back to the real base so the base can be composed safely (and never
+# doubled). Longest-first so e.g. "/chat/completions" wins over "/completions".
+_API_PATHS = (
+    "/chat/completions", "/audio/transcriptions", "/audio/translations",
+    "/audio/speech", "/embeddings", "/completions", "/responses", "/messages",
+    "/models", "/ocr", "/rerank",
+)
 
-    Handles a trailing slash and a base that already ends in a version segment
-    so we never double it:
-      https://host.com/v1        -> https://host.com/v1/chat/completions
-      https://host.com/v1/       -> https://host.com/v1/chat/completions
-      https://host.com           -> https://host.com/v1/chat/completions
-      https://gw.vercel.sh/v1    -> https://gw.vercel.sh/v1/chat/completions
+
+def normalize_base_url(base_url: str) -> str:
+    """The canonical *base* of an OpenAI-style endpoint, with any pasted API path
+    stripped off. Idempotent. This is what should be stored.
+
+      https://host/v1                       -> https://host/v1
+      https://host/v1/                      -> https://host/v1
+      https://host/v1/chat/completions      -> https://host/v1
+      https://host/v1/audio/transcriptions  -> https://host/v1
+      https://host                          -> https://host
     """
     base = (base_url or "").strip().rstrip("/")
     if not base:
-        base = "https://api.openai.com/v1"
-    if re.search(r"/v\d+$", base):      # already versioned (…/v1, /v2, …)
-        return base + "/chat/completions"
-    return base + "/v1/chat/completions"
+        return ""
+    low = base.lower()
+    match = max((p for p in _API_PATHS if low.endswith(p)), key=len, default=None)
+    if match:
+        base = base[: -len(match)].rstrip("/")
+    return base
+
+
+def normalize_api_url(base_url: str, path: str) -> str:
+    """Canonical URL for an OpenAI-style sub-path (``path`` starts with '/').
+
+    Strips any pasted path from the base first (so a full endpoint pasted as the
+    base is never doubled), ensures a version segment, then appends ``path``.
+    """
+    base = normalize_base_url(base_url) or "https://api.openai.com/v1"
+    if not re.search(r"/v\d+$", base):      # already versioned (…/v1, /v2, …)?
+        base += "/v1"
+    return base + path
+
+
+def normalize_chat_url(base_url: str) -> str:
+    """Canonical ``/chat/completions`` URL for an OpenAI-compatible base.
+
+    Robust to a base that already ends in a version segment OR a full pasted
+    endpoint, so we never double it:
+      https://host/v1                   -> https://host/v1/chat/completions
+      https://host/v1/                  -> https://host/v1/chat/completions
+      https://host/v1/chat/completions  -> https://host/v1/chat/completions
+      https://host                      -> https://host/v1/chat/completions
+      https://gw.vercel.sh/v1           -> https://gw.vercel.sh/v1/chat/completions
+    """
+    return normalize_api_url(base_url, "/chat/completions")
 
 
 def openai_chat_raw(base_url: str, api_key: str, model: str, messages: list, *,

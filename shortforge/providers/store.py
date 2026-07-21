@@ -15,11 +15,11 @@ from typing import Any
 
 from ..utils import log
 
-CATEGORIES = ("tts", "asr", "llm", "vision", "audio_library")
+CATEGORIES = ("tts", "asr", "ocr", "llm", "vision", "audio_library")
 _CATEGORY_LABELS = {
     "tts": "Voice / TTS", "asr": "ASR / transcription",
-    "llm": "LLM (text & analysis)", "vision": "Vision / Analysis",
-    "audio_library": "Audio library (music & SFX)",
+    "ocr": "OCR / text-in-image", "llm": "LLM (text & analysis)",
+    "vision": "Vision / Analysis", "audio_library": "Audio library (music & SFX)",
 }
 
 
@@ -61,6 +61,16 @@ def masked(key: str | None) -> str:
     return "••••" + key[-4:] if len(key) > 4 else "••••"
 
 
+def normalize_base(url: str) -> str:
+    """Strip any pasted API path (…/chat/completions) back to the base, so a
+    full endpoint pasted into a URL field is stored clean (never doubled later)."""
+    try:
+        from ..llm import normalize_base_url
+        return normalize_base_url(url)
+    except Exception:  # noqa: BLE001 - never block a save on this
+        return (url or "").strip().rstrip("/")
+
+
 def add_provider(store: dict, *, name: str, category: str, base_url: str = "",
                  api_key: str = "", model: str = "", voice: str = "") -> dict:
     if category not in CATEGORIES:
@@ -69,7 +79,7 @@ def add_provider(store: dict, *, name: str, category: str, base_url: str = "",
         "id": uuid.uuid4().hex[:8],
         "name": name.strip() or "provider",
         "category": category,
-        "base_url": base_url.strip(),
+        "base_url": normalize_base(base_url),
         "api_key": api_key.strip(),
         "model": model.strip(),
         "voice": voice.strip(),
@@ -93,6 +103,8 @@ def update_provider(store: dict, pid: str, **fields) -> dict | None:
     p = get_provider(store, pid)
     if p is None:
         return None
+    if fields.get("base_url") is not None:
+        fields["base_url"] = normalize_base(fields["base_url"])
     p.update({k: v for k, v in fields.items() if v is not None})
     return p
 
@@ -146,13 +158,14 @@ def add_credential(store: dict, *, name: str, base_url: str = "", api_key: str =
     cred = {
         "id": uuid.uuid4().hex[:8],
         "name": name.strip() or "credential",
-        "base_url": base_url.strip(),
+        "base_url": normalize_base(base_url),
         "api_key": api_key.strip(),
         "api_shape": api_shape,
         "credit_note": "",          # R5: promotional-credit / conversion-rate note
         "enabled": True,
         "models": [],               # list of model dicts (see add_model)
         "available_models": [],     # ids fetched from /v1/models (for the picker)
+        "last_fetch": None,         # BUG4: {status,url,body} of the last /models call
         "last_test": None,
     }
     credentials(store).append(cred)
@@ -167,6 +180,8 @@ def update_credential(store: dict, cid: str, **fields) -> dict | None:
     c = get_credential(store, cid)
     if c is None:
         return None
+    if fields.get("base_url") is not None:
+        fields["base_url"] = normalize_base(fields["base_url"])
     c.update({k: v for k, v in fields.items() if v is not None})
     return c
 
@@ -175,7 +190,8 @@ def delete_credential(store: dict, cid: str) -> None:
     store["credentials"] = [c for c in store.get("credentials", []) if c["id"] != cid]
 
 
-def add_model(store: dict, cid: str, *, model: str, category: str, voice: str = "") -> dict:
+def add_model(store: dict, cid: str, *, model: str, category: str, voice: str = "",
+              display_name: str = "") -> dict:
     if category not in CATEGORIES:
         raise ValueError(f"unknown category '{category}'")
     cred = get_credential(store, cid)
@@ -183,7 +199,10 @@ def add_model(store: dict, cid: str, *, model: str, category: str, voice: str = 
         raise ValueError(f"no such credential '{cid}'")
     m = {
         "id": uuid.uuid4().hex[:8],
-        "model": model.strip(),
+        # BUG2: the exact API model id, stored verbatim — never truncated or
+        # auto-generated. A friendly label lives in a SEPARATE field.
+        "model": (model or "").strip(),
+        "display_name": display_name.strip(),
         "category": category,
         "voice": voice.strip(),
         "enabled": True,

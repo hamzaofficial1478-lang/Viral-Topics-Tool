@@ -116,9 +116,8 @@ class OpenAICompatibleASR(ASRProvider):
         return bool(self.api_key)
 
     def _url(self) -> str:
-        import re
-        base = self.base_url.rstrip("/")
-        return (base if re.search(r"/v\d+$", base) else base + "/v1") + "/audio/transcriptions"
+        from ..llm import normalize_api_url
+        return normalize_api_url(self.base_url, "/audio/transcriptions")
 
     def transcribe(self, audio_path, *, language=None, duration=0.0) -> Transcript:
         fields = {"model": self.model, "response_format": "verbose_json"}

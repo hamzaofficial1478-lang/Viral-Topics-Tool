@@ -94,23 +94,92 @@ def _probe_voices(base_url: str, api_key: str, voices_ep: str | None):
     return None, []
 
 
-def _probe_models(base_url: str, api_key: str):
-    data = _get(base_url.rstrip("/") + "/models", api_key) or \
-        _get(base_url.rstrip("/") + "/v1/models", api_key)
+def _get_raw(url: str, api_key: str, timeout: int = 15) -> dict:
+    """GET returning {status, body, error, url} — captures HTTP errors (unlike
+    ``_get``, which hides them). 401/403 retries the next auth-header style."""
+    last = {"status": None, "body": "", "error": "no response", "url": url}
+    for hdr in ({"Authorization": f"Bearer {api_key}"}, {"xi-api-key": api_key},
+                {"x-api-key": api_key}):
+        try:
+            req = urllib.request.Request(url, headers=hdr, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8", "replace")
+                return {"status": getattr(resp, "status", 200),
+                        "body": redact(body, api_key), "error": None, "url": url}
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001
+                body = ""
+            last = {"status": e.code, "body": redact(body, api_key), "error": None, "url": url}
+            if e.code in (401, 403):
+                continue                      # maybe a different auth header works
+            return last
+        except urllib.error.URLError as e:
+            last = {"status": None, "body": "", "error": f"network: {e.reason}", "url": url}
+        except Exception as e:  # noqa: BLE001
+            last = {"status": None, "body": "", "error": redact(str(e), api_key), "url": url}
+    return last
+
+
+def _parse_models(body: str) -> list[str]:
+    """Model ids from a /models JSON body, VERBATIM (BUG2: never truncated)."""
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return []
     if isinstance(data, dict):
         items = data.get("data") or data.get("models") or []
-        return [str(m.get("id") or m.get("name")) for m in items if isinstance(m, dict)][:200]
-    if isinstance(data, list):
-        return [str(m.get("model_id") or m.get("id") or m.get("name"))
-                for m in data if isinstance(m, dict)][:200]
-    return []
+    elif isinstance(data, list):
+        items = data
+    else:
+        items = []
+    out = []
+    for m in items:
+        if isinstance(m, dict):
+            mid = m.get("id") or m.get("model_id") or m.get("name")
+            if mid:
+                out.append(str(mid))
+        elif isinstance(m, str):
+            out.append(m)
+    return out[:200]
+
+
+def _probe_models(base_url: str, api_key: str):
+    return fetch_models(base_url, api_key)
+
+
+def fetch_models_diag(base_url: str, api_key: str) -> dict:
+    """R6/BUG4 — model ids + raw diagnostics from GET /models.
+
+    Returns {models, status, url, body, error} so the UI can show exactly why a
+    fetch came back empty (status + response body) rather than a silent [].
+    """
+    if not base_url or not api_key:
+        return {"models": [], "status": None, "url": "", "body": "",
+                "error": "base URL and API key required"}
+    from ..llm import normalize_api_url, normalize_base_url
+    base = normalize_base_url(base_url) or base_url.rstrip("/")
+    candidates = [normalize_api_url(base, "/models")]
+    raw = base.rstrip("/") + "/models"
+    if raw not in candidates:
+        candidates.append(raw)
+    first = None
+    for url in candidates:
+        r = _get_raw(url, api_key)
+        first = first or r
+        models = _parse_models(r["body"]) if r.get("status") == 200 else []
+        if models:
+            return {"models": models, "status": r["status"], "url": url,
+                    "body": r["body"][:2000], "error": None}
+    f = first or {}
+    return {"models": [], "status": f.get("status"), "url": f.get("url", candidates[0]),
+            "body": (f.get("body") or "")[:2000], "error": f.get("error")}
 
 
 def fetch_models(base_url: str, api_key: str) -> list[str]:
-    """R6 — public: model ids exposed by ``GET /v1/models`` (for the UI picker)."""
-    if not base_url or not api_key:
-        return []
-    return _probe_models(base_url, api_key)
+    """R6 — public: model ids exposed by ``GET /models`` (for the UI picker)."""
+    return fetch_models_diag(base_url, api_key)["models"]
 
 
 def _probe_model_languages(base_url: str, api_key: str) -> dict:
@@ -188,10 +257,44 @@ def detect(category: str, base_url: str, api_key: str, model: str = "") -> dict:
             })
             result["notes"].append(f"recognized vendor '{sig['vendor']}' — capabilities from signature")
         else:
-            result["notes"].append("unknown vendor — assuming OpenAI-compatible /audio/speech; "
-                                   "SSML/emotion/cloning left 'unknown' (safe defaults off)")
+            # BUG3/R3: don't just *assume* /audio/speech — actually POST a synth
+            # request and report what came back.
             result["api_shape"] = "openai"
+            if model:
+                tp = _probe_tts(base_url, api_key, model)
+                result.update({"status_code": tp["status"],
+                               "request_excerpt": tp["request_excerpt"],
+                               "response_excerpt": tp["response_excerpt"]})
+                if tp["works"]:
+                    result["reachable"] = True
+                    result["notes"].append(f"TTS synth OK (HTTP {tp['status']}, audio) at /audio/speech")
+                else:
+                    result["notes"].append(
+                        f"TTS probe to /audio/speech returned HTTP {tp['status']} — see raw "
+                        f"response; this model may use a different TTS request shape.")
+            else:
+                result["notes"].append("unknown vendor — set the TTS model id, then Test to probe "
+                                       "/audio/speech with a real phrase.")
         return result
+
+    if category == "ocr":
+        # BUG3/R3: probe with an IMAGE request, never chat-only.
+        res = {"api_shape": "openai", "reachable": False, "notes": [],
+               "status_code": None, "request_excerpt": "", "response_excerpt": ""}
+        if not model:
+            res["notes"].append("set the OCR model id (e.g. nvidia/nemotron-ocr-v2), then Test.")
+            return res
+        op = _probe_ocr(base_url, api_key, model)
+        res.update({"status_code": op["status"], "request_excerpt": op["request_excerpt"],
+                    "response_excerpt": op["response_excerpt"]})
+        if op["works"]:
+            res["reachable"] = True
+            res["notes"].append(f"OCR image probe OK (HTTP {op['status']}) — accepts image + text.")
+        else:
+            res["notes"].append(
+                f"OCR image probe returned HTTP {op['status']} — see raw response. nemotron-ocr "
+                "may use a NIM-specific OCR endpoint rather than chat-completions.")
+        return res
 
     if category in ("llm", "vision"):
         # Real chat-completion probe with full diagnostics (no SSML/emotion flags —
@@ -343,6 +446,62 @@ def _probe_multimodal(base_url: str, api_key: str, model: str) -> bool:
         {"type": "image_url", "image_url": {"url": _TEST_IMAGE}}]}]
     r = openai_chat_raw(base_url, api_key, model, msgs, max_tokens=8)
     return bool(r["status"] == 200 and _has_choices(r["body"]))
+
+
+def _probe_tts(base_url: str, api_key: str, model: str) -> dict:
+    """R3/BUG3 — probe a TTS model with a real synth request (not chat).
+
+    POSTs a short phrase to ``/audio/speech`` and inspects the response for audio
+    bytes. Returns full diagnostics (status, url, payload, response) either way.
+    """
+    from ..llm import normalize_api_url
+    url = normalize_api_url(base_url, "/audio/speech")
+    payload = {"model": model or "", "input": "ShortForge test.",
+               "voice": "alloy", "response_format": "wav"}
+    req_excerpt = f"POST {url}\n" + json.dumps(payload)
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "content-type": "application/json"},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            ctype = resp.headers.get("content-type", "")
+            head = resp.read(16)
+            status = getattr(resp, "status", 200)
+            works = status == 200 and ("audio" in ctype.lower()
+                                       or head[:4] in (b"RIFF", b"OggS", b"fLaC")
+                                       or head[:3] == b"ID3")
+            return {"status": status, "works": works, "request_excerpt": req_excerpt,
+                    "response_excerpt": (f"(binary {ctype or 'audio'}, first bytes {head!r})"
+                                         if works else f"({ctype or 'non-audio'} — not audio)")}
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            body = ""
+        return {"status": e.code, "works": False, "request_excerpt": req_excerpt,
+                "response_excerpt": redact(body, api_key)[:1000]}
+    except Exception as e:  # noqa: BLE001
+        return {"status": None, "works": False, "request_excerpt": req_excerpt,
+                "response_excerpt": redact(str(e) or type(e).__name__, api_key)}
+
+
+def _probe_ocr(base_url: str, api_key: str, model: str) -> dict:
+    """R3/BUG3 — probe an OCR model with an IMAGE request (not plain chat).
+
+    Sends an image + instruction via the OpenAI vision shape (which most NVIDIA
+    vision/OCR NIMs accept) and captures diagnostics so a NIM-specific OCR
+    endpoint is visible in the raw response.
+    """
+    from ..llm import openai_chat_raw
+    msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "Extract any text in this image; reply NONE if empty."},
+        {"type": "image_url", "image_url": {"url": _TEST_IMAGE}}]}]
+    r = openai_chat_raw(base_url, api_key, model, msgs, max_tokens=32)
+    return {"status": r["status"], "url": r["url"],
+            "works": bool(r["status"] == 200 and _has_choices(r["body"])),
+            "request_excerpt": f"POST {r['url']}\n(OCR probe: 1x1 image + text, model={model})",
+            "response_excerpt": redact(r["body"] or r["error"] or "", api_key)[:1000]}
 
 
 def _context_from_models(base_url: str, api_key: str, model: str) -> int | None:

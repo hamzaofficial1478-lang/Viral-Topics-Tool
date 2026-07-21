@@ -77,7 +77,8 @@ class OpenAICompatibleTTSProvider(TTSProvider):
 
     def synthesize(self, text, *, language, out_path, voice=None, ssml=False, style=None):
         voice = voice or self.voice_for(language)
-        url = self.base_url.rstrip("/") + "/audio/speech"
+        from ..llm import normalize_api_url
+        url = normalize_api_url(self.base_url, "/audio/speech")
         payload = {"model": self.model, "input": text,
                    "voice": voice or "alloy", "response_format": "wav"}
         if ssml:

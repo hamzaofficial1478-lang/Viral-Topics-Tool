@@ -39,8 +39,8 @@ def _caps_summary(p: dict) -> str:
     c = p.get("capabilities") or {}
     if not c:
         return "not detected"
-    if p.get("category") in ("llm", "vision"):
-        # LLM/vision: no SSML/emotion/clone (TTS concepts).
+    if p.get("category") in ("llm", "vision", "ocr"):
+        # LLM/vision/OCR: no SSML/emotion/clone (TTS concepts).
         vis = c.get("multimodal")
         parts = [f"reachable {_m(c.get('reachable'))}",
                  f"responds {_m(c.get('model_responds'))}",
@@ -287,6 +287,13 @@ def _render_credential(store, cred):
                                    help="Promotional credits or a non-standard conversion "
                                         "rate (some gateways bill ~4x). Shown in cost reports.")
 
+        # BUG1: show exactly what was stored + the endpoint that will be hit, so a
+        # pasted full URL (…/chat/completions) is visibly normalized back to base.
+        stored = cred.get("base_url", "")
+        if stored:
+            from ..llm import normalize_chat_url
+            st.caption(f"Stored base: `{stored}` → chat endpoint `{normalize_chat_url(stored)}`")
+
         bb = st.columns(3)
         if bb[0].button("💾 Save", key=f"csv_{cid}"):
             fields = {"name": name, "base_url": base, "credit_note": credit}
@@ -301,35 +308,53 @@ def _render_credential(store, cred):
                 S.update_credential(store, cid, api_key=key_in)
             S.update_credential(store, cid, name=name, base_url=base)
             cur = S.get_credential(store, cid)
-            with st.spinner("Querying /v1/models…"):
-                got = D.fetch_models(cur.get("base_url", ""), cur.get("api_key", ""))
-            S.update_credential(store, cid, available_models=got)
+            with st.spinner("Querying /models…"):
+                diag = D.fetch_models_diag(cur.get("base_url", ""), cur.get("api_key", ""))
+            S.update_credential(store, cid, available_models=diag["models"],
+                                last_fetch={"status": diag["status"], "url": diag["url"],
+                                            "body": diag["body"], "error": diag["error"]})
             _persist(store)
-            st.success(f"Found {len(got)} model(s)." if got
-                       else "No models returned — check the URL/key, or add models by hand below.")
             st.rerun()
         if bb[2].button("🗑 Delete credential", key=f"cdel_{cid}"):
             S.delete_credential(store, cid)
             _persist(store)
             st.rerun()
 
+        # BUG4: fetch diagnostics — always show HTTP status + URL + body when a
+        # fetch returned nothing, and remind that manual entry is available.
+        lf = cred.get("last_fetch")
+        if lf:
+            if cred.get("available_models"):
+                st.caption(f"✓ Fetched {len(cred['available_models'])} model(s) "
+                           f"(HTTP {lf.get('status')}).")
+            else:
+                st.warning(f"Fetch returned no models — HTTP {lf.get('status')} at "
+                           f"`{lf.get('url')}`. Add model ids by hand below (fetching is "
+                           f"optional).")
+                with st.expander("Raw /models response"):
+                    st.code(f"GET {lf.get('url')}\nHTTP {lf.get('status')}\n"
+                            f"{lf.get('error') or ''}\n\n{lf.get('body') or '(empty)'}")
+
         # add a model to this credential
-        st.markdown("**Add a model**")
+        st.markdown("**Add a model**  — the exact API model id is stored and sent verbatim.")
         avail = cred.get("available_models") or []
-        mc = st.columns([3, 2, 1])
+        mc = st.columns([3, 2, 2, 1])
         with mc[0]:
             pick = st.selectbox("From fetched list", ["(type below)"] + avail,
                                 key=f"mp_{cid}") if avail else "(type below)"
-            typed = st.text_input("…or model id", key=f"mt_{cid}",
-                                  placeholder="e.g. minimaxai/minimax-m3")
+            typed = st.text_input("…or exact model id", key=f"mt_{cid}",
+                                  placeholder="e.g. meta/llama-3.2-11b-vision-instruct")
         with mc[1]:
             mcat = st.selectbox("Category", _CATS, format_func=S.category_label, key=f"mc_{cid}")
         with mc[2]:
+            disp = st.text_input("Display name (optional)", key=f"md_{cid}",
+                                 placeholder="friendly label — not sent to the API")
+        with mc[3]:
             st.write("")
             if st.button("Add model", key=f"madd_{cid}"):
                 model_id = typed.strip() or (pick if pick != "(type below)" else "")
                 if model_id:
-                    S.add_model(store, cid, model=model_id, category=mcat)
+                    S.add_model(store, cid, model=model_id, category=mcat, display_name=disp)
                     _persist(store)
                     st.rerun()
                 else:
@@ -344,11 +369,16 @@ def _render_credential(store, cred):
 
 def _render_model_row(store, cred, m):
     mid = m["id"]
+    caps = m.get("capabilities", {}) or {}
     summary = _caps_summary({"category": m.get("category"), "model": m.get("model"),
-                             "capabilities": m.get("capabilities", {})})
+                             "capabilities": caps})
+    label = m.get("display_name") or ""
     cols = st.columns([4, 2, 1, 1, 1, 1])
-    cols[0].markdown(f"`{m.get('model', '')}`  \n<small>{summary}</small>",
-                     unsafe_allow_html=True)
+    # BUG2: show the EXACT model id that will be sent, verbatim.
+    cols[0].markdown(
+        (f"**{label}**  \n" if label else "")
+        + f"sends model id: `{m.get('model', '')}`  \n<small>{summary}</small>",
+        unsafe_allow_html=True)
     enabled = cols[1].checkbox(S.category_label(m.get("category", "")),
                                m.get("enabled", True), key=f"me_{mid}")
     if enabled != m.get("enabled", True):
@@ -375,3 +405,13 @@ def _render_model_row(store, cred, m):
         S.delete_model(store, mid)
         _persist(store)
         st.rerun()
+
+    # GENERAL: every probe shows status + full URL + exact payload + response body.
+    for note in caps.get("notes", []):
+        st.caption("• " + note)
+    if caps.get("request_excerpt") or caps.get("response_excerpt"):
+        with st.expander(f"Raw probe (HTTP {caps.get('status_code', '—')}) — request / response"):
+            if caps.get("request_excerpt"):
+                st.code(caps["request_excerpt"])
+            if caps.get("response_excerpt"):
+                st.code(caps["response_excerpt"])

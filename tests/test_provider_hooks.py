@@ -14,6 +14,9 @@ from shortforge.detect import detect_hooks
 @pytest.fixture(autouse=True)
 def _iso(tmp_path, monkeypatch):
     monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(tmp_path / "p.json"))
+    # isolate the hook-score disk cache per test (no cross-test contamination)
+    monkeypatch.setattr(PH, "_score_cache_path",
+                        lambda cfg, tr, mid: str(tmp_path / "hookscores.json"))
 
 
 def _tr():

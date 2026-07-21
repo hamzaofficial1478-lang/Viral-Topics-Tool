@@ -91,6 +91,7 @@ def build_clips(
 
     coherent = bool(cfg.get("select.coherent", True))
     pause_thr = float(cfg.get("select.pause_threshold", 0.5))
+    max_backup = int(cfg.get("select.max_backup", 2))   # keep the hook anchor early
     gaps = _gaps(segments)
 
     seg_score = _score_by_segment(transcript, candidates)
@@ -118,7 +119,7 @@ def build_clips(
                 continue
         if coherent:
             lo, hi = _grow_coherent(
-                anchor, segments, gaps, used, lower, upper, target, pause_thr
+                anchor, segments, gaps, used, lower, upper, target, pause_thr, max_backup
             )
         else:
             lo, hi = _grow(anchor, segments, used, lower, upper)
@@ -195,10 +196,12 @@ def _grow_coherent(
     upper: float,
     target: float,
     pause_thr: float,
+    max_backup: int = 2,
 ) -> tuple[int | None, int | None]:
     """Grow a clip that starts on a thought-start and ends on its payoff.
 
-    1. Back up (bounded) so we don't begin mid-thought.
+    1. Back up (bounded by ``max_backup``) only enough not to begin mid-thought —
+       so the hook anchor lands in the first ~1–2s, not buried in the middle.
     2. Grow forward to reach the minimum length.
     3. Extend to the nearest pause (natural end) within tolerance, else to the
        segment closest to the target duration.
@@ -208,12 +211,12 @@ def _grow_coherent(
     n = len(segments)
     lo = hi = anchor
 
-    # 1) Back up to a clean thought start (at most a few segments, within upper).
+    # 1) Back up to a clean thought start (bounded, within upper) so the hook is early.
     back = 0
     while (
         lo - 1 >= 0
         and (lo - 1) not in used
-        and back < 3
+        and back < max_backup
         and not _is_thought_start(lo, segments, gaps, pause_thr)
         and segments[hi].end - segments[lo - 1].start <= upper
     ):

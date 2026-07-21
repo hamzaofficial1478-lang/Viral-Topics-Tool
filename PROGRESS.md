@@ -8,11 +8,12 @@ Windows · ⏳ in progress · ⬜ pending.
 Branch: `claude/nifty-cray-n8l888` → PR #1 to `main`.
 
 ## Current position
-**C1 (LLM hook detection) done — operator evaluating on `minimaxai/minimax-m3`**
-(Forge blocked; minimax is the hook primary, on the working NVIDIA endpoint).
-Evaluate with `python cli.py hooks --source … --top 8`. Provider layer is
-gateway-free now. After the operator judges the picks, verify MSS-2…7 (already
-exist) and ship. Provider-agnostic C1 needed no code change for the switch.
+**C1 VERIFIED** — minimax-m3 found 44 strong candidates (≥0.50) where the
+heuristic found 0, with real editorial justifications. This is the milestone.
+Four follow-ups now fixed (clip-level selection, vision-400 diagnostics, hook-
+score caching, concurrent batches). **Next: operator runs the FULL pipeline with
+LLM hooks to watch actual clips built around the moments** — the real test —
+then verify MSS-2…7 (already exist) and ship.
 
 ## Done foundation (steps 0–3.6)
 | # | Description | Status |
@@ -60,7 +61,7 @@ Foundation (routing) so tasks can call real providers:
 Most already exist (Phases 1–4); only C1 is a real build:
 | # | Item | Status |
 |---|---|---|
-| MSS-1 | **C1 — LLM hook detection** (transcript + llama-3.2 frames fused; mode a) — STOP for eval | 🟡 |
+| MSS-1 | **C1 — LLM hook detection** (transcript + llama-3.2 frames fused; mode a) | ✅ |
 | MSS-2 | Karaoke / word-highlight captions | ✅ exists (`captions/ass.py`, templates+animations, word timings) — verify |
 | MSS-3 | Logo overlay (corner, size, opacity) | ✅ exists (`brand/`, `brand.size` frac/px); gap: expose `--logo-size` flag |
 | MSS-4 | Loudness norm ~-14 LUFS, TP ≤ -1 dBTP | ✅ exists (`render.loudnorm_i=-14`, `tp=-1.5` ⇒ satisfies ≤ -1) |
@@ -107,7 +108,8 @@ Studio Voice, LipSync. R3 remaining adapters (OCR/TTS/gRPC/multipart) as needed.
 - R1 per-task provider binding + R2 cost-tier guard · unverified (245 tests pass): 14 tasks in `store.TASKS`, each with primary/secondary/fallback bindings, enable toggle, and paid_allowed; `resolve_task()` (explicit chain, else category priority order) and `task_paid_violation()`. Models gained a `tier` (free/paid/unknown). `free_only` tasks (vision-scoring, OCR, lip-sync, audio-enhance) can never be flipped to paid and only resolve `tier==free` models — else a hard-fail message. Settings UI "🎛️ Task routing" section + per-model tier selector.
 - R1 built-ins: `edge-tts` (TTS) and `local-whisper` (ASR) are built-in free local backends, selectable in task routing (last-resort fallbacks); empty store resolves ASR→local Whisper, TTS-volume→edge-tts · unverified (249 tests pass).
 - LLM timeouts made configurable + resilient · unverified (287 tests pass): the hardcoded 60s client timeout was the C1 blocker (76-segment batched minimax call needs minutes). Now: **per-task** default timeouts in `store.TASKS` (hook_detection 600s, vision 300s, translation 180s) + **per-credential** `timeout` override (UI field) + config (`providers.request_timeout`, `detect.hook_timeout`, `vision.timeout`); `openai_chat_raw` default 60→120. **Retry-with-backoff** on timeout only (2 retries, 2s/4s), never on 4xx. **Hook scoring chunks** the transcript into `detect.hook_batch` (~25) segment calls, merged+ranked globally. **Per-call INFO timing** (`LLM <model>: HTTP … in Ns …`) + per-batch progress. Timeout error now says "timed out after Ns (configurable …)". Same timeouts + timing apply to vision (llama frames).
-- C1 LLM hook detection · unverified (276 tests pass): `detect/provider_hooks.py` — `score_transcript()` (batched LLM scores 0–1 via the hook_detection LLM contributor + failover), `score_frames_for()` (top-K candidates → `vision.score_frames`), `detect()` fuses them (`detect.frame_weight`). Wired into `detect_hooks` (auto-used when a hook LLM is bound; visible fallback to heuristic on error). `python cli.py hooks --source … --top N` prints candidates per mode (heuristic / transcript_llm / fusion) with timestamps, scores, justifications. **Fixes "0 strong standalone moments".** Modes (b) omni / (c) all-three deferred.
+- C1 follow-ups (operator's 4 issues, post-verification) · unverified (293 tests pass): (1) **clip-level** — `hooks` command now builds CLIPS around each hook anchor via `build_clips` (not raw ASR fragments); `select.max_backup` (default 2) keeps the hook in the first ~1–2s; overlapping anchors dedupe. (2) **vision 400** — `score_frames_for` surfaces the full 400 body + image-count/size context and a "lower vision.max_images to 1" hint. (3) **hook-score caching** keyed on (transcript, model, rubric v) — `compare_modes` scores ONCE (no double pass), and a disk cache makes re-runs/pipeline reuse free. (4) **concurrency** — hook batches run in parallel (`detect.hook_concurrency`, default 4).
+- C1 LLM hook detection · **VERIFIED** (44 strong candidates vs 0 heuristic, real justifications): `detect/provider_hooks.py` — `score_transcript()` (batched LLM scores 0–1 via the hook_detection LLM contributor + failover), `score_frames_for()` (top-K candidates → `vision.score_frames`), `detect()` fuses them (`detect.frame_weight`). Wired into `detect_hooks` (auto-used when a hook LLM is bound; visible fallback to heuristic on error). `python cli.py hooks --source … --top N` prints candidates per mode (heuristic / transcript_llm / fusion) with timestamps, scores, justifications. **Fixes "0 strong standalone moments".** Modes (b) omni / (c) all-three deferred.
 - Zero-cost original-audio default · unverified: translation/dub/Demucs already gate on `dub_on` (default off) — confirmed. Summary now reads `dub: none (original audio)`; hard `assert localize_on` guards the dub branch (no TTS resolved/called otherwise); `--no-dub` flag forces it. Default-mode paid calls = **hook detection + metadata only**.
 - Export resolution selector · unverified: `reframe/resolution.py` — short-side px (1080p/720p/480p) or WxH, **separate from aspect**; `apply_resolution()` in the pipeline; `estimate_export()` (≈MB/clip + CPU render-speed) shown in wizard + UI. `--resolution` on run/run-batch, wizard prompt, UI selectbox. Default 1080p. Also exposed `--logo-size`.
 - R7 (scoped) production adapters · unverified (264 tests pass): `providers/vision.py` — `sample_frames()` (ffmpeg, verified extracting 6 frames from a test clip), `encode_image()` (JPEG data URL), `build_vision_messages()` (text + image_url blocks), `score_frames()` (batched by `vision.max_images`, default 6) — all via the shared `openai_chat_raw`. `call_model_chat()`/`call_task_chat()` (resolve_task + failover) are the production LLM path for Forge `gpt-5.6-luna` + `minimax-m3`. **Image count/size limits are configurable** (`vision.max_images`/`frame_width`); the real NVIDIA limit must be confirmed on a live call. Deferred: nemotron-omni raw-media, nemotron-12b, Studio Voice, LipSync.

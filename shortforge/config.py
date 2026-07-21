@@ -37,6 +37,7 @@ DEFAULTS: dict[str, Any] = {
         "frame_topk": 12,           # only score frames for the top-K candidates (cost)
         "hook_batch": 25,           # segments per hook-scoring call (chunked; smaller = under timeout)
         "hook_timeout": 0,          # per-call timeout override (s); 0 = task default (600)
+        "hook_concurrency": 4,      # hook-scoring batches run in parallel (respect provider RPM)
         # M3++ visual hook signals (local, no API).
         "visual": True,
         "visual_weight": 0.35,          # blend: (1-w)*transcript + w*visual
@@ -65,6 +66,7 @@ DEFAULTS: dict[str, Any] = {
         # (pauses / topic shifts) so each short is a complete idea, not a window.
         "coherent": True,
         "pause_threshold": 0.5,   # gap (s) that marks a thought/topic boundary
+        "max_backup": 2,          # max segments to back up from a hook anchor (keep hook early)
     },
     "reframe": {
         "aspect": "9:16",           # SHAPE (9:16 / 1:1 / 16:9 / WxH)

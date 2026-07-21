@@ -497,22 +497,25 @@ def cmd_benchmark_llm(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_hook_modes(modes: dict, top: int) -> None:
+def _print_hook_modes(modes: dict, transcript, cfg, top: int) -> None:
+    """Show the CLIPS each mode would build (hook anchor → full clip), not raw
+    ASR-segment fragments. Clips are grown to target duration, deduped, ranked."""
+    from shortforge.select import build_clips
+    cfg.override("select.num_clips", int(top))
+    tgt = int(cfg.get("select.target_duration", 45))
     print("\n" + "=" * 78)
-    print("  HOOK DETECTION — candidate comparison (check these against the video)")
+    print(f"  HOOK DETECTION — CLIPS built around the top hooks (~{tgt}s target)")
     for name, cands in modes.items():
         print("=" * 78)
+        clips = build_clips(transcript, cands, cfg, "hooks")
         strong = sum(1 for c in cands if c.score >= 0.5)
-        print(f"  MODE: {name}   ({strong} strong ≥0.50, showing top {top})")
-        print(f"    {'start':>7} {'end':>7} {'score':>6}   justification")
+        print(f"  MODE: {name}   ({strong} strong hook segments ≥0.50 → {len(clips)} clips)")
+        print(f"    {'clip span':>15} {'dur':>5} {'score':>6}   justification")
         print("    " + "-" * 68)
-        for c in cands[:top]:
-            print(f"    {c.start:>7.1f} {c.end:>7.1f} {c.score:>6.2f}   {(c.reason or '')[:52]}")
-            sig = c.signals or {}
-            t = (sig.get("transcript_llm") or {}).get("score")
-            fr = (sig.get("frames_llm") or {}).get("score")
-            if t is not None or fr is not None:
-                print(f"            (transcript={t}  frames={fr})")
+        for c in clips:
+            print(f"    {c.start:>6.1f}-{c.end:<6.1f}   {c.end - c.start:>4.0f}s {c.score:>6.2f}   "
+                  f"{(c.reason or '')[:46]}")
+            print(f"        “{(c.caption_text or '')[:88]}”")
     print("=" * 78)
 
 
@@ -550,7 +553,7 @@ def cmd_hooks(args: argparse.Namespace) -> int:
     except ShortForgeError as e:
         log.error("%s", e)
         return 2
-    _print_hook_modes(modes, int(getattr(args, "top", 8) or 8))
+    _print_hook_modes(modes, transcript, cfg, int(getattr(args, "top", 8) or 8))
     return 0
 
 

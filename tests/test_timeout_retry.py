@@ -105,6 +105,7 @@ def test_hook_scoring_chunks_and_merges(monkeypatch):
     monkeypatch.setattr("shortforge.llm.openai_chat_raw", fake)
     cfg = Config.load()
     cfg.override("detect.hook_batch", 10)
+    cfg.override("cache.disabled", True)                     # deterministic call count
     out = PH.score_transcript(tr, cfg, store)
     assert calls["c"] == 3                                   # 30 segments / batch 10
     assert len(out) == 30 and all(v[0] == 0.5 for v in out.values())   # merged globally

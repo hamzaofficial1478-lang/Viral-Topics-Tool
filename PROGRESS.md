@@ -8,10 +8,11 @@ Windows · ⏳ in progress · ⬜ pending.
 Branch: `claude/nifty-cray-n8l888` → PR #1 to `main`.
 
 ## Current position
-**C1 (LLM hook detection) done, unverified — STOP for operator evaluation** on the
-French source (compare modes with `python cli.py hooks`). Also landed this turn:
-the zero-cost original-audio default path and the export-resolution selector.
-After the operator evaluates C1, verify MSS-2…7 (they already exist) and ship.
+**C1 (LLM hook detection) done — operator evaluating on `minimaxai/minimax-m3`**
+(Forge blocked; minimax is the hook primary, on the working NVIDIA endpoint).
+Evaluate with `python cli.py hooks --source … --top 8`. Provider layer is
+gateway-free now. After the operator judges the picks, verify MSS-2…7 (already
+exist) and ship. Provider-agnostic C1 needed no code change for the switch.
 
 ## Done foundation (steps 0–3.6)
 | # | Description | Status |
@@ -32,7 +33,7 @@ frame-level work (tasks 7, 8). Per-task binding — no global LLM setting.
 | # | Task | Primary → fallback | Tier |
 |---|---|---|---|
 | 1 | Transcription (ASR) | AgentRouter `/audio/transcriptions` → local Whisper `small` | paid, 1× cached |
-| 2 | Hook detection ⭐ | best reasoning model (fuse transcript + free vision) → nemotron-omni → minimax | PAID (justified) |
+| 2 | Hook detection ⭐ | **`minimaxai/minimax-m3`** (transcript) fused with free `llama-3.2-11b-vision` (frames) → nemotron-omni (deferred) | paid transcript + free vision |
 | 3 | Clip completeness | same as #2 → minimax | paid, 1× batched |
 | 4 | Emotion labelling | strong model, batched 1 call → minimax | paid, 1× |
 | 5 | Dub translation | minimax **and** Forge (per-chunk auto-select) → Vercel | paid, 30–60× |
@@ -113,10 +114,10 @@ Studio Voice, LipSync. R3 remaining adapters (OCR/TTS/gRPC/multipart) as needed.
 
 ## Decisions (settled)
 - **Routing is per-task (REVISION 2)** — no global LLM. Each of the 14 tasks binds its own primary/secondary/fallback. Free tier **enforced** (hard-fail) on tasks 7 (vision) & 8 (OCR); paid allowed where volume is low & impact high.
-- **Hook detection = best-resourced task** — multi-signal fusion (best reasoning LLM on transcript + free `llama-3.2-11b-vision` on frames + existing audio/heuristics), 1–2 calls/video. Highest-priority feature work (C1).
-- **Two gateways** — AgentRouter (`https://agentrouter.org/v1`, OpenAI-compatible, also `/audio/speech` + `/audio/transcriptions`) and Forge AI (`https://www.forge-ai.space/`, shape TBD via Test & Detect). Both **untrusted for production** — always keep a fallback; fail over on auth/credit errors.
+- **Hook detection = C1 fusion** — `minimaxai/minimax-m3` on the transcript (1 batched call/video) fused with free `llama-3.2-11b-vision` on frames + existing audio/heuristics. (Both gateways that would have supplied a "premium reasoning" model are blocked; minimax is the best available and works on the NVIDIA endpoint.)
+- **Gateways** — AgentRouter and Forge AI are **both BLOCKED** (see threads). The pipeline runs on the NVIDIA build endpoint + local Whisper + ElevenLabs/edge-tts; no gateway dependency remains.
 - **ASR primary flips to AgentRouter `/audio/transcriptions`** (offloads CPU), local Whisper `small` the free fallback. Must return **word-level timestamps** or fall back + log why.
-- **Dub translation** = minimax **and** Forge, per-chunk auto-selected by quality-per-second (R8). **Caption translation** stays minimax → Forge (separate cache key).
+- **Dub/caption translation** = `minimaxai/minimax-m3` (Forge dropped — blocked). Vercel remains a possible secondary if configured.
 - **Primary LLM `minimaxai/minimax-m3`** (STEP 2 winner). **`z-ai/glm-5.2` dropped & disabled** — timed out 5/5, earlier hard fail, "most populated ship".
 - **TTS: ElevenLabs** (emotion ✓, cloning ✓, SSML ✗) quality tier; **Chatterbox** (23 langs, free) volume tier.
 - **NVIDIA endpoint** `https://integrate.api.nvidia.com/v1`, OpenAI-compatible. Canary/Nemotron ASR & Studio Voice may live on separate NIM/gRPC endpoints.
@@ -124,9 +125,9 @@ Studio Voice, LipSync. R3 remaining adapters (OCR/TTS/gRPC/multipart) as needed.
 - **v0** (`https://api.v0.dev/v1`) **disabled** — web-code model, wrong for translation/vision.
 
 ## Open threads
-- **Forge 401 — narrowed, awaiting operator's Playground check.** Diagnostic showed key ✓ (••••6667) and store ✓, but host = `forge-gateway-api.fly.dev` (user-entered, not hardcoded) with `auth=Authorization`. Since probe + CLI read the SAME stored base_url+key, both hit fly.dev — the earlier "working" probes were an earlier state. Two candidates: wrong host, or Forge `fg-` consumer keys needing a non-Bearer header. Shipped: (1) **per-credential auth style** (`bearer` | `x-api-key` | `token` | `custom` header) threaded through the ONE `llm.auth_header()` used by probe+CLI+UI+vision+TTS+ASR; (2) **`python cli.py providers`** prints stored host/auth/chat-url/redacted-key/bindings; (3) 401 line now also shows `auth=<header>`. Operator to: run `cli.py providers` to confirm the host, check Forge Playground for the exact host + auth header, set the credential's auth style (and base URL if wrong) in the UI, re-run `hooks`.
-- **AgentRouter BLOCKED (optional, nothing depends on it):** HTTP 401 "unauthorized client detected" at the provider end (reproduced with a direct `requests.post` outside ShortForge; $125 balance, 0 requests ever recorded). Operator is raising it with their support. Treat as unavailable. Re-routed roster: premium reasoning/hook → **Forge `gpt-5.6-luna`**; translation → `minimax-m3` + Forge; ASR → **local Whisper `small`** (cached); TTS → **ElevenLabs** (quality) + **edge-tts** (volume). ⇒ the matrix's task-1 ASR primary and task-2 hook primary shift off AgentRouter accordingly.
-- **Confirmed working roster** (bind these in Task routing): Forge `gpt-5.6-luna` (LLM), NVIDIA `meta/llama-3.2-11b-vision-instruct` + `nemotron-3-nano-omni-30b-a3b-reasoning` (video+audio) + `nemotron-nano-12b-v2-vl` (video-native) — all Vision/free, ElevenLabs (TTS quality), edge-tts built-in (TTS volume), `minimaxai/minimax-m3` (LLM), `z-ai/glm-5.2` (LLM, disabled).
+- **Forge AI BLOCKED (operator's call — stop debugging).** 401 on BOTH `bearer` and `x-api-key` despite an ACTIVE key with balance on the provider dashboard. Not worth more time. All Forge-bound tasks moved to **`minimaxai/minimax-m3`**. The auth-style + `cli.py providers` diagnostics from that investigation are kept (useful for any future gateway). **Two of three gateways are now blocked (AgentRouter, Forge) — the pipeline runs entirely on the NVIDIA build endpoint (minimax + free vision) + local Whisper + ElevenLabs/edge-tts.**
+- **AgentRouter BLOCKED (optional, nothing depends on it):** HTTP 401 "unauthorized client detected" at the provider end (reproduced with a direct `requests.post` outside ShortForge; $125 balance, 0 requests). Treat as unavailable.
+- **Confirmed working roster** (bind in Task routing): **`minimaxai/minimax-m3`** (LLM — hook detection, translation, metadata), NVIDIA `meta/llama-3.2-11b-vision-instruct` (Vision/free — frame scoring) + `nemotron-nano-12b-v2-vl` (Vision/free fallback) + `nemotron-3-nano-omni-30b-a3b-reasoning` (video+audio, for C1 mode b later), **local Whisper** (ASR), **ElevenLabs** (TTS quality) + **edge-tts** built-in (TTS volume). Disabled/blocked: `z-ai/glm-5.2`, Forge, AgentRouter.
 - **Hook detection has NEVER run with an LLM** — every run so far reported "0 strong standalone moments" from the heuristic scorer. C1 must wire the LLM hook scorer (+ fusion) and then benchmark the 3 modes on the French source.
 - **C1 hook-detection fusion (operator requirement, build in C1):** make the mode configurable so the operator can compare (a) transcript LLM + `meta/llama-3.2-11b-vision-instruct` frame scoring fused, (b) `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` on the RAW media (video+audio, the only model that ingests both — use it as the hook media-analysis path, 1–2 calls/video, never per-segment/frame), or (c) all three fused. Vision frame-scoring fallback: `nvidia/nemotron-nano-12b-v2-vl` (video-native) behind llama-3.2 (image-only). All vision stays FREE (`vision_scoring`/`ocr` are free_only). **Rule:** only add a model that appears in the credential's fetched `/v1/models`; if it doesn't, it's a NIM container — skip. Skipped by operator: cosmos3-nano-reasoner (robotics), paligemma (older, beaten by llama-3.2).
 - **LLM failover not yet wired** — priority order honoured but errors don't cascade. STEP 4.

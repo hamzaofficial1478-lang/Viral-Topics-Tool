@@ -3,8 +3,8 @@
 Replaces the keyword heuristic that reported "0 strong standalone moments".
 
 Mode (a), built here:
-  * transcript scoring — the ``hook_detection`` task's LLM contributor (e.g.
-    Forge ``gpt-5.6-luna``) scores every segment 0–1 against the shared rubric.
+  * transcript scoring — the ``hook_detection`` task's LLM contributor
+    (``minimaxai/minimax-m3``) scores every segment 0–1 against the shared rubric.
   * frame scoring — the vision contributor (``meta/llama-3.2-11b-vision-instruct``)
     rates the VISUAL interest of sampled frames for the top candidates.
   * fusion — the two scores combine into one ranking.
@@ -58,7 +58,7 @@ def score_transcript(transcript: Transcript, cfg: Config, store: dict, *,
     if not chain:
         raise ShortForgeError(
             "Hook detection needs an LLM — bind one to the 'Hook detection' task in "
-            "Settings → Task routing (e.g. Forge gpt-5.6-luna).")
+            "Settings → Task routing (e.g. minimaxai/minimax-m3).")
     segs = transcript.segments
     out: dict[int, tuple[float, str]] = {}
     for base in range(0, len(segs), batch):

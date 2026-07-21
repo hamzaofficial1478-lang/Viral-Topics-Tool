@@ -37,10 +37,11 @@ def load_store() -> dict:
             data = json.load(f)
         data.setdefault("providers", [])      # legacy flat entries (one model each)
         data.setdefault("credentials", [])    # R6: a credential holds many models
+        data.setdefault("tasks", {})          # R1: per-task provider bindings
         return data
     except (json.JSONDecodeError, OSError) as e:
         log.warning("providers store unreadable (%s); starting empty", e)
-        return {"providers": [], "credentials": []}
+        return {"providers": [], "credentials": [], "tasks": {}}
 
 
 def save_store(store: dict) -> None:
@@ -191,7 +192,7 @@ def delete_credential(store: dict, cid: str) -> None:
 
 
 def add_model(store: dict, cid: str, *, model: str, category: str, voice: str = "",
-              display_name: str = "") -> dict:
+              display_name: str = "", tier: str = "unknown") -> dict:
     if category not in CATEGORIES:
         raise ValueError(f"unknown category '{category}'")
     cred = get_credential(store, cid)
@@ -206,6 +207,7 @@ def add_model(store: dict, cid: str, *, model: str, category: str, voice: str = 
         "category": category,
         "voice": voice.strip(),
         "enabled": True,
+        "tier": tier if tier in TIERS else "unknown",   # R2 cost-tier: free/paid/unknown
         "priority": len(models_in(store, category, enabled_only=False)),
         "capabilities": {},
         "api_shape": "",            # falls back to the credential's shape
@@ -262,11 +264,15 @@ def _category_records(store: dict, category: str) -> list[tuple[dict | None, dic
 
 def _flatten(cred: dict | None, m: dict) -> dict:
     if cred is None:            # legacy provider record is already the right shape
-        return dict(m)
+        d = dict(m)
+        d.setdefault("tier", "unknown")
+        d.setdefault("display_name", "")
+        return d
     return {
         "id": m["id"],
         "credential_id": cred["id"],
         "name": (f"{cred.get('name', '')} · {m.get('model', '')}").strip(" ·"),
+        "display_name": m.get("display_name", ""),
         "category": m.get("category"),
         "base_url": cred.get("base_url", ""),
         "api_key": cred.get("api_key", ""),
@@ -274,6 +280,7 @@ def _flatten(cred: dict | None, m: dict) -> dict:
         "model": m.get("model", ""),
         "voice": m.get("voice", ""),
         "voices": m.get("voices", []),
+        "tier": m.get("tier", "unknown"),
         "capabilities": m.get("capabilities", {}),
         "enabled": bool(m.get("enabled", True) and cred.get("enabled", True)),
         "priority": m.get("priority", 0),
@@ -302,3 +309,108 @@ def move_model_priority(store: dict, category: str, mid: str, direction: int) ->
         recs[idx], recs[j] = recs[j], recs[idx]
         for i, (_, m) in enumerate(recs):
             m["priority"] = i
+
+
+# --------------------------------------------------------------------------- #
+# R1 — per-task provider binding   +   R2 — cost-tier guard
+#
+# The 14 pipeline tasks from the REVISION 2 routing matrix. Each binds its own
+# primary/secondary/fallback model, an enable toggle, and (unless free_only) a
+# paid_allowed toggle. free_only tasks (frame-scoring, OCR, and the free-tool
+# tasks) can NEVER be flipped to paid — the guard hard-fails instead of spending.
+# --------------------------------------------------------------------------- #
+
+TASKS = (
+    {"key": "asr",                 "label": "Transcription (ASR)",        "cats": ("asr",),                "free_only": False, "on": True},
+    {"key": "hook_detection",      "label": "Hook detection ⭐",           "cats": ("llm", "vision"),       "free_only": False, "on": True},
+    {"key": "clip_completeness",   "label": "Clip completeness",          "cats": ("llm",),                "free_only": False, "on": True},
+    {"key": "emotion_labelling",   "label": "Emotion labelling",          "cats": ("llm",),                "free_only": False, "on": True},
+    {"key": "dub_translation",     "label": "Dub translation",            "cats": ("llm",),                "free_only": False, "on": True},
+    {"key": "caption_translation", "label": "Caption translation",        "cats": ("llm",),                "free_only": False, "on": True},
+    {"key": "vision_scoring",      "label": "Vision / frame scoring",     "cats": ("vision",),             "free_only": True,  "on": True},
+    {"key": "ocr",                 "label": "OCR / burned-in captions",   "cats": ("ocr", "vision"),       "free_only": True,  "on": True},
+    {"key": "metadata",            "label": "Metadata (title/desc/tags)", "cats": ("llm",),                "free_only": False, "on": True},
+    {"key": "tts_quality",         "label": "TTS — quality tier",         "cats": ("tts",),                "free_only": False, "on": True},
+    {"key": "tts_volume",          "label": "TTS — volume tier",          "cats": ("tts",),                "free_only": False, "on": True},
+    {"key": "voice_cloning",       "label": "Voice cloning",              "cats": ("tts",),                "free_only": False, "on": True},
+    {"key": "lip_sync",            "label": "Lip sync",                   "cats": ("vision",),             "free_only": True,  "on": False},
+    {"key": "audio_enhance",       "label": "Source audio enhancement",   "cats": ("audio_library", "asr"),"free_only": True,  "on": False},
+)
+_TASK_BY_KEY = {t["key"]: t for t in TASKS}
+
+TIERS = ("unknown", "free", "paid")
+
+
+def task_meta(key: str) -> dict | None:
+    return _TASK_BY_KEY.get(key)
+
+
+def tasks(store: dict) -> dict:
+    return store.setdefault("tasks", {})
+
+
+def get_task_binding(store: dict, key: str) -> dict:
+    meta = _TASK_BY_KEY.get(key, {})
+    t = tasks(store).get(key, {})
+    return {
+        "primary": t.get("primary", ""),
+        "secondary": t.get("secondary", ""),
+        "fallback": t.get("fallback", ""),
+        "enabled": t.get("enabled", meta.get("on", True)),
+        # R2: free_only tasks are paid_allowed=false, always.
+        "paid_allowed": False if meta.get("free_only") else t.get("paid_allowed", True),
+        "free_only": bool(meta.get("free_only")),
+    }
+
+
+def set_task_binding(store: dict, key: str, **fields) -> dict:
+    if key not in _TASK_BY_KEY:
+        raise ValueError(f"unknown task '{key}'")
+    b = tasks(store).setdefault(key, {})
+    for k, v in fields.items():
+        if v is not None:
+            b[k] = v
+    if _TASK_BY_KEY[key].get("free_only"):
+        b["paid_allowed"] = False          # R2: cannot be enabled
+    return b
+
+
+def resolve_task(store: dict, key: str) -> list[dict]:
+    """Ordered available models for a task (primary→secondary→fallback).
+
+    Explicit bindings win; if none are set, falls back to the task categories'
+    priority order. Honours enable toggles and the free-only guard (R2): a
+    free_only task only ever yields ``tier == 'free'`` models.
+    """
+    meta = _TASK_BY_KEY.get(key, {})
+    b = get_task_binding(store, key)
+    if not b["enabled"]:
+        return []
+    index: dict[str, dict] = {}
+    ordered: list[dict] = []
+    for cat in meta.get("cats", ()):
+        for m in models_in(store, cat, enabled_only=True):
+            if m["id"] not in index:
+                index[m["id"]] = m
+                ordered.append(m)
+    explicit = [index[i] for i in (b["primary"], b["secondary"], b["fallback"])
+                if i and i in index]
+    chain = explicit or ordered
+    if meta.get("free_only"):
+        chain = [m for m in chain if m.get("tier") == "free"]
+    return chain
+
+
+def task_paid_violation(store: dict, key: str) -> str:
+    """R2 — hard-fail message for a free_only task that has models available but
+    none marked ``free`` (which would force paid spend). '' when clear."""
+    meta = _TASK_BY_KEY.get(key, {})
+    if not meta.get("free_only"):
+        return ""
+    any_available = any(models_in(store, c, enabled_only=True) for c in meta["cats"])
+    if any_available and not resolve_task(store, key):
+        cats = " / ".join(meta["cats"])
+        return (f"Task '{meta['label']}' is FREE-only (paid_allowed=false) but no "
+                f"provider marked 'free' is available. Mark a free {cats} model as free "
+                f"tier (or add one) — refusing to spend on high-volume work.")
+    return ""

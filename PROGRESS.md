@@ -50,9 +50,9 @@ frame-level work (tasks 7, 8). Per-task binding — no global LLM setting.
 | # | Item | Status |
 |---|---|---|
 | 1 | **R6** multi-model-per-credential schema + fetch-models | 🟡 |
-| 1 | R1 per-task provider binding (14 tasks: primary/secondary/fallback/toggle in UI) | ⬜ **NEXT** |
-| 1 | R2 cost-tier guard (`paid_allowed:false` on tasks 7,8 — hard fail) | ⬜ |
-| 2 | R7 add gateways (AgentRouter, Forge AI) + NVIDIA models with R3 adapters | ⬜ |
+| 1 | R1 per-task provider binding (14 tasks: primary/secondary/fallback/toggle in UI) | 🟡 |
+| 1 | R2 cost-tier guard (model free/paid tier; free_only tasks 7,8,13,14 hard-fail on paid) | 🟡 |
+| 2 | R7 add gateways (AgentRouter, Forge AI) + NVIDIA models with R3 production adapters | ⬜ **NEXT** |
 | 3 | **C1 hook-detection fusion** (transcript LLM + free vision + audio/heuristic, weighted) — top feature | ⬜ |
 | 4 | C2 ASR routing (AgentRouter primary, word-timestamps required) + C3/C4 translation routing | ⬜ |
 | 5 | R8 benchmarks (dub-translation quality-per-second; hook premium vs minimax) → operator confirms | ⬜ |
@@ -96,6 +96,7 @@ fallback and fail over on auth/credit errors.
   - BUG3 wrong adapter → `detect()` probes by **category**: TTS does a real `/audio/speech` synth (not "assume"), new **`ocr`** category probes with an image; vision/LLM stay chat. (Detection-level R3; production adapters still pending in R7.)
   - BUG4 fetch fails silently → `fetch_models_diag()` surfaces HTTP status + URL + body; UI shows the raw `/models` response and keeps manual entry available (fetch is optional).
   - GENERAL: every probe now records status + full URL + exact payload + response body, shown in the UI.
+- R1 per-task provider binding + R2 cost-tier guard · unverified (245 tests pass): 14 tasks in `store.TASKS`, each with primary/secondary/fallback bindings, enable toggle, and paid_allowed; `resolve_task()` (explicit chain, else category priority order) and `task_paid_violation()`. Models gained a `tier` (free/paid/unknown). `free_only` tasks (vision-scoring, OCR, lip-sync, audio-enhance) can never be flipped to paid and only resolve `tier==free` models — else a hard-fail message. Settings UI "🎛️ Task routing" section + per-model tier selector.
 
 ## Decisions (settled)
 - **Routing is per-task (REVISION 2)** — no global LLM. Each of the 14 tasks binds its own primary/secondary/fallback. Free tier **enforced** (hard-fail) on tasks 7 (vision) & 8 (OCR); paid allowed where volume is low & impact high.
@@ -110,6 +111,7 @@ fallback and fail over on auth/credit errors.
 - **v0** (`https://api.v0.dev/v1`) **disabled** — web-code model, wrong for translation/vision.
 
 ## Open threads
+- **C1 hook-detection fusion (operator requirement, build in C1):** make the mode configurable so the operator can compare (a) transcript LLM + `meta/llama-3.2-11b-vision-instruct` frame scoring fused, (b) `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` on the RAW media (video+audio, the only model that ingests both — use it as the hook media-analysis path, 1–2 calls/video, never per-segment/frame), or (c) all three fused. Vision frame-scoring fallback: `nvidia/nemotron-nano-12b-v2-vl` (video-native) behind llama-3.2 (image-only). All vision stays FREE (`vision_scoring`/`ocr` are free_only). **Rule:** only add a model that appears in the credential's fetched `/v1/models`; if it doesn't, it's a NIM container — skip. Skipped by operator: cosmos3-nano-reasoner (robotics), paligemma (older, beaten by llama-3.2).
 - **LLM failover not yet wired** — priority order honoured but errors don't cascade. STEP 4.
 - **STEP 4 must fix segment length-matching**: on the `small` transcript, dub drift was +40/−6/+131/+22/−52% (1 of 5 in ±15%). Root cause is **segmentation, not translation** — `small` yields 1.3–4.4s fragments that can't be length-matched ("Un sentier du capitaine!" 2.5s → "A captain's path!" 1.2s is correct but unfittable). Merge into 5–12s chunks before translating.
 - **Latency is a scaling risk**: MiniMax 19/39/43/66/35s per segment — prohibitive at 200 clips/day. STEP 4 needs concurrent translation + per-job wall-clock logging.

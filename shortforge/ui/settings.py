@@ -93,6 +93,10 @@ def render() -> None:
         _render_credential(store, cred)
     _render_add_credential(store)
 
+    # --- per-task routing (R1) + cost-tier guard (R2) ---
+    st.divider()
+    _render_task_routing(store)
+
     # --- legacy single-model providers (still supported, read/edit) ---
     legacy = store.get("providers", [])
     if legacy:
@@ -338,7 +342,7 @@ def _render_credential(store, cred):
         # add a model to this credential
         st.markdown("**Add a model**  — the exact API model id is stored and sent verbatim.")
         avail = cred.get("available_models") or []
-        mc = st.columns([3, 2, 2, 1])
+        mc = st.columns([3, 2, 2, 2, 1])
         with mc[0]:
             pick = st.selectbox("From fetched list", ["(type below)"] + avail,
                                 key=f"mp_{cid}") if avail else "(type below)"
@@ -347,14 +351,19 @@ def _render_credential(store, cred):
         with mc[1]:
             mcat = st.selectbox("Category", _CATS, format_func=S.category_label, key=f"mc_{cid}")
         with mc[2]:
+            tier = st.selectbox("Cost tier", S.TIERS, key=f"mtier_{cid}",
+                                help="Mark 'free' to let it run frame-scoring/OCR tasks "
+                                     "(those refuse to spend). 'paid' for metered gateways.")
+        with mc[3]:
             disp = st.text_input("Display name (optional)", key=f"md_{cid}",
                                  placeholder="friendly label — not sent to the API")
-        with mc[3]:
+        with mc[4]:
             st.write("")
             if st.button("Add model", key=f"madd_{cid}"):
                 model_id = typed.strip() or (pick if pick != "(type below)" else "")
                 if model_id:
-                    S.add_model(store, cid, model=model_id, category=mcat, display_name=disp)
+                    S.add_model(store, cid, model=model_id, category=mcat,
+                                display_name=disp, tier=tier)
                     _persist(store)
                     st.rerun()
                 else:
@@ -367,13 +376,80 @@ def _render_credential(store, cred):
                 _render_model_row(store, cred, m)
 
 
+def _render_task_routing(store):
+    st.subheader("🎛️ Task routing")
+    st.caption("Each pipeline task binds its own models (primary → secondary → "
+               "fallback). Leave a slot on **(auto)** to use the category's priority "
+               "order. 🔒 tasks are FREE-only — they refuse to spend, so give them a "
+               "model marked *free* tier.")
+    for meta in S.TASKS:
+        _render_task_row(store, meta)
+
+
+def _task_model_options(store, cats):
+    """(id, label) options for a task's category models, plus an (auto) sentinel."""
+    opts = [("", "(auto by priority)")]
+    seen = set()
+    for cat in cats:
+        for m in S.models_in(store, cat, enabled_only=False):
+            if m["id"] in seen:
+                continue
+            seen.add(m["id"])
+            tag = m.get("tier", "unknown")
+            lbl = (m.get("display_name") or m.get("model") or m.get("name") or m["id"])
+            opts.append((m["id"], f"{lbl}  [{tag}]"))
+    return opts
+
+
+def _render_task_row(store, meta):
+    key = meta["key"]
+    b = S.get_task_binding(store, key)
+    opts = _task_model_options(store, meta["cats"])
+    ids = [o[0] for o in opts]
+    labels = {o[0]: o[1] for o in opts}
+    lock = "🔒 " if meta.get("free_only") else ""
+    with st.expander(f"{lock}{meta['label']}  ·  {'on' if b['enabled'] else 'off'}",
+                     expanded=False):
+        c = st.columns(3)
+        sel = {}
+        for i, slot in enumerate(("primary", "secondary", "fallback")):
+            cur = b[slot] if b[slot] in ids else ""
+            sel[slot] = c[i].selectbox(
+                slot.title(), ids, index=ids.index(cur),
+                format_func=lambda x: labels.get(x, x), key=f"tk_{key}_{slot}")
+        t = st.columns(2)
+        enabled = t[0].checkbox("Enabled", b["enabled"], key=f"tk_{key}_en")
+        if meta.get("free_only"):
+            t[1].caption("🔒 FREE enforced — paid providers are refused for this task.")
+            paid = False
+        else:
+            paid = t[1].checkbox("Allow paid providers", b["paid_allowed"],
+                                 key=f"tk_{key}_paid")
+        if st.button("Save binding", key=f"tk_{key}_save"):
+            S.set_task_binding(store, key, primary=sel["primary"], secondary=sel["secondary"],
+                               fallback=sel["fallback"], enabled=enabled, paid_allowed=paid)
+            _persist(store)
+            st.success("Saved.")
+            st.rerun()
+
+        chain = S.resolve_task(store, key)
+        if chain:
+            st.caption("Resolves to: " + " → ".join(
+                (m.get("display_name") or m.get("model") or m.get("name")) for m in chain))
+        else:
+            st.caption("Resolves to: (nothing available)")
+        viol = S.task_paid_violation(store, key)
+        if viol:
+            st.error(viol)
+
+
 def _render_model_row(store, cred, m):
     mid = m["id"]
     caps = m.get("capabilities", {}) or {}
     summary = _caps_summary({"category": m.get("category"), "model": m.get("model"),
                              "capabilities": caps})
     label = m.get("display_name") or ""
-    cols = st.columns([4, 2, 1, 1, 1, 1])
+    cols = st.columns([4, 2, 2, 1, 1, 1, 1])
     # BUG2: show the EXACT model id that will be sent, verbatim.
     cols[0].markdown(
         (f"**{label}**  \n" if label else "")
@@ -383,6 +459,14 @@ def _render_model_row(store, cred, m):
                                m.get("enabled", True), key=f"me_{mid}")
     if enabled != m.get("enabled", True):
         S.update_model(store, mid, enabled=enabled)
+        _persist(store)
+    # R2 cost tier (free/paid/unknown) — free is required for frame-scoring/OCR.
+    cur_tier = m.get("tier", "unknown")
+    tier = cols[2].selectbox("tier", S.TIERS, index=S.TIERS.index(cur_tier)
+                             if cur_tier in S.TIERS else 0, key=f"mt2_{mid}",
+                             label_visibility="collapsed")
+    if tier != cur_tier:
+        S.update_model(store, mid, tier=tier)
         _persist(store)
     if cols[2].button("🔍", key=f"mtd_{mid}", help="Test & Detect this model"):
         cur = S.get_credential(store, cred["id"])

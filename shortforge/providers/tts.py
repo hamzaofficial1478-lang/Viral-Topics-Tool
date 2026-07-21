@@ -257,6 +257,9 @@ def build_tts_router(cache_dir: str | None = None) -> TTSRouter:
                 providers.append(EdgeTTSProvider("edge"))
             else:
                 providers.append(OpenAICompatibleTTSProvider.from_env(name, "TTS_" + name.upper()))
-    if not providers:
+    # item 5: edge-tts is a free local backend — always register it as the final
+    # fallback so a paid provider (ElevenLabs) is never the ONLY option. The
+    # volume-vs-quality *selection* comes when the dub path consumes task routing.
+    if not any(p.name.lower() == "edge" for p in providers):
         providers.append(EdgeTTSProvider("edge"))
     return TTSRouter(providers, cache_dir=cache_dir)

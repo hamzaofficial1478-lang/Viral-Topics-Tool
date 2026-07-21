@@ -24,8 +24,29 @@ __all__ = [
     "TTSRouter", "ProviderError", "EdgeTTSProvider", "OpenAICompatibleTTSProvider",
     "build_llm_provider", "build_tts_router", "build_audio_library",
     "check_providers", "detect_mod", "store_mod",
-    "test_tts_provider", "capability_warnings", "dub_language_check",
+    "test_tts_provider", "capability_warnings", "dub_language_check", "run_failover",
 ]
+
+
+def run_failover(chain: list, attempt):
+    """Try ``attempt(model)`` down an ordered chain until one succeeds (item 4).
+
+    Returns (result, model_used, failovers) where ``failovers`` is the list of
+    (model, error) that were tried and failed first — so the caller can log/record
+    every failover (R4). Raises ShortForgeError with all errors if the whole chain
+    fails. This is the shared cascade the vision/LLM/TTS tasks use so a fallback
+    provably kicks in on error, never silently.
+    """
+    from ..utils import ShortForgeError
+    failovers = []
+    for model in chain:
+        try:
+            return attempt(model), model, failovers
+        except Exception as e:  # noqa: BLE001
+            failovers.append((model, e))
+    tried = ", ".join((m.get("name") or m.get("model") or "?") for m, _ in failovers) or "(none)"
+    raise ShortForgeError(f"all providers failed ({tried}): "
+                          + " | ".join(str(e) for _, e in failovers))
 
 
 def dub_language_check(store: dict, language: str) -> tuple[bool, str]:

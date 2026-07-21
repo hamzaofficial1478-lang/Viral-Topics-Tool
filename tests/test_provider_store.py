@@ -94,5 +94,6 @@ def test_store_backed_tts_router(tmp_path, monkeypatch):
     S.save_store(store)
     from shortforge.providers.tts import build_tts_router
     router = build_tts_router()
-    assert [pr.name for pr in router.providers] == ["myvoice"]
+    # myvoice first; edge-tts always registered as the free final fallback (item 5)
+    assert [pr.name for pr in router.providers] == ["myvoice", "edge"]
     assert router.providers[0].caps.ssml is True and router.providers[0].caps.emotion is True

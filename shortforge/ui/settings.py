@@ -97,17 +97,19 @@ def render() -> None:
     st.divider()
     _render_task_routing(store)
 
-    # --- legacy single-model providers (still supported, read/edit) ---
+    # --- legacy migration (item 3): collapse to ONE config path ---
     legacy = store.get("providers", [])
     if legacy:
         st.divider()
-        st.subheader("Single-model providers (legacy)")
-        for cat in _CATS:
-            cat_ps = S.providers_in(store, cat, enabled_only=False)
-            for i, p in enumerate(cat_ps):
-                _render_card(store, p, i, len(cat_ps))
-    with st.expander("➕ Add a single-model provider (legacy)"):
-        _render_add_form(store)
+        st.warning(f"{len(legacy)} legacy single-model provider(s) found from an older "
+                   "version. Migrate them into credentials — keys, priorities, toggles and "
+                   "task bindings are preserved, and the NVIDIA endpoint is named "
+                   "'NVIDIA build'. After this there's only one config path (credentials).")
+        if st.button(f"⬆️ Migrate {len(legacy)} legacy provider(s) into credentials"):
+            n = S.migrate_legacy(store)
+            _persist(store)
+            st.success(f"Migrated {n} provider(s) into credentials.")
+            st.rerun()
 
 
 def _render_card(store, p, idx, count):
@@ -411,12 +413,22 @@ def _render_task_row(store, meta):
     lock = "🔒 " if meta.get("free_only") else ""
     with st.expander(f"{lock}{meta['label']}  ·  {'on' if b['enabled'] else 'off'}",
                      expanded=False):
+        if meta.get("fusion"):
+            st.caption("🔗 Fusion task — the **secondary runs alongside the primary** and "
+                       "their scores are combined into one ranking (not a failover). "
+                       "Fallback is only used if a contributor errors.")
+        if meta.get("batched"):
+            st.caption("📦 Batched — one call covers all segments (never per-segment).")
+        # For a fusion task the middle slot is a parallel contributor, not a fallback.
+        slot_labels = {"primary": "Primary", "fallback": "Fallback",
+                       "secondary": "Secondary (fusion contributor)" if meta.get("fusion")
+                       else "Secondary"}
         c = st.columns(3)
         sel = {}
         for i, slot in enumerate(("primary", "secondary", "fallback")):
             cur = b[slot] if b[slot] in ids else ""
             sel[slot] = c[i].selectbox(
-                slot.title(), ids, index=ids.index(cur),
+                slot_labels[slot], ids, index=ids.index(cur),
                 format_func=lambda x: labels.get(x, x), key=f"tk_{key}_{slot}")
         t = st.columns(2)
         enabled = t[0].checkbox("Enabled", b["enabled"], key=f"tk_{key}_en")
@@ -433,12 +445,19 @@ def _render_task_row(store, meta):
             st.success("Saved.")
             st.rerun()
 
-        chain = S.resolve_task(store, key)
-        if chain:
-            st.caption("Resolves to: " + " → ".join(
-                (m.get("display_name") or m.get("model") or m.get("name")) for m in chain))
+        if meta.get("fusion"):
+            fus = S.resolve_fusion(store, key)
+            _name = lambda m: (m.get("display_name") or m.get("model") or m.get("name"))
+            st.caption("Fuses: " + (" + ".join(_name(m) for m in fus["contributors"]) or "(none)")
+                       + (f"  ·  fallback {', '.join(_name(m) for m in fus['fallback'])}"
+                          if fus["fallback"] else ""))
         else:
-            st.caption("Resolves to: (nothing available)")
+            chain = S.resolve_task(store, key)
+            if chain:
+                st.caption("Resolves to: " + " → ".join(
+                    (m.get("display_name") or m.get("model") or m.get("name")) for m in chain))
+            else:
+                st.caption("Resolves to: (nothing available)")
         viol = S.task_paid_violation(store, key)
         if viol:
             st.error(viol)

@@ -322,9 +322,9 @@ def move_model_priority(store: dict, category: str, mid: str, direction: int) ->
 
 TASKS = (
     {"key": "asr",                 "label": "Transcription (ASR)",        "cats": ("asr",),                "free_only": False, "on": True},
-    {"key": "hook_detection",      "label": "Hook detection ⭐",           "cats": ("llm", "vision"),       "free_only": False, "on": True},
+    {"key": "hook_detection",      "label": "Hook detection ⭐",           "cats": ("llm", "vision"),       "free_only": False, "on": True, "fusion": True},
     {"key": "clip_completeness",   "label": "Clip completeness",          "cats": ("llm",),                "free_only": False, "on": True},
-    {"key": "emotion_labelling",   "label": "Emotion labelling",          "cats": ("llm",),                "free_only": False, "on": True},
+    {"key": "emotion_labelling",   "label": "Emotion labelling",          "cats": ("llm",),                "free_only": False, "on": True, "batched": True},
     {"key": "dub_translation",     "label": "Dub translation",            "cats": ("llm",),                "free_only": False, "on": True},
     {"key": "caption_translation", "label": "Caption translation",        "cats": ("llm",),                "free_only": False, "on": True},
     {"key": "vision_scoring",      "label": "Vision / frame scoring",     "cats": ("vision",),             "free_only": True,  "on": True},
@@ -445,3 +445,110 @@ def task_paid_violation(store: dict, key: str) -> str:
                 f"provider marked 'free' is available. Mark a free {cats} model as free "
                 f"tier (or add one) — refusing to spend on high-volume work.")
     return ""
+
+
+def is_fusion_task(key: str) -> bool:
+    return bool(_TASK_BY_KEY.get(key, {}).get("fusion"))
+
+
+def is_batched_task(key: str) -> bool:
+    return bool(_TASK_BY_KEY.get(key, {}).get("batched"))
+
+
+def _candidate_index(store: dict, cats) -> tuple[dict, list]:
+    index: dict[str, dict] = {}
+    ordered: list[dict] = []
+    for cat in cats:
+        for m in models_in(store, cat, enabled_only=True):
+            if m["id"] not in index:
+                index[m["id"]] = m
+                ordered.append(m)
+        for m in builtin_models(cat):
+            if m["id"] not in index:
+                index[m["id"]] = m
+                ordered.append(m)
+    return index, ordered
+
+
+def resolve_fusion(store: dict, key: str) -> dict:
+    """For a FUSION task (item 1): the secondary is a CONTRIBUTOR that runs
+    alongside the primary and whose score is combined — not a failover fallback.
+
+    Returns {"contributors": [...], "fallback": [...]}. ``contributors`` run in
+    parallel and their scores fuse; ``fallback`` is tried only on error. If no
+    explicit binding, contributors default to the top model of each category
+    (e.g. a transcript LLM + a vision frame scorer).
+    """
+    meta = _TASK_BY_KEY.get(key, {})
+    b = get_task_binding(store, key)
+    if not b["enabled"]:
+        return {"contributors": [], "fallback": []}
+    index, ordered = _candidate_index(store, meta.get("cats", ()))
+    contributors = [index[i] for i in (b["primary"], b["secondary"]) if i and i in index]
+    if not contributors:
+        # one model per distinct category, in priority order (transcript + frames)
+        by_cat: dict[str, dict] = {}
+        for m in ordered:
+            by_cat.setdefault(m.get("category"), m)
+        contributors = list(by_cat.values())
+    if meta.get("free_only"):
+        contributors = [m for m in contributors if m.get("tier") == "free"]
+    fb = index.get(b["fallback"])
+    return {"contributors": contributors, "fallback": [fb] if fb else []}
+
+
+# --------------------------------------------------------------------------- #
+# Legacy → credential migration (item 3): one config path only.
+# --------------------------------------------------------------------------- #
+
+def _credential_name_for(base_url: str, sample_name: str = "") -> str:
+    b = (base_url or "").lower()
+    for needle, label in (("nvidia", "NVIDIA build"), ("elevenlabs", "ElevenLabs"),
+                          ("vercel", "Vercel AI Gateway"), ("forge", "Forge AI"),
+                          ("openai", "OpenAI")):
+        if needle in b:
+            return label
+    try:
+        from urllib.parse import urlparse
+        host = urlparse(base_url).netloc
+    except Exception:  # noqa: BLE001
+        host = ""
+    return host or sample_name or "Imported"
+
+
+def migrate_legacy(store: dict) -> int:
+    """Move legacy flat ``providers`` into credentials (grouped by base_url+key),
+    preserving each entry's id, category, priority, enable state, capabilities and
+    tier — so existing task bindings (which reference ids) keep resolving. The
+    NVIDIA endpoint is named "NVIDIA build". Idempotent; returns entries moved."""
+    legacy = store.get("providers", [])
+    if not legacy:
+        return 0
+    creds = credentials(store)
+    moved = 0
+    for p in legacy:
+        base = normalize_base(p.get("base_url", ""))
+        key = p.get("api_key", "")
+        cred = next((c for c in creds if c.get("base_url") == base
+                     and c.get("api_key") == key), None)
+        if cred is None:
+            cred = add_credential(store, name=_credential_name_for(base, p.get("name", "")),
+                                  base_url=base, api_key=key,
+                                  api_shape=p.get("api_shape", "unknown"))
+        cred.setdefault("models", []).append({
+            "id": p.get("id") or uuid.uuid4().hex[:8],   # keep id → bindings stay valid
+            "model": p.get("model", ""),
+            "display_name": p.get("name", ""),
+            "category": p.get("category", "llm"),
+            "voice": p.get("voice", ""),
+            "enabled": p.get("enabled", True),
+            "tier": p.get("tier", "unknown"),
+            "priority": p.get("priority", 0),
+            "capabilities": p.get("capabilities", {}),
+            "api_shape": p.get("api_shape", ""),
+            "voices": p.get("voices", []),
+            "last_test": p.get("last_test"),
+        })
+        moved += 1
+    store["providers"] = []
+    return moved

@@ -131,6 +131,9 @@ def run_pipeline(
         log.info("operator requested %d clip%s", requested, "s" if requested != 1 else "")
 
     # Resolve output geometry once; keep selection + reframe in agreement.
+    # Resolution (pixel short-side) is separate from aspect (shape).
+    from .reframe import apply_resolution
+    apply_resolution(cfg)
     out_w, out_h = parse_aspect(
         cfg.get("reframe.aspect", "9:16"),
         int(cfg.get("reframe.width", 1080)),
@@ -372,6 +375,10 @@ def run_pipeline(
             # M6 dub: voiceover over preserved music/SFX, if enabled.
             dub_audio = None
             if dub_on:
+                # Hard guard: TTS/dub only ever runs for a cross-language request.
+                # In the default (original-audio) path this branch is never entered,
+                # so no TTS provider is resolved or called — nothing to spend.
+                assert localize_on, "dub invoked without a cross-language request (bug)"
                 dub_audio, dub_method = dub_clip(
                     meta.file_path, clip, caption_transcript, cfg, cache.path("dub"),
                     accompaniment_source=accompaniment_source,
@@ -461,7 +468,7 @@ def run_pipeline(
             stem_state = "voice-bleed" if allow_voice_bleed else "no-stems"
         dub_desc = f"dub ({cfg.get('localize.tts_backend', 'auto')}, {stem_state})"
     else:
-        dub_desc = "dub none"
+        dub_desc = "dub: none (original audio)"
     lang_desc = (f"lang {src_lang}->{clip_lang} ({translation_backend})"
                  if localize_on else f"lang {src_lang}")
     summary = " | ".join([

@@ -8,11 +8,10 @@ Windows · ⏳ in progress · ⬜ pending.
 Branch: `claude/nifty-cray-n8l888` → PR #1 to `main`.
 
 ## Current position
-Cutting to a **MINIMUM SHIPPABLE SET** (see below) so the operator can publish
-original-language clips at volume ASAP. R6/R1/R2 verified in the UI. **R7 (scoped)
-done, unverified.** Next: **C1 (LLM hook scorer + fusion) — then STOP for operator
-evaluation.** The honest finding: **6 of the 7 MSS items already exist** (Phases
-1–4); C1 is the only real blocker.
+**C1 (LLM hook detection) done, unverified — STOP for operator evaluation** on the
+French source (compare modes with `python cli.py hooks`). Also landed this turn:
+the zero-cost original-audio default path and the export-resolution selector.
+After the operator evaluates C1, verify MSS-2…7 (they already exist) and ship.
 
 ## Done foundation (steps 0–3.6)
 | # | Description | Status |
@@ -60,7 +59,7 @@ Foundation (routing) so tasks can call real providers:
 Most already exist (Phases 1–4); only C1 is a real build:
 | # | Item | Status |
 |---|---|---|
-| MSS-1 | **C1 — LLM hook detection** (transcript + llama-3.2 frames fused; mode a) — then STOP for eval | ⬜ **NEXT** |
+| MSS-1 | **C1 — LLM hook detection** (transcript + llama-3.2 frames fused; mode a) — STOP for eval | 🟡 |
 | MSS-2 | Karaoke / word-highlight captions | ✅ exists (`captions/ass.py`, templates+animations, word timings) — verify |
 | MSS-3 | Logo overlay (corner, size, opacity) | ✅ exists (`brand/`, `brand.size` frac/px); gap: expose `--logo-size` flag |
 | MSS-4 | Loudness norm ~-14 LUFS, TP ≤ -1 dBTP | ✅ exists (`render.loudnorm_i=-14`, `tp=-1.5` ⇒ satisfies ≤ -1) |
@@ -106,6 +105,9 @@ Studio Voice, LipSync. R3 remaining adapters (OCR/TTS/gRPC/multipart) as needed.
   - GENERAL: every probe now records status + full URL + exact payload + response body, shown in the UI.
 - R1 per-task provider binding + R2 cost-tier guard · unverified (245 tests pass): 14 tasks in `store.TASKS`, each with primary/secondary/fallback bindings, enable toggle, and paid_allowed; `resolve_task()` (explicit chain, else category priority order) and `task_paid_violation()`. Models gained a `tier` (free/paid/unknown). `free_only` tasks (vision-scoring, OCR, lip-sync, audio-enhance) can never be flipped to paid and only resolve `tier==free` models — else a hard-fail message. Settings UI "🎛️ Task routing" section + per-model tier selector.
 - R1 built-ins: `edge-tts` (TTS) and `local-whisper` (ASR) are built-in free local backends, selectable in task routing (last-resort fallbacks); empty store resolves ASR→local Whisper, TTS-volume→edge-tts · unverified (249 tests pass).
+- C1 LLM hook detection · unverified (276 tests pass): `detect/provider_hooks.py` — `score_transcript()` (batched LLM scores 0–1 via the hook_detection LLM contributor + failover), `score_frames_for()` (top-K candidates → `vision.score_frames`), `detect()` fuses them (`detect.frame_weight`). Wired into `detect_hooks` (auto-used when a hook LLM is bound; visible fallback to heuristic on error). `python cli.py hooks --source … --top N` prints candidates per mode (heuristic / transcript_llm / fusion) with timestamps, scores, justifications. **Fixes "0 strong standalone moments".** Modes (b) omni / (c) all-three deferred.
+- Zero-cost original-audio default · unverified: translation/dub/Demucs already gate on `dub_on` (default off) — confirmed. Summary now reads `dub: none (original audio)`; hard `assert localize_on` guards the dub branch (no TTS resolved/called otherwise); `--no-dub` flag forces it. Default-mode paid calls = **hook detection + metadata only**.
+- Export resolution selector · unverified: `reframe/resolution.py` — short-side px (1080p/720p/480p) or WxH, **separate from aspect**; `apply_resolution()` in the pipeline; `estimate_export()` (≈MB/clip + CPU render-speed) shown in wizard + UI. `--resolution` on run/run-batch, wizard prompt, UI selectbox. Default 1080p. Also exposed `--logo-size`.
 - R7 (scoped) production adapters · unverified (264 tests pass): `providers/vision.py` — `sample_frames()` (ffmpeg, verified extracting 6 frames from a test clip), `encode_image()` (JPEG data URL), `build_vision_messages()` (text + image_url blocks), `score_frames()` (batched by `vision.max_images`, default 6) — all via the shared `openai_chat_raw`. `call_model_chat()`/`call_task_chat()` (resolve_task + failover) are the production LLM path for Forge `gpt-luna-5.6` + `minimax-m3`. **Image count/size limits are configurable** (`vision.max_images`/`frame_width`); the real NVIDIA limit must be confirmed on a live call. Deferred: nemotron-omni raw-media, nemotron-12b, Studio Voice, LipSync.
 - R1 follow-ups (5 items) · unverified (258 tests pass): (1) hook_detection is a **fusion** task — `resolve_fusion()` treats the secondary as a parallel contributor whose score combines with the primary (not failover); UI labels it. (2) emotion_labelling flagged **batched** (one call/all segments). (3) `migrate_legacy()` folds legacy flat providers into credentials (grouped by URL+key, ids/priorities/toggles/bindings preserved, NVIDIA→"NVIDIA build"); UI legacy editing removed → one config path via a migrate button. (4) `run_failover()` cascade primitive (returns result + failovers list, raises if all fail) — confirms the chain cascades on error (R4 wires call sites). (5) `edge-tts` always registered as the TTS router's free final fallback (never ElevenLabs-only); volume-vs-quality *selection* still needs the dub path to consume task routing (R4).
 

@@ -28,6 +28,8 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("select.tolerance", getattr(args, "tolerance", None))
     cfg.override("select.num_clips", getattr(args, "num_clips", None))
     cfg.override("reframe.aspect", getattr(args, "aspect", None))
+    cfg.override("reframe.resolution", getattr(args, "resolution", None))
+    cfg.override("brand.size", getattr(args, "logo_size", None))
     cfg.override("reframe.fill", getattr(args, "fill", None))
     cfg.override("transcribe.model", getattr(args, "whisper_model", None))
     cfg.override("transcribe.language", getattr(args, "source_lang", None))
@@ -61,6 +63,8 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("localize.translate_backend", getattr(args, "translate_backend", None))
     if getattr(args, "dub", False):
         cfg.override("localize.dub", True)
+    if getattr(args, "no_dub", False):
+        cfg.override("localize.dub", False)     # force original-audio-only (default)
     dub_mode = getattr(args, "dub_mode", None)
     if dub_mode:
         if dub_mode == "captions":
@@ -493,6 +497,63 @@ def cmd_benchmark_llm(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_hook_modes(modes: dict, top: int) -> None:
+    print("\n" + "=" * 78)
+    print("  HOOK DETECTION — candidate comparison (check these against the video)")
+    for name, cands in modes.items():
+        print("=" * 78)
+        strong = sum(1 for c in cands if c.score >= 0.5)
+        print(f"  MODE: {name}   ({strong} strong ≥0.50, showing top {top})")
+        print(f"    {'start':>7} {'end':>7} {'score':>6}   justification")
+        print("    " + "-" * 68)
+        for c in cands[:top]:
+            print(f"    {c.start:>7.1f} {c.end:>7.1f} {c.score:>6.2f}   {(c.reason or '')[:52]}")
+            sig = c.signals or {}
+            t = (sig.get("transcript_llm") or {}).get("score")
+            fr = (sig.get("frames_llm") or {}).get("score")
+            if t is not None or fr is not None:
+                print(f"            (transcript={t}  frames={fr})")
+    print("=" * 78)
+
+
+def cmd_hooks(args: argparse.Namespace) -> int:
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+    cfg = Config.load(args.config)
+    _apply_common_overrides(cfg, args)
+    src = args.source
+    ext = os.path.splitext(src)[1].lower()
+    source_path = None
+    try:
+        if ext in (".json", ".srt"):
+            from shortforge.analyze import load_external_transcript
+            transcript = load_external_transcript(src, 0.0, "auto")
+        else:
+            from shortforge.analyze import transcribe
+            from shortforge.cache import Cache
+            from shortforge.ingest import ingest
+            if not args.owner_confirmed:
+                log.error("--owner-confirmed is required when --source is a media file/URL.")
+                return 2
+            meta = ingest(src, cfg, owner_confirmed=True)
+            cache = Cache(cfg.get("paths.work_dir", ".shortforge"), meta.hash)
+            transcript = transcribe(meta, cfg, cache)
+            source_path = meta.file_path
+    except ShortForgeError as e:
+        log.error("%s", e)
+        return 2
+
+    from shortforge.detect.provider_hooks import compare_modes
+    from shortforge.providers.store import load_store
+    try:
+        modes = compare_modes(transcript, cfg, source_path, load_store())
+    except ShortForgeError as e:
+        log.error("%s", e)
+        return 2
+    _print_hook_modes(modes, int(getattr(args, "top", 8) or 8))
+    return 0
+
+
 def cmd_cache(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     cfg = Config.load(args.config)
@@ -537,8 +598,16 @@ def cmd_wizard(args: argparse.Namespace) -> int:
         log.error("Ownership is required — ShortForge only processes your own content.")
         return 2
 
-    aspect = _ask("2. Aspect/resolution (9:16 / 1:1 / 16:9 / WxH)", "9:16")
+    aspect = _ask("2. Aspect / shape (9:16 / 1:1 / 16:9 / WxH)", "9:16")
+    resolution = _ask("   Resolution / pixel size (1080p / 720p / 480p / WxH)", "1080p")
     duration = _ask("3. Target clip duration seconds (30/45/60)", "45")
+    from shortforge.reframe import estimate_export
+    try:
+        est = estimate_export(resolution, aspect, float(_to_int(duration, 45)))
+        print(f"   → {est['width']}x{est['height']}, ~{est['mb_per_clip']} MB/clip, "
+              f"render {est['render_speed']}")
+    except Exception:  # noqa: BLE001
+        pass
     num = _ask("4. Number of clips (0 = let the tool recommend)", "0")
     language = _ask("5. Output language (en/de/it/es/ja/ar, blank = keep source)", "")
     print("   Dub modes:  captions = translate the TEXT only (keep original audio);")
@@ -565,6 +634,7 @@ def cmd_wizard(args: argparse.Namespace) -> int:
     output = _ask("12. Output directory", cfg.get("paths.output_dir", "out"))
 
     cfg.override("reframe.aspect", aspect)
+    cfg.override("reframe.resolution", resolution or "1080p")
     cfg.override("reframe.fill", fill)
     cfg.override("select.target_duration", _to_int(duration, 45))
     cfg.override("select.num_clips", _to_int(num, 0))
@@ -686,6 +756,17 @@ def build_parser() -> argparse.ArgumentParser:
     usub = sub.add_parser("ui", help="Launch the web dashboard (job + settings screens)")
     usub.set_defaults(func=cmd_ui)
 
+    hk = sub.add_parser("hooks",
+                        help="Compare hook-detection modes on a source (C1): heuristic vs "
+                             "transcript-LLM vs fused — prints candidates with scores/reasons")
+    hk.add_argument("--source", required=True,
+                    help="A media file/URL or a cached transcript (.json/.srt)")
+    hk.add_argument("--owner-confirmed", action="store_true",
+                    help="Required when --source is a media file/URL")
+    hk.add_argument("--top", type=int, default=8, help="How many candidates to show per mode")
+    hk.add_argument("--work-dir", help="Cache/intermediate directory")
+    hk.set_defaults(func=cmd_hooks)
+
     bl = sub.add_parser("benchmark-llm",
                         help="Compare providers: LLMs on translate/hooks (STEP 2) "
                              "or ASR backends on transcribe (STEP 3.5b)")
@@ -733,9 +814,14 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
                    help="legacy shorthand (maps to --caption-animation)")
     r.add_argument("--burned-in", choices=["none", "cover", "blur", "crop"],
                    help="Treat captions baked into the source pixels (A3)")
+    r.add_argument("--resolution", help="Export size (short side): 1080p | 720p | 480p | WxH. "
+                   "Separate from --aspect. Default 1080p; lower renders faster on CPU.")
     r.add_argument("--logo", help="Path to a logo image to overlay (M8)")
     r.add_argument("--logo-corner", choices=["TL", "TR", "BL", "BR"], help="Logo corner")
+    r.add_argument("--logo-size", help="Logo width: fraction of output width (0..1) or px (>1)")
     r.add_argument("--logo-opacity", type=float, help="Logo opacity 0..1")
+    r.add_argument("--no-dub", action="store_true",
+                   help="Force original-audio-only (no TTS/translation voice) — the default")
     r.add_argument("--niche", help="Niche keyword(s) for metadata/hashtags (M10)")
     # Localization (Phase 3, M6)
     r.add_argument("--language", help="Target language code for captions/dub "

@@ -21,6 +21,22 @@ def _llm_available() -> bool:
     return available()
 
 
+def _use_provider_hooks(cfg: Config) -> bool:
+    """C1: use the task-routing LLM+frame scorer when forced, or (auto) when a
+    hook_detection LLM is bound in the settings store."""
+    backend = cfg.get("detect.backend", "auto")
+    if backend in ("provider", "fusion"):
+        return True
+    if backend == "auto":
+        try:
+            from ..providers.store import load_store, resolve_task
+            return any(m.get("category") == "llm"
+                       for m in resolve_task(load_store(), "hook_detection"))
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
 def _transcript_candidates(
     transcript: Transcript, cfg: Config, source_path: str | None
 ) -> tuple[list[Candidate], str]:
@@ -53,6 +69,21 @@ def detect_hooks(
     transcript: Transcript, cfg: Config, source_path: str | None = None
 ) -> list[Candidate]:
     """Return ranked hook candidates, fusing transcript + visual signals."""
+    # --- C1: LLM hook scorer (transcript LLM + vision frame fusion) ---------- #
+    if _use_provider_hooks(cfg):
+        from ..providers.store import load_store
+        from . import provider_hooks
+        try:
+            cands = provider_hooks.detect(transcript, cfg, source_path, load_store())
+            min_score = float(cfg.get("detect.min_segment_score", 0.0))
+            filtered = [c for c in cands if c.score >= min_score]
+            strong = sum(1 for c in filtered if c.score >= 0.5)
+            log.info("hook detection: provider-llm+frames (%d/%d above %.2f, %d strong)",
+                     len(filtered), len(cands), min_score, strong)
+            return filtered
+        except Exception as e:  # noqa: BLE001 - visible fallback, never abort the run
+            log.warning("provider hook detection failed (%s); falling back to heuristic", e)
+
     candidates, backend = _transcript_candidates(transcript, cfg, source_path)
 
     # --- M3++ visual fusion ------------------------------------------------ #

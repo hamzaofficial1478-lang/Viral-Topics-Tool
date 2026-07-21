@@ -28,9 +28,13 @@ DEFAULTS: dict[str, Any] = {
         "min_confidence": 0.0,      # >0 excludes low-confidence segments from clip selection
     },
     "detect": {
-        "backend": "auto",
+        "backend": "auto",          # auto | provider (C1 LLM+frames) | llm | heuristic
         "llm_model": "claude-opus-4-8",
         "min_segment_score": 0.35,
+        # C1: provider hook scorer (task-routing LLM + vision frame fusion).
+        "hook_frames": True,        # fuse vision frame scores onto the top candidates
+        "frame_weight": 0.35,       # (1-w)*transcript_llm + w*frames_llm
+        "frame_topk": 12,           # only score frames for the top-K candidates (cost)
         # M3++ visual hook signals (local, no API).
         "visual": True,
         "visual_weight": 0.35,          # blend: (1-w)*transcript + w*visual
@@ -61,7 +65,8 @@ DEFAULTS: dict[str, Any] = {
         "pause_threshold": 0.5,   # gap (s) that marks a thought/topic boundary
     },
     "reframe": {
-        "aspect": "9:16",
+        "aspect": "9:16",           # SHAPE (9:16 / 1:1 / 16:9 / WxH)
+        "resolution": "1080p",      # SIZE — short side px (1080p/720p/480p) or WxH; separate from aspect
         "width": 1080,
         "height": 1920,
         "fill": "crop",

@@ -205,9 +205,20 @@ def main() -> None:
                 help="How far a clip may stray from the target length so it can end on a "
                      "natural pause instead of mid-sentence.")
             aspect = st.text_input(
-                "Aspect ratio or size", value="9:16",
+                "Aspect / shape", value="9:16",
                 help="9:16 (vertical), 1:1 (square), 16:9 (wide), or an exact WxH such as "
-                     "1080x1920. Anything else is rejected with a clear error.")
+                     "1080x1920. This is the SHAPE — pixel size is set separately below.")
+            resolution = st.selectbox(
+                "Resolution (pixel size)", ["1080p", "720p", "480p"], 0,
+                help="The short side in pixels — separate from aspect. Lower renders "
+                     "meaningfully faster on CPU; 720p is fine for most social destinations.")
+            from shortforge.reframe import estimate_export
+            try:
+                _est = estimate_export(resolution, aspect, float(duration), int(num) or 1)
+                st.caption(f"→ {_est['width']}×{_est['height']} · ~{_est['mb_per_clip']} MB/clip "
+                           f"· render {_est['render_speed']}")
+            except Exception:  # noqa: BLE001
+                pass
             reframe = st.selectbox(
                 "Reframing", ["Track the action (virtual camera)", "Center crop"], 0,
                 help="Track follows the speaker/motion across the frame; center is a fixed crop.")
@@ -252,6 +263,7 @@ def main() -> None:
 
     cfg = Config.load()
     cfg.override("reframe.aspect", aspect.strip() or "9:16")
+    cfg.override("reframe.resolution", resolution)
     cfg.override("select.target_duration", int(duration))
     cfg.override("select.tolerance", int(tolerance))
     cfg.override("select.num_clips", int(num))

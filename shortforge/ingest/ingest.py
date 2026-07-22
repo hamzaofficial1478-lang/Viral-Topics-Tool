@@ -214,7 +214,7 @@ def _download_with_retries(url: str, opts: dict, cfg: Config):
             if isinstance(classified, _Transient) and attempt < attempts:
                 wait = 2 ** attempt
                 log.warning("download attempt %d/%d failed (%s); retrying in %ds",
-                            attempt, attempts, e, wait)
+                            attempt, attempts, _clean_err(e), wait)
                 time.sleep(wait)
                 continue
             raise classified from e
@@ -255,7 +255,7 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
             continue
         except Exception as e:  # noqa: BLE001 - unknown extractor error; try next strategy
             last_err = e
-            log.warning("auth strategy '%s' failed (%s); trying next", label, e)
+            log.warning("auth strategy '%s' unavailable (%s); trying next", label, _clean_err(e))
             continue
 
     if info is None or file_path is None:

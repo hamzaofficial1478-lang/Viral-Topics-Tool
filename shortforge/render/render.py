@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 
 from ..analyze.audio import loudnorm_filter, select_expr
 from ..config import Config
@@ -179,6 +180,7 @@ def render_clip_tracked(
     log.info("rendering clip %s (tracked) -> %s", clip.clip_id, out_path)
     # File-backed stderr avoids a pipe-buffer deadlock while we stream frames in.
     errf = tempfile.TemporaryFile()
+    _t0 = time.time()
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=errf)
 
     cap.set(cv2.CAP_PROP_POS_MSEC, clip.start * 1000.0)
@@ -217,6 +219,12 @@ def render_clip_tracked(
         if proc.stdin and not proc.stdin.closed:
             proc.stdin.close()
     proc.wait()
+    # STEP 0: record this ffmpeg encode (the tracked path pipes frames via a raw
+    # Popen, so it bypasses utils.run's logging — log + record it here too).
+    _dt = time.time() - _t0
+    log.info("ffmpeg %.1fs: %s", _dt, " ".join(cmd))
+    from .. import timing
+    timing.record_ffmpeg(cmd, _dt)
     if proc.returncode != 0 or broken:
         errf.seek(0)
         tail = errf.read().decode(errors="replace").strip().splitlines()[-12:]

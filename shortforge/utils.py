@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 
 log = logging.getLogger("shortforge")
@@ -76,14 +77,27 @@ def require_binary(name: str) -> str:
 
 
 def run(cmd: list[str], *, quiet: bool = True) -> subprocess.CompletedProcess:
-    """Run a command, raising ShortForgeError with captured stderr on failure."""
+    """Run a command, raising ShortForgeError with captured stderr on failure.
+
+    STEP 0: every ffmpeg invocation is logged with its full command line and
+    wall-clock duration and recorded on the active Timings, so the render/encode
+    cost is measurable per call (ffprobe stays at DEBUG — cheap and noisy)."""
+    from . import timing
     log.debug("run: %s", " ".join(cmd))
+    _t0 = time.time()
     proc = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
+    _dt = time.time() - _t0
+    _base = os.path.basename(cmd[0]) if cmd else ""
+    if _base.startswith("ffmpeg"):
+        log.info("ffmpeg %.1fs: %s", _dt, " ".join(cmd))
+        timing.record_ffmpeg(cmd, _dt)
+    elif _base.startswith("ffprobe"):
+        log.debug("ffprobe %.2fs: %s", _dt, " ".join(cmd))
     if proc.returncode != 0:
         tail = (proc.stderr or "").strip().splitlines()[-15:]
         raise ShortForgeError(

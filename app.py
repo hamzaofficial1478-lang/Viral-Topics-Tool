@@ -327,10 +327,38 @@ def _render_clip(c: dict, key: str) -> None:
                                    os.path.basename(pubf), key=f"sc_{key}")
 
 
+def _render_timings(manifest: dict) -> None:
+    """STEP 0: per-stage timing breakdown + every ffmpeg call, so the bottleneck
+    is visible on the page (not just in the console)."""
+    t = manifest.get("timings")
+    line = manifest.get("timings_summary")
+    if not t and not line:
+        return
+    if line:
+        st.caption("⏱ Per-stage timing")
+        st.code(line, language=None)
+    if not t:
+        return
+    stages = t.get("stages") or []
+    if stages:
+        rows = [{"stage": s.get("stage"),
+                 "seconds": ("" if s.get("seconds") is None else s.get("seconds")),
+                 "note": s.get("note") or ""} for s in stages]
+        with st.expander(f"Timing detail · total {t.get('total_seconds', 0):.0f}s", expanded=False):
+            st.dataframe(rows, width="stretch", hide_index=True)
+            calls = t.get("ffmpeg_calls") or []
+            if calls:
+                st.caption(f"{len(calls)} ffmpeg call(s), slowest first")
+                slow = sorted(calls, key=lambda c: c.get("seconds", 0), reverse=True)
+                st.dataframe([{"seconds": c.get("seconds"), "cmd": c.get("cmd")} for c in slow],
+                             width="stretch", hide_index=True)
+
+
 def _render_results(manifest: dict, out_dir: str | None = None,
                     key_prefix: str = "live") -> None:
     st.success(manifest.get("summary", "Done"))
     _render_qc(manifest)
+    _render_timings(manifest)
     folder = out_dir or os.path.dirname(manifest.get("manifest_path", "")) \
         or os.path.abspath("out")
     _render_folder_bar(folder, key_prefix)

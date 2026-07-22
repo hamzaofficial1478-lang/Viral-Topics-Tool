@@ -90,28 +90,40 @@ def run_pipeline(
     synthesis; returning False aborts the run (STEP 1 cost controls).
     """
     from .doctor import preflight
+    from . import timing
     preflight(cfg)  # C1: fail fast with actionable messages
     require_binary("ffmpeg")
     require_binary("ffprobe")
+
+    # STEP 0: per-stage + per-ffmpeg timing for this run (so we optimize the real
+    # bottleneck). Active only for this call; leaf stages/ffmpeg append to it.
+    _timings = timing.Timings()
+    _tok = timing.activate(_timings)
 
     work_dir = cfg.get("paths.work_dir", ".shortforge")
     out_dir = cfg.get("paths.output_dir", "out")
     os.makedirs(out_dir, exist_ok=True)
 
     # --- M1 ingest -------------------------------------------------------- #
-    meta = ingest(source, cfg, owner_confirmed=owner_confirmed)
+    with timing.stage("ingest"):
+        meta = ingest(source, cfg, owner_confirmed=owner_confirmed)
     cache = Cache(work_dir, meta.hash)
 
     # --- M2 transcribe (or use supplied transcript) ----------------------- #
     if transcript_path:
-        transcript = load_external_transcript(
-            transcript_path, meta.duration, meta.src_lang or "en"
-        )
-        cache.save_json("transcript.json", transcript.to_dict())
+        with timing.stage("asr", note="supplied"):
+            transcript = load_external_transcript(
+                transcript_path, meta.duration, meta.src_lang or "en"
+            )
+            cache.save_json("transcript.json", transcript.to_dict())
         log.info("using supplied transcript: %s (%d segments)",
                  transcript_path, len(transcript.segments))
     else:
-        transcript = transcribe(meta, cfg, cache)
+        _asr_cached = os.path.isfile(cache.path("transcript.json"))
+        with timing.stage("asr"):
+            transcript = transcribe(meta, cfg, cache)
+        if _asr_cached:
+            timing.note("asr", "cached")
 
     if not transcript.segments:
         raise ShortForgeError(
@@ -121,7 +133,8 @@ def run_pipeline(
         )
 
     # --- M3 detect (transcript + visual signals) -------------------------- #
-    candidates = detect_hooks(transcript, cfg, meta.file_path)
+    with timing.stage("hook-scoring"):
+        candidates = detect_hooks(transcript, cfg, meta.file_path)
 
     # --- M4 select (with recommendation) ---------------------------------- #
     n_rec, rationale = recommend_clip_count(transcript, candidates, cfg)
@@ -142,7 +155,8 @@ def run_pipeline(
     cfg.override("reframe.width", out_w)
     cfg.override("reframe.height", out_h)
 
-    clips = build_clips(transcript, candidates, cfg, meta.hash)
+    with timing.stage("select"):
+        clips = build_clips(transcript, candidates, cfg, meta.hash)
     if not clips:
         raise ShortForgeError("No clips could be selected from this source.")
     log.info("selected %d clip%s", len(clips), "s" if len(clips) != 1 else "")
@@ -191,15 +205,18 @@ def run_pipeline(
     # second voice over the original.
     accompaniment_source = None
     allow_voice_bleed = bool(cfg.get("localize.allow_voice_bleed", False))
+    if not dub_on:
+        timing.note("stems", "skipped")
     if dub_on:
         from .localize import stems
         should_stem, stem_reason = stems.stem_separation_enabled(cfg)
         if should_stem:
             src_wav = cache.path("source_48k.wav")
-            stem_result = stems.separate_source(
-                meta.file_path, src_wav, cache.dir,
-                transcript.duration or meta.duration, cfg,
-            )
+            with timing.stage("stems"):
+                stem_result = stems.separate_source(
+                    meta.file_path, src_wav, cache.dir,
+                    transcript.duration or meta.duration, cfg,
+                )
             if stem_result is not None:
                 # G1: reconstruct the bed (accompaniment + retained ambience).
                 accompaniment_source = stems.build_bed(stem_result, cache.dir, cfg)
@@ -326,6 +343,7 @@ def run_pipeline(
                 raise ShortForgeError("Cancelled at cost confirmation.")
     if bool(cfg.get("cost.dry_run", False)):
         log.info("--dry-run-cost: reporting the plan only, no synthesis or render.")
+        timing.deactivate(_tok)
         return _dry_run_manifest(meta, clips, clip_lang, cost_estimate, out_dir, slug, date)
 
     rendered: list[dict] = []
@@ -365,11 +383,12 @@ def run_pipeline(
                 if total_kept(kr) < clip.duration - 0.3:  # only if it actually trims
                     keep_ranges = kr
 
-            ass_path = build_ass(
-                clip, caption_transcript, out_w, out_h, cfg,
-                cache.path(f"clip_{clip.clip_id}_{clip_lang}.ass"),
-                keep_ranges=keep_ranges,
-            )
+            with timing.stage("captions"):
+                ass_path = build_ass(
+                    clip, caption_transcript, out_w, out_h, cfg,
+                    cache.path(f"clip_{clip.clip_id}_{clip_lang}.ass"),
+                    keep_ranges=keep_ranges,
+                )
             subs = subtitles_filter(ass_path, fontsdir) if ass_path else None
 
             # M6 dub: voiceover over preserved music/SFX, if enabled.
@@ -379,40 +398,47 @@ def run_pipeline(
                 # In the default (original-audio) path this branch is never entered,
                 # so no TTS provider is resolved or called — nothing to spend.
                 assert localize_on, "dub invoked without a cross-language request (bug)"
-                dub_audio, dub_method = dub_clip(
-                    meta.file_path, clip, caption_transcript, cfg, cache.path("dub"),
-                    accompaniment_source=accompaniment_source,
-                    allow_voice_bleed=allow_voice_bleed,
-                )
+                with timing.stage("dub"):
+                    dub_audio, dub_method = dub_clip(
+                        meta.file_path, clip, caption_transcript, cfg, cache.path("dub"),
+                        accompaniment_source=accompaniment_source,
+                        allow_voice_bleed=allow_voice_bleed,
+                    )
 
             video_select = None
             if keep_ranges:
                 from .analyze.audio import select_expr
                 video_select = select_expr(keep_ranges, clip.start)
 
-            track = plan_vcam(meta.file_path, clip, out_w, out_h, cfg, cache) if use_track else None
+            # Reframe planning = per-frame saliency + scene-cut detection (the CV
+            # pass); timed as "saliency" since it dominates the plan.
+            track = None
+            if use_track:
+                with timing.stage("saliency"):
+                    track = plan_vcam(meta.file_path, clip, out_w, out_h, cfg, cache)
             if use_track and bool(cfg.get("reframe.debug", False)):
                 from .reframe.vcam import debug_reframe
                 dbg = os.path.join(out_dir, f"{slug}_{lang}_{clip.clip_id}_{date}_reframe-debug.mp4")
                 debug_reframe(meta.file_path, clip, out_w, out_h, cfg, cache, dbg)
-            if track is not None:
-                fg = build_filtergraph(
-                    probe.width, probe.height, out_w, out_h,
-                    pre_cropped=True, subtitles=subs, logo=logo,
-                )
-                render_clip_tracked(
-                    meta.file_path, clip, track, out_w, out_h, fg, cfg, out_path,
-                    audio_path=dub_audio, keep_ranges=keep_ranges,
-                    burned_band=burned_band, burned_mode=burned_mode,
-                )
-            else:
-                fg = build_filtergraph(
-                    probe.width, probe.height, out_w, out_h,
-                    fill=fill, subtitles=subs, logo=logo, video_select=video_select,
-                    burned_band=burned_band, burned_mode=burned_mode,
-                )
-                render_clip(meta.file_path, clip, fg, cfg, out_path,
-                            audio_path=dub_audio, keep_ranges=keep_ranges)
+            with timing.stage("render"):
+                if track is not None:
+                    fg = build_filtergraph(
+                        probe.width, probe.height, out_w, out_h,
+                        pre_cropped=True, subtitles=subs, logo=logo,
+                    )
+                    render_clip_tracked(
+                        meta.file_path, clip, track, out_w, out_h, fg, cfg, out_path,
+                        audio_path=dub_audio, keep_ranges=keep_ranges,
+                        burned_band=burned_band, burned_mode=burned_mode,
+                    )
+                else:
+                    fg = build_filtergraph(
+                        probe.width, probe.height, out_w, out_h,
+                        fill=fill, subtitles=subs, logo=logo, video_select=video_select,
+                        burned_band=burned_band, burned_mode=burned_mode,
+                    )
+                    render_clip(meta.file_path, clip, fg, cfg, out_path,
+                                audio_path=dub_audio, keep_ranges=keep_ranges)
 
             # Lip-sync the dubbed clip so the mouth tracks the new voiceover.
             if lipsync_on and dub_audio:
@@ -420,7 +446,10 @@ def run_pipeline(
         clip.file_path = os.path.abspath(out_path)
 
         # M10 title/description/tags — generated for every output video.
-        md = gen_metadata(clip, cfg) if do_meta else None
+        md = None
+        if do_meta:
+            with timing.stage("metadata"):
+                md = gen_metadata(clip, cfg)
         # M14 publishing sidecar: copy-paste-ready title/description/tags next
         # to the video, so they travel with each clip (not just in the manifest).
         publish_file = write_sidecar(out_path, md) if (md and do_publish) else None
@@ -431,10 +460,11 @@ def run_pipeline(
             if reuse and os.path.isfile(thumb_path):
                 thumb = thumb_path
             else:
-                thumb = make_thumbnail(
-                    meta.file_path, clip, out_w, out_h, cfg, thumb_path,
-                    track=track, text_hook=(md or {}).get("title"),
-                )
+                with timing.stage("thumbnail"):
+                    thumb = make_thumbnail(
+                        meta.file_path, clip, out_w, out_h, cfg, thumb_path,
+                        track=track, text_hook=(md or {}).get("title"),
+                    )
 
         entry = clip.to_dict()
         entry["tracked"] = track is not None
@@ -456,6 +486,11 @@ def run_pipeline(
         if do_review:
             entry["review"] = review_clip(clip.caption_text, clip_lang, dub_method)
         rendered.append(entry)
+
+    if not do_meta:
+        timing.note("metadata", "off")
+    if not do_thumb:
+        timing.note("thumbnail", "off")
 
     # --- B: one-line provenance summary (required; how the operator verifies
     #        which code path actually ran) ---------------------------------- #
@@ -523,9 +558,16 @@ def run_pipeline(
         },
         "clips": rendered,
     }
+    # STEP 0: per-stage + per-ffmpeg timing into the manifest, logged, and shown
+    # in the UI — so we optimize the measured bottleneck, not the assumed one.
+    manifest["timings"] = _timings.to_dict()
+    manifest["timings_summary"] = _timings.summary_line()
+    log.info(manifest["timings_summary"])
+
     manifest_path = os.path.join(out_dir, f"{slug}_{date}_manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
     manifest["manifest_path"] = os.path.abspath(manifest_path)
     log.info("wrote manifest: %s", manifest_path)
+    timing.deactivate(_tok)
     return manifest

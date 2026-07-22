@@ -57,6 +57,21 @@ class _Transient(Exception):
     """A network hiccup — worth retrying with backoff."""
 
 
+_ANSI = None
+
+
+def _clean_err(e: Exception) -> str:
+    """yt-dlp errors carry ANSI colour codes and an 'ERROR:' prefix — strip them
+    so the Settings 'Test' panel shows a readable message."""
+    global _ANSI
+    import re
+    if _ANSI is None:
+        _ANSI = re.compile(r"\x1b\[[0-9;]*m")
+    text = _ANSI.sub("", str(e)).strip()
+    line = text.splitlines()[-1] if text.splitlines() else text
+    return line.replace("ERROR:", "").strip()
+
+
 def _classify(e: Exception) -> Exception:
     msg = str(e).lower()
     if "not a bot" in msg or "confirm you" in msg or "sign in to confirm" in msg:
@@ -302,7 +317,7 @@ def test_youtube_auth(url: str, cfg: Config) -> tuple[bool, str]:
             why = ("bot wall" if isinstance(c, _BotWall) else
                    "unavailable" if isinstance(c, _Unavailable) else
                    "network" if isinstance(c, _Transient) else "error")
-            lines.append(f"✗ {label}: {why} — {str(e).splitlines()[-1][:100]}")
+            lines.append(f"✗ {label}: {why} — {_clean_err(e)[:140]}")
     return any_ok, "\n".join(lines)
 
 

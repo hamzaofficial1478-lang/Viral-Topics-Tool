@@ -32,7 +32,10 @@ DEFAULTS: dict[str, Any] = {
         "llm_model": "claude-opus-4-8",
         "min_segment_score": 0.35,
         # C1: provider hook scorer (task-routing LLM + vision frame fusion).
-        "hook_frames": True,        # fuse vision frame scores onto the top candidates
+        # Vision is OFF by default: transcript-only already picks good clips, and
+        # llama-3.2-11b-vision takes ONE image per request (6 frames = 6 calls per
+        # candidate) so it's a slow bonus, not a blocker. Turn on with --hook-frames.
+        "hook_frames": False,       # fuse vision frame scores onto the top candidates
         "frame_weight": 0.35,       # (1-w)*transcript_llm + w*frames_llm
         "frame_topk": 12,           # only score frames for the top-K candidates (cost)
         "hook_batch": 12,           # segments per hook-scoring call (small+predictable beats fewer+large; timeouts split to half)
@@ -189,9 +192,9 @@ DEFAULTS: dict[str, Any] = {
         "loudnorm_lra": 11.0,
     },
     "vision": {                     # R7: frame scoring adapter
-        "max_images": 6,            # images per request (confirm real endpoint limit live)
+        "max_images": 1,            # llama-3.2-11b-vision: "At most 1 image may be provided" (confirmed live)
         "frame_width": 768,         # downscale cap
-        "frames_per_clip": 6,       # frames sampled per candidate window
+        "frames_per_clip": 2,       # frames sampled per candidate window (1 img/call ⇒ N calls; keep low)
         "timeout": 0,               # per-call timeout override (s); 0 = task default (300)
     },
     "providers": {

@@ -67,7 +67,9 @@ def test_detect_fuses_frame_scores(monkeypatch):
     # frame scoring boosts candidate #2 (8.0–12.0s) without touching ffmpeg
     monkeypatch.setattr(PH, "score_frames_for",
                         lambda cands, idxs, src, cfg, store: {2: (1.0, "great visual")})
-    cands = PH.detect(_tr(), Config.load(), "video.mp4", store)
+    cfg = Config.load()
+    cfg.override("detect.hook_frames", True)     # vision fusion is off by default; this test exercises it
+    cands = PH.detect(_tr(), cfg, "video.mp4", store)
     assert cands[0].start == 8.0                                   # fused to the top
     assert cands[0].signals["frames_llm"]["score"] == 1.0
 

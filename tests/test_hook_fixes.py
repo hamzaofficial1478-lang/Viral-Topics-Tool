@@ -211,6 +211,15 @@ def test_max_backup_keeps_hook_near_start():
     assert anchor_start - clips[0].start <= 1 * 3.0 + 0.01     # backed up ≤ 1 segment
 
 
+# --- vision endpoint reality: 1 image/request, off by default --------------- #
+
+def test_vision_defaults_match_endpoint_limit():
+    cfg = Config.load()
+    assert cfg.get("vision.max_images") == 1        # "At most 1 image may be provided in one prompt"
+    assert cfg.get("vision.frames_per_clip") == 2   # 1 img/call ⇒ keep the call count low
+    assert cfg.get("detect.hook_frames") is False   # transcript-only by default; vision is a bonus
+
+
 # --- issue 2: vision 400 surfaces the body ---------------------------------- #
 
 def test_vision_400_reports_body(tmp_path, monkeypatch):

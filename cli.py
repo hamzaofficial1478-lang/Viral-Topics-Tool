@@ -53,6 +53,8 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("page.niche", getattr(args, "niche", None))
     if getattr(args, "vision", False):
         cfg.override("detect.vision_llm", True)
+    if getattr(args, "hook_frames", False):
+        cfg.override("detect.hook_frames", True)
     if getattr(args, "no_visual", False):
         cfg.override("detect.visual", False)
     if getattr(args, "debug_reframe", False):
@@ -928,6 +930,9 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
     r.add_argument("--transcript", help="Use a supplied .srt/.json instead of ASR")
     r.add_argument("--vision", action="store_true",
                    help="Use Claude-vision multimodal hook scoring (claude-watch; needs key)")
+    r.add_argument("--hook-frames", action="store_true",
+                   help="Fuse free llama-3.2 vision frame scores onto the top hook candidates "
+                        "(off by default — 1 image/call, so it's a slow bonus, not needed)")
     r.add_argument("--no-visual", action="store_true",
                    help="Disable local visual hook signals (motion/cuts/faces)")
     r.add_argument("--use-llm", dest="backend", action="store_const", const="llm",

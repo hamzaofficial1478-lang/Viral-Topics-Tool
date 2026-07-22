@@ -5,19 +5,28 @@ Launch:
 
     streamlit run app.py
 
-It reuses `run_pipeline` (no pipeline logic is duplicated here): you fill in a
-form, click Run, watch live per-stage progress, then preview each clip inline
-with its title/description/tags and download buttons. The CLI stays fully
-functional — this is just an additional entry point.
+It reuses `run_pipeline` (no pipeline logic is duplicated here): fill in a form,
+click Run, then watch live per-stage progress + a log tail while the job runs in
+a background thread, and when it finishes review each clip inline — video,
+thumbnail, hook score + justification, copy-ready title/description/tags, a
+download button, the run summary + QC, and a button that opens the output folder.
+A History screen lists past runs. The CLI stays fully functional — this is just
+an additional entry point.
 """
 
 from __future__ import annotations
 
+import datetime
+import glob
+import json
 import logging
 import os
 import queue
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 
 try:
     import streamlit as st
@@ -34,7 +43,8 @@ from shortforge.utils import ShortForgeError, load_env_file, setup_logging
 _STAGES = [
     ("ingest", 0.10, "Ingesting source"),
     ("transcrib", 0.25, "Transcribing"),
-    ("hook detection", 0.40, "Finding the best moments"),
+    ("hook scoring", 0.38, "Scoring hooks"),
+    ("hook detection", 0.42, "Finding the best moments"),
     ("selected", 0.52, "Selecting clips"),
     ("virtual camera", 0.62, "Reframing (virtual camera)"),
     ("translating", 0.68, "Translating"),
@@ -43,35 +53,21 @@ _STAGES = [
     ("wrote manifest", 1.0, "Done"),
 ]
 
+_MANIFEST_GLOB = "*_manifest.json"
+
 
 class _QueueHandler(logging.Handler):
+    """Push (levelno, message) for each log record onto a queue the UI drains."""
+
     def __init__(self, q: queue.Queue):
         super().__init__()
         self.q = q
 
     def emit(self, record):
         try:
-            self.q.put(record.getMessage())
+            self.q.put((record.levelno, record.getMessage()))
         except Exception:  # noqa: BLE001
             pass
-
-
-def _run_in_thread(source, cfg, transcript_path):
-    """Run the pipeline in a background thread, returning (thread, box)."""
-    box: dict = {}
-
-    def target():
-        try:
-            box["manifest"] = run_pipeline(
-                source, cfg, owner_confirmed=True, transcript_path=transcript_path)
-        except ShortForgeError as e:
-            box["error"] = str(e)
-        except Exception as e:  # noqa: BLE001
-            box["error"] = f"Unexpected error: {e}"
-
-    t = threading.Thread(target=target, daemon=True)
-    t.start()
-    return t, box
 
 
 def _save_upload(uploaded, suffix: str) -> str:
@@ -79,6 +75,31 @@ def _save_upload(uploaded, suffix: str) -> str:
     with os.fdopen(fd, "wb") as f:
         f.write(uploaded.getbuffer())
     return path
+
+
+def _open_folder(path: str) -> tuple[bool, str]:
+    """Open a folder in the OS file manager (Explorer on Windows). The app runs
+    on the operator's own machine, so this opens it locally."""
+    try:
+        if os.name == "nt":
+            os.startfile(path)  # type: ignore[attr-defined]  # noqa: S606
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+        return True, ""
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)
+
+
+def _stage_from_lines(lines: list[str]) -> tuple[float, str]:
+    """Furthest-along stage seen in the log so far (monotonic-ish progress)."""
+    frac, label = 0.05, "Working…"
+    low = [ln.lower() for ln in lines]
+    for key, f, lab in _STAGES:
+        if any(key in ln for ln in low):
+            frac, label = f, lab
+    return frac, label
 
 
 def _plan_steps(duration, tolerance, num, aspect, reframe, whisper_model,
@@ -128,31 +149,240 @@ def _plan_notes(whisper_model, language, dub_kind) -> list[str]:
     return notes
 
 
-def main() -> None:
-    st.set_page_config(page_title="ShortForge", page_icon="🎬", layout="wide")
-    setup_logging(False)
-    load_env_file(".env")
+# --------------------------------------------------------------------------- #
+#  Job lifecycle (background thread + session-state so results survive reruns) #
+# --------------------------------------------------------------------------- #
 
-    st.title("🎬 ShortForge")
+def _start_job(source, cfg, transcript_path, out_dir) -> None:
+    q: queue.Queue = queue.Queue()
+    handler = _QueueHandler(q)
+    logging.getLogger("shortforge").addHandler(handler)
+    box: dict = {}
 
-    with st.sidebar:
-        screen = st.radio("Screen", ["New job", "Settings"], index=0)
-        st.divider()
+    def target():
+        try:
+            box["manifest"] = run_pipeline(
+                source, cfg, owner_confirmed=True, transcript_path=transcript_path)
+        except ShortForgeError as e:
+            box["error"] = str(e)
+        except Exception as e:  # noqa: BLE001
+            box["error"] = f"Unexpected error: {e}"
 
-    if screen == "Settings":
-        from shortforge.ui.settings import render as render_settings
-        render_settings()
+    t = threading.Thread(target=target, daemon=True)
+    t.start()
+    st.session_state.job = {
+        "state": "running", "thread": t, "queue": q, "handler": handler, "box": box,
+        "lines": [], "warnings": [], "out_dir": out_dir, "started": time.time(),
+    }
+
+
+def _drain_queue(job: dict) -> None:
+    q = job["queue"]
+    while True:
+        try:
+            level, msg = q.get_nowait()
+        except queue.Empty:
+            break
+        job["lines"].append(msg)
+        if level >= logging.WARNING:
+            job["warnings"].append((level, msg))
+
+
+def _render_warnings(warnings: list, limit: int | None = None) -> None:
+    items = warnings[-limit:] if limit else warnings
+    for level, msg in items:
+        (st.error if level >= logging.ERROR else st.warning)(msg)
+
+
+def _render_running(job: dict) -> None:
+    _drain_queue(job)
+    thread = job["thread"]
+    frac, label = _stage_from_lines(job["lines"])
+    elapsed = int(time.time() - job["started"])
+    st.subheader("⏳ Working on your clips…")
+    st.progress(frac, text=f"{label}  ·  {elapsed}s elapsed")
+    st.caption("You can leave this page open — it updates live. The job keeps running "
+               "even if you switch to Settings.")
+    if job["warnings"]:
+        with st.expander(f"⚠️ {len(job['warnings'])} warning(s) so far", expanded=False):
+            _render_warnings(job["warnings"], limit=8)
+    st.caption("Live log")
+    st.code("\n".join(job["lines"][-18:]) or "Starting…")
+
+    if thread.is_alive():
+        time.sleep(0.5)            # brief poll; the page reruns so it never looks frozen
+        st.rerun()
+    else:                          # finished — finalize and flip to the result view
+        _drain_queue(job)
+        logging.getLogger("shortforge").removeHandler(job["handler"])
+        if "error" in job["box"]:
+            job["state"], job["error"] = "error", job["box"]["error"]
+        else:
+            job["state"], job["manifest"] = "done", job["box"].get("manifest")
+        st.rerun()
+
+
+def _render_job_result(job: dict) -> None:
+    if st.button("◀ Start another job", key="newjob"):
+        st.session_state.pop("job", None)
+        st.rerun()
+    if job["state"] == "error":
+        st.error(job.get("error", "The job failed."))
+        if job.get("warnings"):
+            st.markdown("**Warnings during the run:**")
+            _render_warnings(job["warnings"], limit=10)
+        with st.expander("Full log", expanded=False):
+            st.code("\n".join(job.get("lines", [])[-60:]) or "(no log)")
         return
+    manifest = job.get("manifest")
+    if not manifest:
+        st.error("No output was produced.")
+        return
+    if job.get("warnings"):        # item 4: surface stage warnings (e.g. vision 400s)
+        with st.expander(f"⚠️ {len(job['warnings'])} warning(s) during the run "
+                         "(clips still produced)", expanded=False):
+            _render_warnings(job["warnings"])
+    _render_results(manifest, out_dir=job.get("out_dir"), key_prefix="live")
 
+
+# --------------------------------------------------------------------------- #
+#  Results rendering (shared by the live result view and the History screen)   #
+# --------------------------------------------------------------------------- #
+
+def _render_folder_bar(folder: str, key_prefix: str) -> None:
+    st.markdown("**Output folder**")
+    c1, c2 = st.columns([4, 1])
+    with c1:
+        st.code(folder or "out")               # copyable path
+    with c2:
+        if st.button("📂 Open folder", key=f"open_{key_prefix}", width="stretch"):
+            ok, err = _open_folder(folder)
+            if not ok:
+                st.warning(f"Couldn't open it from here ({err}) — copy the path on the left.")
+
+
+def _render_qc(manifest: dict) -> None:
+    s = manifest.get("settings", {})
+    target_lufs = Config.load().get("render.loudnorm_i", -14.0)
+    parts = []
+    if s.get("loudnorm", True):
+        parts.append(f"🔊 Loudness normalized to ~{target_lufs:.0f} LUFS (TP ≤ −1 dBTP)")
+    else:
+        parts.append("🔊 Loudness normalization OFF")
+    if s.get("resolution"):
+        parts.append(f"🖼 {s['resolution']} · {s.get('aspect', '?')} · "
+                     f"reframe {s.get('reframe_mode', '?')}")
+    flagged = (manifest.get("review") or {}).get("flagged", 0)
+    if flagged:
+        parts.append(f"⚠️ {flagged} clip(s) flagged for review")
+    ce = manifest.get("cost_estimate") or {}
+    if ce.get("priced"):
+        parts.append(f"💲 est ${ce.get('cost_usd', 0):.2f}")
+    st.caption("  ·  ".join(parts))
+
+
+def _copyable(label: str, text: str, key: str) -> None:
+    """A field with Streamlit's built-in copy button (the ⧉ on a code block)."""
+    if not text:
+        return
+    st.caption(label)
+    st.code(text, language=None)
+
+
+def _render_clip(c: dict, key: str) -> None:
+    vc, ic = st.columns([2, 3])
+    fp = c.get("file_path", "")
+    with vc:
+        if fp and os.path.isfile(fp):
+            st.video(fp)
+            with open(fp, "rb") as f:
+                st.download_button("⬇ Download clip", f.read(), os.path.basename(fp),
+                                   mime="video/mp4", key=f"dl_{key}", width="stretch")
+        else:
+            st.warning("Clip file not found on disk.")
+        thumb = c.get("thumbnail")
+        if thumb and os.path.isfile(thumb):
+            st.image(thumb, caption="Thumbnail (cover frame)", width="stretch")
+    with ic:
+        dur = c.get("duration") or (c.get("end", 0) - c.get("start", 0))
+        st.markdown(f"**Clip {c.get('clip_id', '?')}** — "
+                    f"{c.get('start', 0):.1f}–{c.get('end', 0):.1f}s ({dur:.1f}s)  ·  "
+                    f"hook score **{c.get('score', 0):.2f}**")
+        if c.get("reason"):
+            st.caption(f"Why this moment: {c['reason']}")
+        review = c.get("review") or {}
+        if review.get("flags"):
+            st.warning("QC flags: " + ", ".join(review["flags"]))
+        md = c.get("metadata") or {}
+        _copyable("Title", md.get("title", ""), f"t_{key}")
+        _copyable("Description", md.get("description", ""), f"d_{key}")
+        if md.get("tags"):
+            _copyable("Tags", ", ".join(md["tags"]), f"tag_{key}")
+        if md.get("hashtags"):
+            _copyable("Hashtags", " ".join(md["hashtags"]), f"h_{key}")
+        pubf = c.get("publish_file")
+        if pubf and os.path.isfile(pubf):
+            with open(pubf, "rb") as f:
+                st.download_button("⬇ title/desc/tags (.txt)", f.read(),
+                                   os.path.basename(pubf), key=f"sc_{key}")
+
+
+def _render_results(manifest: dict, out_dir: str | None = None,
+                    key_prefix: str = "live") -> None:
+    st.success(manifest.get("summary", "Done"))
+    _render_qc(manifest)
+    folder = out_dir or os.path.dirname(manifest.get("manifest_path", "")) \
+        or os.path.abspath("out")
+    _render_folder_bar(folder, key_prefix)
+    rationale = (manifest.get("recommendation") or {}).get("rationale")
+    if rationale:
+        st.info(rationale)
+    clips = manifest.get("clips", [])
+    st.markdown(f"### {len(clips)} clip(s)")
+    for i, c in enumerate(clips):
+        st.divider()
+        _render_clip(c, f"{key_prefix}_{i}")
+
+
+def _render_history() -> None:
+    st.header("📚 History")
+    st.caption("Every finished run and its clips — review earlier work without hunting "
+               "through the out/ folder.")
+    out_dir = os.path.abspath("out")
+    manifests = sorted(glob.glob(os.path.join(out_dir, _MANIFEST_GLOB)),
+                       key=os.path.getmtime, reverse=True)
+    if not manifests:
+        st.info("No runs yet. Finished jobs will appear here.")
+        return
+    for mp in manifests:
+        try:
+            with open(mp, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        src = manifest.get("source", {})
+        ts = datetime.datetime.fromtimestamp(os.path.getmtime(mp)).strftime("%Y-%m-%d %H:%M")
+        title = src.get("title") or os.path.basename(mp)
+        n = len(manifest.get("clips", []))
+        with st.expander(f"{ts}  ·  {title}  ·  {n} clip(s)", expanded=False):
+            key = "hist_" + os.path.basename(mp).replace(".", "_")
+            _render_results(manifest, out_dir=os.path.dirname(mp), key_prefix=key)
+
+
+# --------------------------------------------------------------------------- #
+#  Main                                                                        #
+# --------------------------------------------------------------------------- #
+
+def _render_new_job_form() -> None:
     st.caption("Turn your own long-form videos into short vertical clips — captions, "
                "optional dub, SEO titles/tags. Your machine, your content.")
 
     with st.sidebar:
         st.header("Growing niches")
         if st.button("Suggest niches"):
-            for n in suggest(top=5):
-                st.markdown(f"**{n['name']}**  ·  score {n['opportunity']}  \n"
-                            f"<small>{n['why']}</small>", unsafe_allow_html=True)
+            for nsug in suggest(top=5):
+                st.markdown(f"**{nsug['name']}**  ·  score {nsug['opportunity']}  \n"
+                            f"<small>{nsug['why']}</small>", unsafe_allow_html=True)
 
     # ---- 1. Your video ------------------------------------------------------
     st.subheader("1. Your video")
@@ -252,7 +482,7 @@ def main() -> None:
         st.info("➕ Add a video URL or upload a file to continue.")
     elif not owner:
         st.info("☑️ Tick the ownership confirmation to continue.")
-    run = st.button("Run ▶", type="primary", use_container_width=True, disabled=not ready)
+    run = st.button("Run ▶", type="primary", width="stretch", disabled=not ready)
     if not run:
         return
 
@@ -284,70 +514,39 @@ def main() -> None:
     if logo is not None:
         cfg.override("brand.logo", _save_upload(logo, os.path.splitext(logo.name)[1] or ".png"))
 
-    q: queue.Queue = queue.Queue()
-    handler = _QueueHandler(q)
-    logging.getLogger("shortforge").addHandler(handler)
-    try:
-        progress = st.progress(0.0, text="Starting…")
-        log_area = st.expander("Live log", expanded=True).empty()
-        lines: list[str] = []
-        thread, box = _run_in_thread(source, cfg, transcript_path)
+    _start_job(source, cfg, transcript_path, out_dir)
+    st.rerun()
 
-        while thread.is_alive() or not q.empty():
-            try:
-                msg = q.get(timeout=0.2)
-                lines.append(msg)
-                frac, label = 0.05, "Working…"
-                for key, f, lab in _STAGES:
-                    if any(key in ln.lower() for ln in lines[-12:]):
-                        frac, label = f, lab
-                progress.progress(frac, text=label)
-                log_area.code("\n".join(lines[-16:]))
-            except queue.Empty:
-                pass
-        thread.join()
-    finally:
-        logging.getLogger("shortforge").removeHandler(handler)
 
-    if "error" in box:
-        st.error(box["error"])
-        return
-    manifest = box.get("manifest")
-    if not manifest:
-        st.error("No output was produced.")
-        return
+def main() -> None:
+    st.set_page_config(page_title="ShortForge", page_icon="🎬", layout="wide")
+    setup_logging(False)
+    load_env_file(".env")
 
-    progress.progress(1.0, text="Done")
-    st.success(manifest.get("summary", "Done"))
-    rec = manifest.get("recommendation", {})
-    if rec:
-        st.info(rec.get("rationale", ""))
+    st.title("🎬 ShortForge")
 
-    for c in manifest["clips"]:
+    with st.sidebar:
+        screen = st.radio("Screen", ["New job", "Settings", "History"], index=0)
         st.divider()
-        vc, ic = st.columns([2, 3])
-        with vc:
-            if os.path.isfile(c["file_path"]):
-                st.video(c["file_path"])
-                with open(c["file_path"], "rb") as f:
-                    st.download_button("⬇ Download clip", f, os.path.basename(c["file_path"]),
-                                       mime="video/mp4", key=c["clip_id"])
-        with ic:
-            md = c.get("metadata") or {}
-            st.subheader(md.get("title") or f"Clip {c['clip_id']}")
-            st.caption(f"[{c['start']:.1f}–{c['end']:.1f}]  score {c['score']:.2f}"
-                       + ("  · pending review" if c.get("review") else ""))
-            if md.get("description"):
-                st.write(md["description"])
-            if md.get("tags"):
-                st.markdown("**Tags:** " + ", ".join(md["tags"]))
-            if md.get("hashtags"):
-                st.markdown("**Hashtags:** " + " ".join(md["hashtags"]))
-            if c.get("publish_file") and os.path.isfile(c["publish_file"]):
-                with open(c["publish_file"], "rb") as f:
-                    st.download_button("⬇ Title/desc/tags (.txt)", f,
-                                       os.path.basename(c["publish_file"]),
-                                       key="sc" + c["clip_id"])
+
+    if screen == "Settings":
+        from shortforge.ui.settings import render as render_settings
+        render_settings()
+        return
+    if screen == "History":
+        _render_history()
+        return
+
+    # New job — one of three states, all persisted in session_state so results
+    # survive the reruns that every button click / copy triggers.
+    job = st.session_state.get("job")
+    if job and job.get("state") == "running":
+        _render_running(job)
+        return
+    if job and job.get("state") in ("done", "error"):
+        _render_job_result(job)
+        return
+    _render_new_job_form()
 
 
 if __name__ == "__main__":

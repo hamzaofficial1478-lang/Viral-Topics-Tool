@@ -72,6 +72,33 @@ def test_settings_shows_backup_restore_section():
     assert "💾 Backup & restore settings" in [s.value for s in at.subheader]
 
 
+def test_history_screen_renders():
+    at = _fresh()
+    at.sidebar.radio[0].set_value("History").run()
+    assert not at.exception
+    assert "📚 History" in [h.value for h in at.header]
+
+
+def test_stage_from_lines_tracks_furthest_progress():
+    import app
+    frac0, label0 = app._stage_from_lines(["ingesting source video"])
+    frac1, label1 = app._stage_from_lines(
+        ["ingesting source video", "transcribing audio", "rendering clip 01"])
+    assert label0 == "Ingesting source"
+    assert frac1 > frac0 and label1 == "Rendering"           # furthest stage wins
+    # unknown lines don't crash and report a small non-zero fraction
+    frac2, _ = app._stage_from_lines(["something unrelated"])
+    assert 0.0 < frac2 < 0.2
+
+
+def test_render_clip_metadata_helpers_are_pure():
+    """The results helpers used by both live + history views import cleanly and
+    the copyable-field helper no-ops on empty text (no Streamlit context needed)."""
+    import app
+    # _copyable must tolerate empty text without touching Streamlit widgets.
+    app._copyable("Title", "", "k")                          # returns early, no error
+
+
 def test_import_store_round_trips_keys_and_routing(tmp_path, monkeypatch):
     """Export → import restores credentials (keys), models and task bindings intact."""
     monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(tmp_path / "providers.local.json"))

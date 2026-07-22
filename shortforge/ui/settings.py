@@ -160,7 +160,7 @@ def render() -> None:
                 "Enabled": "on" if p.get("enabled", True) else "off",
             })
     if rows:
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+        st.dataframe(rows, width="stretch", hide_index=True)
 
     st.divider()
 

@@ -103,7 +103,7 @@ def _stage_from_lines(lines: list[str]) -> tuple[float, str]:
 
 
 def _plan_steps(duration, tolerance, num, aspect, reframe, whisper_model,
-                language, dub_kind) -> list[str]:
+                language, dub_kind, metadata_on: bool = False) -> list[str]:
     """Plain-language 'what happens next' bullets from the chosen options."""
     lang = (language or "").strip()
     tracking = str(reframe).lower().startswith("track")
@@ -124,8 +124,12 @@ def _plan_steps(duration, tolerance, num, aspect, reframe, whisper_model,
                          "separating music/voice so the bed survives.")
     else:
         steps.append("**Keep** the original language and audio.")
-    steps.append("**Burn captions, render** vertical MP4s, and write an SEO "
-                 "**title, description and tags** for each clip.")
+    if metadata_on:
+        steps.append("**Burn captions, render** vertical MP4s, and write an SEO "
+                     "**title, description and tags** for each clip.")
+    else:
+        steps.append("**Burn captions and render** vertical MP4s. (Title/description/tags "
+                     "are off — turn them on under **Extras** if you want them.)")
     return steps
 
 
@@ -509,10 +513,21 @@ def _render_new_job_form() -> None:
                        "qsv (Intel Quick Sync)": "qsv"}[encoder_pick]
             logo = st.file_uploader("Logo overlay (optional)", type=["png", "jpg"])
 
+    # ---- Extras (opt-in; off by default — STEP 9) --------------------------
+    with st.expander("Extras (optional — off by default)"):
+        st.caption("ShortForge focuses on finding and rendering clips. These add a "
+                   "per-clip LLM call / extra step, so they're off unless you turn them on.")
+        want_metadata = st.checkbox(
+            "Generate title, description & hashtags per clip", value=False,
+            help="Uses your configured LLM once per clip. Leave off if you write your own.")
+        want_thumbnail = st.checkbox(
+            "Generate a cover-frame thumbnail per clip", value=False,
+            help="Extracts a representative frame as a .jpg next to each clip.")
+
     # ---- 3. What happens next ----------------------------------------------
     st.subheader("3. What happens next")
     for step in _plan_steps(duration, tolerance, num, aspect, reframe, whisper_model,
-                            language, dub_kind):
+                            language, dub_kind, metadata_on=want_metadata):
         st.markdown(f"- {step}")
     for note in _plan_notes(whisper_model, language, dub_kind):
         st.caption(note)
@@ -544,6 +559,8 @@ def _render_new_job_form() -> None:
         cfg.override("captions.animation", animation)
     cfg.override("reframe.mode", "center" if reframe.startswith("Center") else "track")
     cfg.override("render.encoder", encoder)
+    cfg.override("metadata.enabled", bool(want_metadata))   # STEP 9: opt-in extras
+    cfg.override("thumbnail.enabled", bool(want_thumbnail))
     cfg.override("edit.jumpcuts", bool(jumpcuts))
     cfg.override("transcribe.model", whisper_model)
     if source_lang.strip():

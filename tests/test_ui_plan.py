@@ -11,7 +11,16 @@ def test_plan_steps_local_no_language():
     assert "auto-recommended" in joined                       # 0 clips -> recommend
     assert "9:16" in joined and "tracking virtual camera" in joined
     assert "Keep" in joined and "original language" in joined
-    assert "title, description and tags" in joined
+    # STEP 9: metadata is off by default -> the plan says so, doesn't promise tags.
+    assert "Title/description/tags" in joined and "off" in joined
+
+
+def test_plan_steps_mentions_metadata_only_when_enabled():
+    off = " ".join(app._plan_steps(45, 12, 0, "9:16", "Center crop", "small", "", "captions"))
+    on = " ".join(app._plan_steps(45, 12, 0, "9:16", "Center crop", "small", "", "captions",
+                                  metadata_on=True))
+    assert "title, description and tags" not in off           # not promised when off
+    assert "title, description and tags" in on                # promised when opted in
 
 
 def test_plan_steps_dub_language_and_custom_size():

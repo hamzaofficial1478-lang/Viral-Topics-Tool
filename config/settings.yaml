@@ -116,16 +116,16 @@ brand:                           # M8 logo overlay
   margin: 40
 
 metadata:                        # M10 titles/description/hashtags
-  enabled: true
+  enabled: false                 # STEP 9: opt-in (--metadata / UI Extras). Costs an LLM call/clip.
   backend: auto                  # auto | llm | heuristic
 
 publish:                         # M14 per-video publishing sidecar
   # Writes a copy-paste-ready <video>.txt with the Title / Description / Tags
-  # next to each clip, so they travel with the video (not just in the manifest).
+  # next to each clip, so they travel with the video (only when metadata is on).
   sidecar: true
 
 thumbnail:                       # M11 cover image
-  enabled: true
+  enabled: false                 # STEP 9: opt-in (--thumbnail / UI Extras)
   text_hook: false               # draw the title on the cover
 
 page:                            # Section 8 per-page profile (optional)

@@ -349,7 +349,12 @@ def run_pipeline(
     # STEP 5: render clips concurrently — each ffmpeg encode is CPU-bound and the
     # clips are independent. Deferred to a worker pool below (the dub path keeps
     # rendering inline: it shares audio/lipsync state that isn't parallel-safe).
-    from .render import plan_render
+    from .render import plan_render, resolve_encoder, available_hw_encoders
+    # STEP 1: warm the encoder cache in the main thread (only when a hardware
+    # encoder is actually requested, so the default x264 run does no extra probe)
+    # — avoids parallel workers each shelling out to `ffmpeg -encoders`.
+    if str(cfg.get("render.encoder", "x264") or "x264").lower() not in ("x264", "libx264", "software", "cpu"):
+        available_hw_encoders()
     render_workers, render_threads = plan_render(cfg, len(clips))
     parallel_render = render_workers > 1 and len(clips) > 1 and not dub_on
     if parallel_render and render_threads:
@@ -549,6 +554,9 @@ def run_pipeline(
         dub_desc,
         f"captions {clip_lang if captions_on else 'off'}",
         f"reframe {'track' if use_track else 'center'}",
+        f"encoder {resolve_encoder(cfg)}",
+        f"metadata {'on' if do_meta else 'off'}",
+        f"thumbnail {'on' if do_thumb else 'off'}",
     ] + (["jumpcuts"] if jumpcuts_on else [])
       + (["lipsync"] if lipsync_on else [])
       + ([f"cost ~${cost_estimate.cost_usd:.2f}"] if cost_estimate and cost_estimate.priced else []))

@@ -55,9 +55,9 @@ def resolve_encoder(cfg: Config) -> str:
     amf | x264. 'auto' picks the best available hardware encoder, else libx264;
     an explicit hardware choice that isn't available falls back to libx264."""
     choice = str(cfg.get("render.encoder", "x264") or "x264").lower()
-    hw = available_hw_encoders()
     if choice in ("x264", "libx264", "software", "cpu"):
-        return "libx264"
+        return "libx264"   # default path: no `ffmpeg -encoders` probe needed
+    hw = available_hw_encoders()
     if choice == "auto":
         return hw[0] if hw else "libx264"
     name = choice if choice.startswith("h264_") else f"h264_{choice}"

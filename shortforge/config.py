@@ -134,9 +134,14 @@ DEFAULTS: dict[str, Any] = {
         "opacity": 0.85,
         "margin": 40,
     },
-    "metadata": {"enabled": True, "backend": "auto"},   # M10
-    "publish": {"sidecar": True},                        # M14 title/desc/tags sidecar
-    "thumbnail": {"enabled": True, "text_hook": False},  # M11
+    # STEP 9: title/description/tags + thumbnail are OPT-IN (off by default). The
+    # pipeline focuses on finding + rendering clips; these secondary "Extras" cost
+    # an LLM call per clip, so they run only when explicitly enabled (--metadata /
+    # --thumbnail, or the UI Extras toggles). When off, the stage never runs — no
+    # provider resolved, no call, no placeholder file.
+    "metadata": {"enabled": False, "backend": "auto"},   # M10 (opt-in)
+    "publish": {"sidecar": True},                        # M14 sidecar (only if metadata on)
+    "thumbnail": {"enabled": False, "text_hook": False},  # M11 (opt-in)
     "page": {"niche": None, "tone": None, "hashtags": []},  # Section 8 profile
     "localize": {                    # M6 localization (Phase 3)
         "language": None,            # target lang code (None = keep source)

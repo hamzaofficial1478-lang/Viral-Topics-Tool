@@ -107,6 +107,12 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.override("render.loudnorm", False)
     if getattr(args, "jumpcuts", False):
         cfg.override("edit.jumpcuts", True)
+    # STEP 9: metadata/thumbnail are opt-in (off by default). --metadata/--thumbnail
+    # turn them on; the legacy --no-* flags still force them off.
+    if getattr(args, "metadata", False):
+        cfg.override("metadata.enabled", True)
+    if getattr(args, "thumbnail", False):
+        cfg.override("thumbnail.enabled", True)
     if getattr(args, "no_metadata", False):
         cfg.override("metadata.enabled", False)
     if getattr(args, "no_thumbnail", False):
@@ -981,8 +987,12 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
     r.add_argument("--no-loudnorm", action="store_true", help="Skip -14 LUFS normalisation")
     r.add_argument("--jumpcuts", action="store_true",
                    help="Trim long silences / dead air (jump cuts); off when dubbing")
-    r.add_argument("--no-metadata", action="store_true", help="Skip metadata generation")
-    r.add_argument("--no-thumbnail", action="store_true", help="Skip thumbnail generation")
+    r.add_argument("--metadata", action="store_true",
+                   help="Generate title/description/tags per clip (opt-in; costs an LLM call each)")
+    r.add_argument("--thumbnail", action="store_true",
+                   help="Generate a cover-frame thumbnail per clip (opt-in)")
+    r.add_argument("--no-metadata", action="store_true", help="Force metadata off (default)")
+    r.add_argument("--no-thumbnail", action="store_true", help="Force thumbnail off (default)")
     r.add_argument("--no-sidecar", action="store_true",
                    help="Skip the per-video title/description/tags .txt file")
     r.add_argument("--resume", action="store_true",

@@ -30,6 +30,64 @@ def _threads_args(cfg: Config) -> list[str]:
     return ["-threads", str(n)] if n > 0 else []
 
 
+# STEP 1: hardware H.264 encoders, in preference order. QSV = Intel Quick Sync.
+_HW_ENCODERS = ("h264_qsv", "h264_nvenc", "h264_amf")
+_hw_cache: list[str] | None = None
+
+
+def available_hw_encoders() -> list[str]:
+    """Hardware H.264 encoders this ffmpeg build exposes (cached). Detected via
+    ``ffmpeg -encoders`` at startup; recorded in ``doctor``."""
+    global _hw_cache
+    if _hw_cache is not None:
+        return _hw_cache
+    try:
+        out = subprocess.run([require_binary("ffmpeg"), "-hide_banner", "-encoders"],
+                             capture_output=True, text=True, timeout=15).stdout
+    except Exception:  # noqa: BLE001
+        out = ""
+    _hw_cache = [e for e in _HW_ENCODERS if e in out]
+    return _hw_cache
+
+
+def resolve_encoder(cfg: Config) -> str:
+    """The ffmpeg video encoder to use. ``render.encoder``: auto | qsv | nvenc |
+    amf | x264. 'auto' picks the best available hardware encoder, else libx264;
+    an explicit hardware choice that isn't available falls back to libx264."""
+    choice = str(cfg.get("render.encoder", "x264") or "x264").lower()
+    hw = available_hw_encoders()
+    if choice in ("x264", "libx264", "software", "cpu"):
+        return "libx264"
+    if choice == "auto":
+        return hw[0] if hw else "libx264"
+    name = choice if choice.startswith("h264_") else f"h264_{choice}"
+    if name in hw:
+        return name
+    log.warning("encoder '%s' not available (have: %s) — using libx264",
+                choice, ", ".join(hw) or "none")
+    return "libx264"
+
+
+def video_encode_args(cfg: Config, encoder: str | None = None) -> list[str]:
+    """``-c:v …`` args for the chosen encoder. Hardware encoders are tuned for
+    quality-equivalence to the x264 CRF (raise the bitrate/quality knob rather
+    than accept visible loss); software x264 keeps CRF + preset + -threads."""
+    enc = encoder or resolve_encoder(cfg)
+    if enc == "h264_qsv":
+        gq = str(cfg.get("render.qsv_quality", 23))   # like CRF: lower = better
+        return ["-c:v", "h264_qsv", "-global_quality", gq, "-pix_fmt", "nv12"]
+    if enc == "h264_nvenc":
+        cq = str(cfg.get("render.nvenc_cq", 23))
+        return ["-c:v", "h264_nvenc", "-rc", "vbr", "-cq", cq, "-pix_fmt", "yuv420p"]
+    if enc == "h264_amf":
+        qp = str(cfg.get("render.amf_qp", 22))
+        return ["-c:v", "h264_amf", "-rc", "cqp", "-qp_i", qp, "-qp_p", qp, "-pix_fmt", "yuv420p"]
+    # libx264 (software, default)
+    return (["-c:v", "libx264", "-preset", str(cfg.get("render.preset", "veryfast")),
+             "-crf", str(cfg.get("render.crf", 20)), "-pix_fmt", "yuv420p"]
+            + _threads_args(cfg))
+
+
 def plan_render(cfg: Config, n_clips: int) -> tuple[int, int]:
     """STEP 5: (workers, threads_per_ffmpeg) for rendering ``n_clips`` clips.
 
@@ -71,17 +129,15 @@ def render_clip(
     ffmpeg = require_binary("ffmpeg")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    crf = str(cfg.get("render.crf", 20))
-    preset = str(cfg.get("render.preset", "veryfast"))
     abr = str(cfg.get("render.audio_bitrate", "128k"))
     fps = cfg.get("render.fps")
     af = loudnorm_filter(cfg)
 
-    cmd = [ffmpeg, "-y", "-ss", format_timestamp(clip.start), "-i", source_path]
+    pre = [ffmpeg, "-y", "-ss", format_timestamp(clip.start), "-i", source_path]
     fc = filtergraph
     extra_af: str | None = af
     if audio_path:
-        cmd += ["-i", audio_path]
+        pre += ["-i", audio_path]
         audio_map = "1:a:0"
     elif keep_ranges:
         # Cut the source audio on the same ranges as the video, then close the
@@ -95,22 +151,33 @@ def render_clip(
         extra_af = None
     else:
         audio_map = "0:a:0?"  # optional: sources without audio still render
-    cmd += [
-        "-t", f"{clip.duration:.3f}",
-        "-filter_complex", fc,
-        "-map", "[v]", "-map", audio_map,
-        "-c:v", "libx264", "-preset", preset, "-crf", crf, "-pix_fmt", "yuv420p",
-    ] + _threads_args(cfg)
-    if extra_af:
-        cmd += ["-af", extra_af]
-    # A3: -sn drops any soft subtitle stream so only our caption layer exists.
-    cmd += ["-c:a", "aac", "-b:a", abr, "-sn", "-movflags", "+faststart", "-shortest"]
-    if fps:
-        cmd += ["-r", str(fps)]
-    cmd.append(out_path)
 
-    log.info("rendering clip %s -> %s", clip.clip_id, out_path)
-    run(cmd)
+    def _cmd(enc: str) -> list[str]:
+        c = list(pre) + [
+            "-t", f"{clip.duration:.3f}",
+            "-filter_complex", fc,
+            "-map", "[v]", "-map", audio_map,
+        ] + video_encode_args(cfg, enc)
+        if extra_af:
+            c += ["-af", extra_af]
+        # A3: -sn drops any soft subtitle stream so only our caption layer exists.
+        c += ["-c:a", "aac", "-b:a", abr, "-sn", "-movflags", "+faststart", "-shortest"]
+        if fps:
+            c += ["-r", str(fps)]
+        c.append(out_path)
+        return c
+
+    encoder = resolve_encoder(cfg)
+    log.info("rendering clip %s -> %s (%s)", clip.clip_id, out_path, encoder)
+    try:
+        run(_cmd(encoder))
+    except ShortForgeError:
+        if encoder != "libx264":   # STEP 1: auto-fall back to software on hw failure
+            log.warning("hardware encoder %s failed for clip %s; retrying with libx264",
+                        encoder, clip.clip_id)
+            run(_cmd("libx264"))
+        else:
+            raise
 
     info = ffprobe_info(out_path)
     log.info(
@@ -137,6 +204,7 @@ def render_clip_tracked(
     keep_ranges: list[tuple[float, float]] | None = None,
     burned_band: dict | None = None,
     burned_mode: str = "cover",
+    _encoder: str | None = None,
 ) -> str:
     """Render a clip with per-frame subject-tracking crop (M5, Phase 2).
 
@@ -158,10 +226,9 @@ def render_clip_tracked(
     if fps <= 0:
         fps = 30.0
 
-    crf = str(cfg.get("render.crf", 20))
-    preset = str(cfg.get("render.preset", "veryfast"))
     abr = str(cfg.get("render.audio_bitrate", "128k"))
     af = loudnorm_filter(cfg)
+    encoder = _encoder or resolve_encoder(cfg)
 
     # Clip-relative keep ranges for the per-frame test (source -> clip time).
     rel_keep = (
@@ -195,8 +262,7 @@ def render_clip_tracked(
     cmd += [
         "-filter_complex", fc,
         "-map", "[v]", "-map", audio_map,
-        "-c:v", "libx264", "-preset", preset, "-crf", crf, "-pix_fmt", "yuv420p",
-    ] + _threads_args(cfg)
+    ] + video_encode_args(cfg, encoder)
     if extra_af:
         cmd += ["-af", extra_af]
     cmd += [
@@ -206,7 +272,7 @@ def render_clip_tracked(
 
     import tempfile
 
-    log.info("rendering clip %s (tracked) -> %s", clip.clip_id, out_path)
+    log.info("rendering clip %s (tracked) -> %s (%s)", clip.clip_id, out_path, encoder)
     # File-backed stderr avoids a pipe-buffer deadlock while we stream frames in.
     errf = tempfile.TemporaryFile()
     _t0 = time.time()
@@ -258,6 +324,13 @@ def render_clip_tracked(
         errf.seek(0)
         tail = errf.read().decode(errors="replace").strip().splitlines()[-12:]
         errf.close()
+        if encoder != "libx264":   # STEP 1: hardware encode failed — retry on x264
+            log.warning("hardware encoder %s failed for clip %s (tracked); retrying libx264",
+                        encoder, clip.clip_id)
+            return render_clip_tracked(
+                source_path, clip, track, out_w, out_h, filtergraph, cfg, out_path,
+                audio_path=audio_path, keep_ranges=keep_ranges,
+                burned_band=burned_band, burned_mode=burned_mode, _encoder="libx264")
         raise ShortForgeError("tracked render failed:\n" + "\n".join(tail))
     errf.close()
 

@@ -277,33 +277,33 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
 # --- Settings helpers (Test authentication / Update yt-dlp) ------------------ #
 
 def test_youtube_auth(url: str, cfg: Config) -> tuple[bool, str]:
-    """Metadata-only fetch (no download) with the configured auth, tried down the
-    same fallback chain. Returns (ok, detail) for the Settings 'Test' button."""
+    """Metadata-only fetch (no download) with the configured auth. Tries EVERY
+    strategy and reports each, so the operator can see whether their browser
+    cookies actually work (not just that the no-cookies fallback happened to).
+    Returns (any_ok, per-strategy detail) for the Settings 'Test' button."""
     try:
         yt_dlp = _require_ytdlp()
     except ShortForgeError as e:
         return False, str(e)
     opts = {"quiet": True, "no_warnings": True, "skip_download": True,
             "socket_timeout": int(cfg.get("ingest.socket_timeout", 120) or 120)}
-    saw_bot = False
-    last = ""
+    lines: list[str] = []
+    any_ok = False
     for label, overlay in _auth_strategies(cfg):
         try:
             with yt_dlp.YoutubeDL({**opts, **overlay}) as ydl:
                 info = ydl.extract_info(url, download=False)
             title = (info or {}).get("title", "?")
             dur = float((info or {}).get("duration") or 0)
-            return True, f"OK via '{label}': “{title}” ({dur:.0f}s)"
+            lines.append(f"✓ {label}: “{title}” ({dur:.0f}s)")
+            any_ok = True
         except Exception as e:  # noqa: BLE001
             c = _classify(e)
-            last = str(e)
-            if isinstance(c, _BotWall):
-                saw_bot = True
-            continue
-    if saw_bot:
-        return False, ("Bot wall hit on every strategy. Pick the browser you're "
-                       "logged into YouTube with (Firefox most reliable). Raw: " + last)
-    return False, f"Failed: {last}"
+            why = ("bot wall" if isinstance(c, _BotWall) else
+                   "unavailable" if isinstance(c, _Unavailable) else
+                   "network" if isinstance(c, _Transient) else "error")
+            lines.append(f"✗ {label}: {why} — {str(e).splitlines()[-1][:100]}")
+    return any_ok, "\n".join(lines)
 
 
 def ytdlp_version() -> str | None:

@@ -29,6 +29,7 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("select.num_clips", getattr(args, "num_clips", None))
     cfg.override("reframe.aspect", getattr(args, "aspect", None))
     cfg.override("reframe.resolution", getattr(args, "resolution", None))
+    cfg.override("render.encoder", getattr(args, "encoder", None))
     cfg.override("brand.size", getattr(args, "logo_size", None))
     cfg.override("reframe.fill", getattr(args, "fill", None))
     cfg.override("transcribe.model", getattr(args, "whisper_model", None))
@@ -333,6 +334,57 @@ def cmd_ui(args: argparse.Namespace) -> int:
         return 1
     log.info("launching ShortForge UI (Ctrl+C to stop) …")
     return subprocess.call(["streamlit", "run", app])
+
+
+def cmd_encode_sample(args: argparse.Namespace) -> int:
+    """STEP 1: render the SAME slice with x264 and each hardware encoder so the
+    operator can judge quality vs speed side-by-side before switching the default."""
+    import time as _t
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+    from shortforge.ingest import ingest
+    from shortforge.reframe import apply_resolution, parse_aspect, build_filtergraph
+    from shortforge.render import available_hw_encoders, video_encode_args
+    from shortforge.models import Clip
+    from shortforge.utils import ffprobe_info, require_binary, run, format_timestamp
+
+    cfg = Config.load(args.config)
+    if args.resolution:
+        cfg.override("reframe.resolution", args.resolution)
+    meta = ingest(args.source, cfg, owner_confirmed=args.owner_confirmed)
+    apply_resolution(cfg)
+    out_w, out_h = parse_aspect(cfg.get("reframe.aspect", "9:16"),
+                                int(cfg.get("reframe.width", 1080)),
+                                int(cfg.get("reframe.height", 1920)))
+    probe = ffprobe_info(meta.file_path)
+    start, dur = float(args.start), float(args.duration)
+    clip = Clip(clip_id="sample", source_hash=meta.hash, start=start, end=start + dur, score=1.0)
+    fg = build_filtergraph(probe.width, probe.height, out_w, out_h, fill="crop")
+    out_dir = cfg.get("paths.output_dir", "out")
+    os.makedirs(out_dir, exist_ok=True)
+    ffmpeg = require_binary("ffmpeg")
+
+    encoders = ["libx264"] + available_hw_encoders()
+    print(f"\nEncoding a {dur:.0f}s sample at {out_w}x{out_h} with: {', '.join(encoders)}\n"
+          f"(no fallback — a hardware failure is shown as FAILED so you see the real result)\n")
+    for enc in encoders:
+        outp = os.path.join(out_dir, f"encode-sample_{enc}.mp4")
+        cmd = ([ffmpeg, "-y", "-ss", format_timestamp(start), "-t", f"{dur:.3f}",
+                "-i", meta.file_path, "-filter_complex", fg, "-map", "[v]", "-map", "0:a:0?"]
+               + video_encode_args(cfg, enc)
+               + ["-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", outp])
+        t0 = _t.time()
+        try:
+            run(cmd)
+            dt, sz = _t.time() - t0, os.path.getsize(outp) / 1e6
+            print(f"  {enc:12s}  {dt:6.1f}s encode   {sz:6.1f} MB   -> {outp}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  {enc:12s}  FAILED: {str(e).splitlines()[-1][:120]}")
+    print("\nOpen these files side by side at 100% and compare sharpness/artifacts. If a "
+          "hardware encoder looks equivalent, set it in Settings (or --encoder qsv). If it "
+          "looks softer, lower render.qsv_quality (e.g. 20) to raise the bitrate — hardware "
+          "at a higher bitrate is still much faster than x264.\n")
+    return 0
 
 
 def cmd_check_providers(args: argparse.Namespace) -> int:
@@ -805,6 +857,16 @@ def build_parser() -> argparse.ArgumentParser:
     usub = sub.add_parser("ui", help="Launch the web dashboard (job + settings screens)")
     usub.set_defaults(func=cmd_ui)
 
+    es = sub.add_parser("encode-sample",
+                        help="Render one slice with x264 vs hardware encoders to compare quality")
+    es.add_argument("source", help="Your video: a URL or a local file path")
+    es.add_argument("--owner-confirmed", action="store_true",
+                    help="Confirm the source is your own / licensed content (required for URLs)")
+    es.add_argument("--start", type=float, default=30.0, help="Slice start seconds (default 30)")
+    es.add_argument("--duration", type=float, default=8.0, help="Slice length seconds (default 8)")
+    es.add_argument("--resolution", help="Export size (default from config: 1080p)")
+    es.set_defaults(func=cmd_encode_sample)
+
     hk = sub.add_parser("hooks",
                         help="Compare hook-detection modes on a source (C1): heuristic vs "
                              "transcript-LLM vs fused — prints candidates with scores/reasons")
@@ -865,6 +927,10 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
                    help="Treat captions baked into the source pixels (A3)")
     r.add_argument("--resolution", help="Export size (short side): 1080p | 720p | 480p | WxH. "
                    "Separate from --aspect. Default 1080p; lower renders faster on CPU.")
+    r.add_argument("--encoder", choices=["auto", "qsv", "nvenc", "amf", "x264"],
+                   help="Video encoder. x264 (default, software) | qsv (Intel Quick Sync, much "
+                        "faster) | nvenc | amf | auto (best hardware available). Compare quality "
+                        "first with `encode-sample`.")
     r.add_argument("--logo", help="Path to a logo image to overlay (M8)")
     r.add_argument("--logo-corner", choices=["TL", "TR", "BL", "BR"], help="Logo corner")
     r.add_argument("--logo-size", help="Logo width: fraction of output width (0..1) or px (>1)")

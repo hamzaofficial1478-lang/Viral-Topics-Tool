@@ -191,6 +191,12 @@ DEFAULTS: dict[str, Any] = {
         # STEP 5 parallel render: run clips concurrently (each ffmpeg is CPU-bound).
         "workers": 0,               # 0 = auto min(clips, physical_cores//2); 1 = sequential
         "threads": 0,               # per-ffmpeg -threads; 0 = auto (logical_cores // workers)
+        # STEP 1 hardware encoding. Default x264 (software) until the operator
+        # confirms QSV quality via `encode-sample`; then set 'auto' or 'qsv'.
+        "encoder": "x264",          # auto | qsv | nvenc | amf | x264
+        "qsv_quality": 23,          # h264_qsv -global_quality (CRF-like; lower = better)
+        "nvenc_cq": 23,             # h264_nvenc -cq
+        "amf_qp": 22,               # h264_amf -qp_i/-qp_p
 
         "loudnorm": True,           # M9: normalise to ~-14 LUFS
         "loudnorm_i": -14.0,

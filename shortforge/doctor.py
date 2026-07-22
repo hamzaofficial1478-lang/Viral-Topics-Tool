@@ -166,6 +166,21 @@ def _hardware() -> Check:
                  "realtime; voice-clone/lip-sync are impractical without a GPU.")
 
 
+def _encoders() -> Check:
+    """STEP 1: report hardware H.264 encoders ffmpeg exposes (Quick Sync etc.)."""
+    try:
+        from .render import available_hw_encoders
+        hw = available_hw_encoders()
+    except Exception:  # noqa: BLE001
+        hw = []
+    if hw:
+        return Check("video encoders", OK,
+                     f"hardware available: {', '.join(hw)} (+ libx264). Set render.encoder "
+                     "'qsv'/'auto' after checking quality with `encode-sample`.")
+    return Check("video encoders", OK, "libx264 (software) only — no hardware H.264 "
+                 "encoder found (h264_qsv / nvenc / amf).")
+
+
 def _whisper_model(cfg: Config) -> Check:
     model = str(cfg.get("transcribe.model", "small"))
     if model in ("tiny", "base"):
@@ -181,7 +196,7 @@ def _whisper_model(cfg: Config) -> Check:
 def run_checks(cfg: Config) -> list[Check]:
     return [
         _ffmpeg(), _python(), _ctranslate2(), _whisper_model(cfg), _ytdlp(),
-        _translation(), _tts(), _demucs(), _disk(cfg), _hardware(),
+        _translation(), _tts(), _demucs(), _disk(cfg), _hardware(), _encoders(),
     ]
 
 

@@ -498,6 +498,15 @@ def _render_new_job_form() -> None:
             jumpcuts = st.checkbox(
                 "Trim dead air (jump cuts)", value=False,
                 help="Cut long silent gaps so the clip feels tighter.")
+            enc_choices = ["x264 (software, default)", "auto (best hardware)",
+                           "qsv (Intel Quick Sync)"]
+            encoder_pick = st.selectbox(
+                "Video encoder", enc_choices, 0,
+                help="x264 is the safe default. QSV (Intel Quick Sync) is much faster on a "
+                     "hardware-encode machine — compare quality first with `encode-sample`. "
+                     "Falls back to x264 automatically if hardware encoding fails.")
+            encoder = {"x264 (software, default)": "x264", "auto (best hardware)": "auto",
+                       "qsv (Intel Quick Sync)": "qsv"}[encoder_pick]
             logo = st.file_uploader("Logo overlay (optional)", type=["png", "jpg"])
 
     # ---- 3. What happens next ----------------------------------------------
@@ -534,6 +543,7 @@ def _render_new_job_form() -> None:
     if animation != "(style default)":
         cfg.override("captions.animation", animation)
     cfg.override("reframe.mode", "center" if reframe.startswith("Center") else "track")
+    cfg.override("render.encoder", encoder)
     cfg.override("edit.jumpcuts", bool(jumpcuts))
     cfg.override("transcribe.model", whisper_model)
     if source_lang.strip():

@@ -127,9 +127,10 @@ def _render_youtube_auth(store: dict) -> None:
         cfg = Config.load()
         cfg.override("ingest.cookies_from_browser", None if browser == "none" else browser)
         cfg.override("ingest.cookies", cookies_file.strip() or None)
-        with st.spinner("Fetching metadata (no download)…"):
+        with st.spinner("Fetching metadata (no download) — trying every strategy…"):
             ok, detail = test_youtube_auth(test_url.strip(), cfg)
-        (st.success if ok else st.error)(detail)
+        (st.success if ok else st.error)("Reachable ✓" if ok else "No strategy worked ✗")
+        st.code(detail or "(no result)")   # per-strategy: confirms whether your browser cookies work
 
     ver = ytdlp_version() or "not installed"
     st.caption(f"yt-dlp version: **{ver}** — extractors break often; keep it current.")

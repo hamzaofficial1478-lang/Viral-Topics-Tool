@@ -8,6 +8,7 @@ the gitignored provider store; keys are masked after saving and never logged.
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 
@@ -18,6 +19,9 @@ from ..providers import detect as D
 from ..providers import test_tts_provider, capability_warnings
 
 _CATS = list(S.CATEGORIES)
+
+# A settings backup dropped in the project root is auto-offered on first launch.
+BACKUP_FILENAME = "shortforge-settings.json"
 
 
 def _load():
@@ -33,6 +37,77 @@ def _persist(store):
 
 def _m(v):
     return "✓" if v is True else "✗" if v is False else "?"
+
+
+def _store_is_empty(store: dict) -> bool:
+    """Nothing configured yet — no credentials and no legacy providers."""
+    return not S.credentials(store) and not store.get("providers")
+
+
+def _valid_store(data) -> bool:
+    """A plausible ShortForge settings file (not arbitrary JSON)."""
+    return isinstance(data, dict) and any(
+        k in data for k in ("credentials", "providers", "tasks"))
+
+
+def _import_store(data) -> None:
+    """Replace the whole provider store with an imported backup (keys included)."""
+    if not _valid_store(data):
+        raise ValueError("not a ShortForge settings file "
+                         "(expected credentials / providers / tasks)")
+    data.setdefault("providers", [])
+    data.setdefault("credentials", [])
+    data.setdefault("tasks", {})
+    _persist(data)
+
+
+def _render_autodetect_import(store: dict) -> None:
+    """First-launch convenience: if a backup is sitting in the project root and
+    nothing is configured yet, offer to restore it in one click (item 3)."""
+    if st.session_state.get("autoimport_dismissed"):
+        return
+    if not os.path.isfile(BACKUP_FILENAME) or not _store_is_empty(store):
+        return
+    st.info(f"Found **{BACKUP_FILENAME}** in the project folder and no providers are "
+            "configured yet. Restore your saved credentials, models and task routing?")
+    c1, c2 = st.columns(2)
+    if c1.button(f"⬇️ Import {BACKUP_FILENAME}", type="primary", key="autoimport_yes"):
+        try:
+            with open(BACKUP_FILENAME, "r", encoding="utf-8") as f:
+                _import_store(json.load(f))
+            st.session_state.autoimport_dismissed = True
+            st.success("Imported — your API keys and routing are restored.")
+            st.rerun()
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            st.error(f"Could not import {BACKUP_FILENAME}: {e}")
+    if c2.button("No thanks", key="autoimport_no"):
+        st.session_state.autoimport_dismissed = True
+        st.rerun()
+
+
+def _render_backup_restore(store: dict) -> None:
+    """Export/import the whole settings store so moving machines needs no re-entry."""
+    st.divider()
+    st.subheader("💾 Backup & restore settings")
+    st.caption("Move to a new PC without re-entering anything: export one file with every "
+               "credential, model, category, priority and task binding, then import it there.")
+    st.warning("⚠️ The exported file contains your **API keys in plaintext**. Keep it "
+               "private — do not commit it or share it.")
+    payload = json.dumps(store, ensure_ascii=False, indent=2).encode("utf-8")
+    st.download_button("⬇️ Export settings", data=payload, file_name=BACKUP_FILENAME,
+                       mime="application/json", key="settings_export")
+    up = st.file_uploader("⬆️ Import settings (replaces everything configured now)",
+                          type="json", key="settings_import")
+    if up is not None:
+        sig = (up.name, up.size)
+        if st.session_state.get("_last_import_sig") != sig:   # import each file once, no rerun loop
+            st.session_state["_last_import_sig"] = sig
+            try:
+                _import_store(json.loads(up.getvalue().decode("utf-8")))
+                st.success("Settings imported — credentials, models and task routing restored.")
+                st.rerun()
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as e:
+                st.error(f"Import failed: {e}")
 
 
 def _caps_summary(p: dict) -> str:
@@ -66,6 +141,8 @@ def render() -> None:
 
     store = _load()
 
+    _render_autodetect_import(store)
+
     for w in capability_warnings(store):
         st.warning(w)
 
@@ -96,6 +173,9 @@ def render() -> None:
     # --- per-task routing (R1) + cost-tier guard (R2) ---
     st.divider()
     _render_task_routing(store)
+
+    # --- backup / restore (move machines without re-entering keys) ---
+    _render_backup_restore(store)
 
     # --- legacy migration (item 3): collapse to ONE config path ---
     legacy = store.get("providers", [])

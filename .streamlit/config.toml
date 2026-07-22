@@ -1,0 +1,10 @@
+# ShortForge dashboard config.
+# headless = true keeps first launch fully unattended: no "Welcome / Email:"
+# prompt (which would block the hidden .vbs launcher) and no double browser tab.
+# The launchers (start_ui.bat / start_ui.vbs) open the browser themselves.
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
+port = 8501

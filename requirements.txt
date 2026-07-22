@@ -14,6 +14,9 @@ PyYAML>=6.0
 # Headless OpenCV = no GUI/system deps (subject tracking, thumbnails, A3/A4).
 opencv-python-headless>=4.9.0,<5.0
 numpy>=1.24,<2.3
+# Settings + new-job dashboard (`python cli.py ui`). This is the ONLY place API
+# keys are entered/edited (the operator does not hand-edit .env), so it's required.
+streamlit>=1.36
 
 # --- Optional: Claude-backed hook detection / metadata / translation ---
 # (or any OpenAI-compatible gateway — see Part E / .env.example)
@@ -34,6 +37,3 @@ numpy>=1.24,<2.3
 # --- Optional: lip-sync for cross-language dubs (GPU strongly recommended) ---
 #   clone https://github.com/Rudrabha/Wav2Lip and download wav2lip_gan.pth,
 #   then set --wav2lip-repo / --wav2lip-checkpoint (or the lipsync: config block).
-
-# --- Optional: web dashboard (Part D) ---
-# streamlit>=1.36

@@ -3,6 +3,8 @@
 # Provider config written by the settings UI (contains API keys)
 config/providers.local.json
 *.local.json
+# Exported settings backup (contains API keys in plaintext) — never commit it
+shortforge-settings.json
 
 # Python
 __pycache__/

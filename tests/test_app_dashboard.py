@@ -4,6 +4,8 @@ The dashboard (`app.py`) is a thin Streamlit layer, exercised here via Streamlit
 headless AppTest so a broken form is caught in CI without a browser.
 """
 
+import json
+
 import pytest
 
 pytest.importorskip("streamlit")
@@ -61,3 +63,41 @@ def test_settings_shows_credentials_with_a_seeded_model(tmp_path, monkeypatch):
     at.sidebar.radio[0].set_value("Settings").run()
     assert not at.exception
     assert "🔑 Credentials" in [s.value for s in at.subheader]
+
+
+def test_settings_shows_backup_restore_section():
+    at = _fresh()
+    at.sidebar.radio[0].set_value("Settings").run()
+    assert not at.exception
+    assert "💾 Backup & restore settings" in [s.value for s in at.subheader]
+
+
+def test_import_store_round_trips_keys_and_routing(tmp_path, monkeypatch):
+    """Export → import restores credentials (keys), models and task bindings intact."""
+    monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(tmp_path / "providers.local.json"))
+    from shortforge.providers import store as S
+    from shortforge.ui import settings as UI
+
+    src = {"providers": [], "credentials": [], "tasks": {}}
+    cred = S.add_credential(src, name="NVIDIA build",
+                            base_url="https://integrate.api.nvidia.com/v1", api_key="nvapi-secret")
+    m = S.add_model(src, cred["id"], model="minimaxai/minimax-m3", category="llm")
+    S.set_task_binding(src, "hook_detection", primary=m["id"])
+
+    exported = json.loads(json.dumps(src))              # what the download_button emits
+    monkeypatch.setattr(UI, "_persist", lambda store: S.save_store(store))
+    UI._import_store(exported)                            # what an upload does
+
+    restored = S.load_store()
+    assert restored["credentials"][0]["api_key"] == "nvapi-secret"   # key preserved
+    assert restored["credentials"][0]["models"][0]["model"] == "minimaxai/minimax-m3"
+    assert restored["tasks"]["hook_detection"]["primary"] == m["id"]  # routing preserved
+
+
+def test_import_store_rejects_junk():
+    from shortforge.ui import settings as UI
+    import pytest as _pytest
+    assert UI._valid_store({"credentials": []}) is True
+    assert UI._valid_store({"nonsense": 1}) is False
+    with _pytest.raises(ValueError):
+        UI._import_store({"nonsense": 1})

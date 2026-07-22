@@ -140,6 +140,27 @@ def test_overlapping_hook_anchors_collapse_into_one_clip():
     assert len(covering) == 1
 
 
+def test_warns_when_requested_duration_exceeds_remaining_source(caplog):
+    """Long-clip guard: a hook near the end can't reach the requested duration —
+    warn clearly instead of silently truncating."""
+    import logging
+    from shortforge.models import Segment, Transcript, Candidate
+    # 12s of speech; the only strong hook is the last 3s → a 45s clip is impossible.
+    segs = [Segment(i * 3.0, i * 3.0 + 3.0, f"thought number {i} here.") for i in range(4)]
+    tr = Transcript("en", 12.0, segs)
+    cands = [Candidate(s.start, s.end, 0.9 if i == 3 else 0.1, "hook")
+             for i, s in enumerate(segs)]
+    cfg = _cfg()
+    cfg.override("select.target_duration", 45)
+    cfg.override("select.tolerance", 5)
+    cfg.override("select.num_clips", 1)
+    with caplog.at_level(logging.WARNING, logger="shortforge"):
+        clips = build_clips(tr, cands, cfg, "h")
+    assert clips                                              # a shorter clip is still emitted
+    assert (clips[0].end - clips[0].start) < 45              # shorter than requested
+    assert any("short of the requested" in r.message for r in caplog.records)
+
+
 def test_never_emits_a_sub_minimum_clip():
     """Even with a tiny target + generous tolerance, no clip is shorter than the
     minimum (never a 0.7s / 1.6s fragment)."""

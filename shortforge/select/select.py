@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from ..config import Config
 from ..models import Candidate, Clip, Transcript
+from ..utils import log
 
 _STRONG = 0.5   # candidate score considered a "strong standalone moment"
 _MAX_CLIPS = 20
@@ -128,6 +129,18 @@ def build_clips(
         dur = segments[hi].end - segments[lo].start
         if dur < _MIN_CLIP_SECONDS:
             continue
+        if dur < lower - 0.5:
+            # Long-clip guard: report rather than silently truncate when the
+            # requested duration can't be reached from the remaining source.
+            at_end = hi >= len(segments) - 1 or (hi + 1) in used
+            at_start = lo <= 0 or (lo - 1) in used
+            edge = ("the source ends" if at_end and not at_start else
+                    "it is the start of the source" if at_start and not at_end else
+                    "surrounding material is already used by other clips")
+            log.warning(
+                "clip at %.1fs is only %.1fs, short of the requested ~%.0fs because %s "
+                "— emitting the shorter clip (not padding or truncating silently).",
+                segments[anchor].start, dur, target, edge)
         for i in range(lo, hi + 1):
             used.add(i)
         anchor_cand = seg_score.get(anchor, Candidate(

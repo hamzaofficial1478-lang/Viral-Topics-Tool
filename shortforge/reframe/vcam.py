@@ -28,7 +28,7 @@ from ..utils import log
 from .crop import compute_crop
 from .track import Track, ensure_model
 
-_DETECTOR_VERSION = "vcam-1"
+_DETECTOR_VERSION = "vcam-2"   # bumped: single-pass ffmpeg sampling (was per-frame seek)
 
 
 @dataclass
@@ -132,8 +132,28 @@ def _cache_key(clip: Clip, cfg: Config) -> str:
     return f"vcam_{clip.clip_id}_{hz}_{_DETECTOR_VERSION}.json"
 
 
+def _read_exact(stream, n: int) -> bytes | None:
+    """Read exactly ``n`` bytes from a pipe (a read may return a partial chunk);
+    None at end of stream."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = stream.read(n - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+
 def detect_saliency(source_path: str, clip: Clip, cfg: Config, cache=None) -> list[Sample] | None:
-    """Per-sample saliency + scene cuts for ``clip`` (cached). None if no cv2."""
+    """Per-sample saliency + scene cuts for ``clip`` (cached). None if no cv2.
+
+    PERF (was the pipeline's #1 bottleneck — ~3s/sample on 1080p): the clip span
+    is decoded **once** by ffmpeg, sampled at ``sample_hz`` and scaled to ~480p in
+    the *same* pass, then streamed frame-by-frame to the detector. The old path
+    called ``cap.set(CAP_PROP_POS_FRAMES)`` per sample, which re-seeks to the
+    nearest keyframe and re-decodes forward every time — O(samples × GOP) decode
+    work. One linear decode replaces hundreds of random seeks.
+    """
     if cache is not None:
         cached = cache.load_json(_cache_key(clip, cfg))
         if cached:
@@ -148,75 +168,101 @@ def detect_saliency(source_path: str, clip: Clip, cfg: Config, cache=None) -> li
     if not model:
         return None
 
-    cap = cv2.VideoCapture(source_path)
-    if not cap.isOpened():
+    import subprocess
+    import time
+    from ..utils import require_binary, ffprobe_info
+    from .. import timing
+
+    # Source dimensions via a cheap probe (no decode).
+    try:
+        info = ffprobe_info(source_path)
+        src_w, src_h = int(info.width), int(info.height)
+    except Exception:  # noqa: BLE001
         return None
-    src_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    src_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     if src_w <= 0 or src_h <= 0:
-        cap.release()
         return None
 
-    # A4.9: detect on downscaled frames (~480p), scale coords back up.
+    # A4.9: detect on downscaled frames (~480p) — scale is applied by ffmpeg in
+    # the decode pass, so full-res frames are never materialised. Coords scale up.
     scale = min(1.0, 480.0 / src_h) if src_h > 480 else 1.0
-    dw, dh = int(src_w * scale), int(src_h * scale)
+    dw, dh = max(2, int(src_w * scale)), max(2, int(src_h * scale))
     score_thr = float(cfg.get("reframe.face_score", 0.6))
     detector = cv2.FaceDetectorYN.create(model, "", (dw, dh), score_thr)
     detector.setInputSize((dw, dh))
 
-    hz = float(cfg.get("reframe.sample_hz", 6))
+    hz = float(cfg.get("reframe.sample_hz", 4))
     interval = 1.0 / max(1.0, hz)
     cut_thr = float(cfg.get("reframe.scene_cut_threshold", 0.18))
     redetect = bool(cfg.get("reframe.redetect_on_scene_cut", True))
     # motion is salient when the CHANGED AREA is big enough (works for small
     # moving objects, unlike a whole-frame mean-diff threshold).
     motion_min_area = float(cfg.get("reframe.motion_min_area_pct", 0.3)) / 100.0
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    if fps <= 0:
-        fps = 30.0
+
+    # One ffmpeg pass: seek to the clip, sample at `hz`, scale to detection size.
+    ffmpeg = require_binary("ffmpeg")
+    cmd = [ffmpeg, "-nostdin", "-ss", f"{clip.start:.3f}", "-t", f"{clip.duration:.3f}",
+           "-i", source_path, "-an", "-vf", f"fps={hz},scale={dw}:{dh}",
+           "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1"]
+    log.info("saliency: detecting on %dx%d frames (source %dx%d, scale %.3f) at %.1f Hz "
+             "in one decode pass", dw, dh, src_w, src_h, scale, hz)
+    frame_bytes = dw * dh * 3
+    _t0 = time.time()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     samples: list[Sample] = []
     prev_gray = None
+    det_secs = 0.0
     t = 0.0
-    while t <= clip.duration + 1e-3:
-        # Seek by frame index (POS_MSEC is unreliable on some builds).
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int((clip.start + t) * fps))
-        ok, frame = cap.read()
-        if not ok or frame is None:
-            break
-        small = cv2.resize(frame, (dw, dh)) if scale < 1.0 else frame
-        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+    try:
+        while True:
+            buf = _read_exact(proc.stdout, frame_bytes)
+            if buf is None:
+                break
+            small = np.frombuffer(buf, np.uint8).reshape(dh, dw, 3)
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
-        # scene cut = big mean frame difference vs the previous sample
-        cut = False
-        motion_c = None
-        motion_area = 0.0
-        if prev_gray is not None:
-            diff = cv2.absdiff(gray, prev_gray)
-            cut = redetect and (float(diff.mean()) / 255.0) > cut_thr
-            _, thr = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
-            motion_area = cv2.countNonZero(thr) / float(dw * dh)
-            m = cv2.moments(thr, binaryImage=True)
-            if m["m00"] > 0:
-                motion_c = (m["m10"] / m["m00"] / scale, m["m01"] / m["m00"] / scale)
-        prev_gray = gray
+            # scene cut = big mean frame difference vs the previous sample
+            cut = False
+            motion_c = None
+            motion_area = 0.0
+            if prev_gray is not None:
+                diff = cv2.absdiff(gray, prev_gray)
+                cut = redetect and (float(diff.mean()) / 255.0) > cut_thr
+                _, thr = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+                motion_area = cv2.countNonZero(thr) / float(dw * dh)
+                m = cv2.moments(thr, binaryImage=True)
+                if m["m00"] > 0:
+                    motion_c = (m["m10"] / m["m00"] / scale, m["m01"] / m["m00"] / scale)
+            prev_gray = gray
 
-        # salience priority: face (speaker) -> motion -> none
-        cx = cy = None
-        signal = "none"
-        _, faces = detector.detect(small)
-        if faces is not None and len(faces) > 0:
-            f = max(faces, key=lambda r: float(r[2]) * float(r[3]))
-            cx = float(f[0] + f[2] / 2.0) / scale
-            cy = float(f[1] + f[3] / 2.0) / scale
-            signal = "speaker"
-        elif motion_c is not None and motion_area >= motion_min_area and not cut:
-            cx, cy = motion_c
-            signal = "motion"
+            # salience priority: face (speaker) -> motion -> none
+            cx = cy = None
+            signal = "none"
+            _d0 = time.time()
+            _, faces = detector.detect(small)
+            det_secs += time.time() - _d0
+            if faces is not None and len(faces) > 0:
+                f = max(faces, key=lambda r: float(r[2]) * float(r[3]))
+                cx = float(f[0] + f[2] / 2.0) / scale
+                cy = float(f[1] + f[3] / 2.0) / scale
+                signal = "speaker"
+            elif motion_c is not None and motion_area >= motion_min_area and not cut:
+                cx, cy = motion_c
+                signal = "motion"
 
-        samples.append(Sample(t=round(t, 3), x=cx, y=cy, cut=cut, signal=signal))
-        t += interval
-    cap.release()
+            samples.append(Sample(t=round(t, 3), x=cx, y=cy, cut=cut, signal=signal))
+            t += interval
+    finally:
+        if proc.stdout:
+            proc.stdout.close()
+        proc.wait()
+
+    total = time.time() - _t0
+    timing.record_ffmpeg(cmd, total)
+    n = len(samples)
+    if n:
+        log.info("saliency: %d samples in %.1fs (detector %.0f ms/frame, %.0f%% of the pass)",
+                 n, total, 1000.0 * det_secs / n, 100.0 * det_secs / max(total, 1e-6))
 
     if cache is not None and samples:
         cache.save_json(_cache_key(clip, cfg), [asdict(s) for s in samples])

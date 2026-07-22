@@ -82,7 +82,7 @@ DEFAULTS: dict[str, Any] = {
         "track_smooth_window": 5,        # legacy tracker
         "face_score": 0.6,
         # A4 virtual camera:
-        "sample_hz": 6,             # saliency sample rate (interpolated between)
+        "sample_hz": 4,             # saliency sample rate (interpolated + smoothed; 6 over-samples)
         "redetect_on_scene_cut": True,
         "scene_cut_threshold": 0.18,  # mean frame-diff fraction that marks a cut
         "motion_min_area_pct": 0.3,   # min changed-area % to treat motion as salient

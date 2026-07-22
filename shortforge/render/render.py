@@ -23,6 +23,35 @@ def _in_ranges(t: float, ranges: list[tuple[float, float]]) -> bool:
     return any(s <= t <= e for s, e in ranges)
 
 
+def _threads_args(cfg: Config) -> list[str]:
+    """STEP 5: per-ffmpeg ``-threads`` so parallel clip renders don't oversubscribe
+    the CPU. 0 (auto) lets ffmpeg decide; the pipeline sets this when it fans out."""
+    n = int(cfg.get("render.threads", 0) or 0)
+    return ["-threads", str(n)] if n > 0 else []
+
+
+def plan_render(cfg: Config, n_clips: int) -> tuple[int, int]:
+    """STEP 5: (workers, threads_per_ffmpeg) for rendering ``n_clips`` clips.
+
+    Default workers = ``min(clips, physical_cores // 2)`` (physical ≈ logical//2
+    with hyperthreading), so a 2-clip job renders both at once without pinning
+    the whole CPU. Per-process ``-threads`` = ``logical // workers`` so the
+    concurrent ffmpegs together use the cores once, not N× over. Both overridable
+    via ``render.workers`` / ``render.threads``."""
+    import os
+    logical = os.cpu_count() or 2
+    physical = max(1, logical // 2)
+    w = int(cfg.get("render.workers", 0) or 0)
+    if w <= 0:
+        w = max(1, min(int(n_clips), max(1, physical // 2)))
+    else:
+        w = max(1, min(w, int(n_clips)))
+    t = int(cfg.get("render.threads", 0) or 0)
+    if t <= 0 and w > 1:
+        t = max(1, logical // w)
+    return w, t
+
+
 def render_clip(
     source_path: str,
     clip: Clip,
@@ -71,7 +100,7 @@ def render_clip(
         "-filter_complex", fc,
         "-map", "[v]", "-map", audio_map,
         "-c:v", "libx264", "-preset", preset, "-crf", crf, "-pix_fmt", "yuv420p",
-    ]
+    ] + _threads_args(cfg)
     if extra_af:
         cmd += ["-af", extra_af]
     # A3: -sn drops any soft subtitle stream so only our caption layer exists.
@@ -167,7 +196,7 @@ def render_clip_tracked(
         "-filter_complex", fc,
         "-map", "[v]", "-map", audio_map,
         "-c:v", "libx264", "-preset", preset, "-crf", crf, "-pix_fmt", "yuv420p",
-    ]
+    ] + _threads_args(cfg)
     if extra_af:
         cmd += ["-af", extra_af]
     cmd += [

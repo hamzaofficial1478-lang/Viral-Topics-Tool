@@ -12,6 +12,7 @@ threads (parallel render/scoring) later.
 from __future__ import annotations
 
 import contextlib
+import threading
 import time
 from contextvars import ContextVar
 
@@ -19,10 +20,14 @@ _active: ContextVar["Timings | None"] = ContextVar("shortforge_timings", default
 
 
 class Timings:
-    """Ordered per-stage durations (accumulated by name) + every ffmpeg call."""
+    """Ordered per-stage durations (accumulated by name) + every ffmpeg call.
+
+    Thread-safe: parallel render workers record ffmpeg calls concurrently, so the
+    stage/ffmpeg lists are guarded by a lock."""
 
     def __init__(self) -> None:
         self._t0 = time.time()
+        self._lock = threading.Lock()
         self.stages: list[dict] = []       # [{stage, seconds, note}]
         self.ffmpeg: list[dict] = []       # [{seconds, cmd}]
 
@@ -31,22 +36,26 @@ class Timings:
         """Add ``seconds`` to stage ``name`` (creating it in order the first
         time). ``seconds=None`` records a stage that ran no timed work (e.g. a
         skipped stage); ``note`` annotates it (``cached`` / ``skipped`` / …)."""
-        for s in self.stages:
-            if s["stage"] == name:
-                if seconds is not None:
-                    s["seconds"] = round((s.get("seconds") or 0.0) + seconds, 1)
-                if note:
-                    s["note"] = note
-                return
-        self.stages.append({
-            "stage": name,
-            "seconds": round(seconds, 1) if seconds is not None else None,
-            "note": note,
-        })
+        with self._lock:
+            for s in self.stages:
+                if s["stage"] == name:
+                    if seconds is not None:
+                        # Accumulate at full precision; round only for display, so
+                        # many small increments don't round away to zero.
+                        s["seconds"] = (s.get("seconds") or 0.0) + seconds
+                    if note:
+                        s["note"] = note
+                    return
+            self.stages.append({
+                "stage": name,
+                "seconds": float(seconds) if seconds is not None else None,
+                "note": note,
+            })
 
     def record_ffmpeg(self, cmd, seconds: float) -> None:
         c = " ".join(str(x) for x in cmd) if isinstance(cmd, (list, tuple)) else str(cmd)
-        self.ffmpeg.append({"seconds": round(seconds, 2), "cmd": c})
+        with self._lock:
+            self.ffmpeg.append({"seconds": round(seconds, 2), "cmd": c})
 
     def total_seconds(self) -> float:
         return time.time() - self._t0
@@ -64,9 +73,15 @@ class Timings:
         return "timings: " + " | ".join(parts) + f"  — total {self.total_seconds():.0f}s"
 
     def to_dict(self) -> dict:
+        stages = []
+        for s in self.stages:
+            d = dict(s)
+            if d.get("seconds") is not None:
+                d["seconds"] = round(d["seconds"], 1)   # round for display only
+            stages.append(d)
         return {
             "total_seconds": round(self.total_seconds(), 1),
-            "stages": [dict(s) for s in self.stages],
+            "stages": stages,
             "ffmpeg_calls": [dict(f) for f in self.ffmpeg],
         }
 

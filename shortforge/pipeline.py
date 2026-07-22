@@ -346,6 +346,16 @@ def run_pipeline(
         timing.deactivate(_tok)
         return _dry_run_manifest(meta, clips, clip_lang, cost_estimate, out_dir, slug, date)
 
+    # STEP 5: render clips concurrently — each ffmpeg encode is CPU-bound and the
+    # clips are independent. Deferred to a worker pool below (the dub path keeps
+    # rendering inline: it shares audio/lipsync state that isn't parallel-safe).
+    from .render import plan_render
+    render_workers, render_threads = plan_render(cfg, len(clips))
+    parallel_render = render_workers > 1 and len(clips) > 1 and not dub_on
+    if parallel_render and render_threads:
+        cfg.override("render.threads", render_threads)
+    render_jobs: list = []           # (clip_id, thunk) deferred renders (parallel path)
+
     rendered: list[dict] = []
     for clip in clips:
         # Localized caption text drives captions, metadata, QC, and the manifest.
@@ -420,25 +430,36 @@ def run_pipeline(
                 from .reframe.vcam import debug_reframe
                 dbg = os.path.join(out_dir, f"{slug}_{lang}_{clip.clip_id}_{date}_reframe-debug.mp4")
                 debug_reframe(meta.file_path, clip, out_w, out_h, cfg, cache, dbg)
-            with timing.stage("render"):
-                if track is not None:
-                    fg = build_filtergraph(
-                        probe.width, probe.height, out_w, out_h,
-                        pre_cropped=True, subtitles=subs, logo=logo,
-                    )
+            if track is not None:
+                fg = build_filtergraph(
+                    probe.width, probe.height, out_w, out_h,
+                    pre_cropped=True, subtitles=subs, logo=logo,
+                )
+
+                def _do_render(clip=clip, track=track, fg=fg, out_path=out_path,
+                               dub_audio=dub_audio, keep_ranges=keep_ranges):
                     render_clip_tracked(
                         meta.file_path, clip, track, out_w, out_h, fg, cfg, out_path,
                         audio_path=dub_audio, keep_ranges=keep_ranges,
                         burned_band=burned_band, burned_mode=burned_mode,
                     )
-                else:
-                    fg = build_filtergraph(
-                        probe.width, probe.height, out_w, out_h,
-                        fill=fill, subtitles=subs, logo=logo, video_select=video_select,
-                        burned_band=burned_band, burned_mode=burned_mode,
-                    )
+            else:
+                fg = build_filtergraph(
+                    probe.width, probe.height, out_w, out_h,
+                    fill=fill, subtitles=subs, logo=logo, video_select=video_select,
+                    burned_band=burned_band, burned_mode=burned_mode,
+                )
+
+                def _do_render(clip=clip, fg=fg, out_path=out_path,
+                               dub_audio=dub_audio, keep_ranges=keep_ranges):
                     render_clip(meta.file_path, clip, fg, cfg, out_path,
                                 audio_path=dub_audio, keep_ranges=keep_ranges)
+
+            if parallel_render:
+                render_jobs.append((clip.clip_id, _do_render))   # rendered in the pool below
+            else:
+                with timing.stage("render"):
+                    _do_render()
 
             # Lip-sync the dubbed clip so the mouth tracks the new voiceover.
             if lipsync_on and dub_audio:
@@ -486,6 +507,22 @@ def run_pipeline(
         if do_review:
             entry["review"] = review_clip(clip.caption_text, clip_lang, dub_method)
         rendered.append(entry)
+
+    # STEP 5: run the deferred clip renders concurrently. Only the parallel path
+    # populates render_jobs (the dub path renders inline above). Timed as one
+    # "render" bucket = wall-clock; each ffmpeg still logs/records itself.
+    if render_jobs:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _run_job(item):
+            timing.activate(_timings)     # per-thread: record ffmpeg into the shared Timings
+            item[1]()
+
+        log.info("rendering %d clip(s) in parallel: %d workers, %s threads/ffmpeg each",
+                 len(render_jobs), render_workers, render_threads or "auto")
+        with timing.stage("render"):
+            with ThreadPoolExecutor(max_workers=render_workers) as ex:
+                list(ex.map(_run_job, render_jobs))   # order preserved; exceptions re-raised
 
     if not do_meta:
         timing.note("metadata", "off")

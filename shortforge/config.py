@@ -185,6 +185,9 @@ DEFAULTS: dict[str, Any] = {
         "audio_bitrate": "128k",
         "fps": None,
         "resume": False,            # skip clips whose output already exists
+        # STEP 5 parallel render: run clips concurrently (each ffmpeg is CPU-bound).
+        "workers": 0,               # 0 = auto min(clips, physical_cores//2); 1 = sequential
+        "threads": 0,               # per-ffmpeg -threads; 0 = auto (logical_cores // workers)
 
         "loudnorm": True,           # M9: normalise to ~-14 LUFS
         "loudnorm_i": -14.0,

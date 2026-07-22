@@ -85,6 +85,60 @@ def _render_autodetect_import(store: dict) -> None:
         st.rerun()
 
 
+def _render_youtube_auth(store: dict) -> None:
+    """YouTube auth: browser/cookies picker + Test + Update yt-dlp. Persisted to
+    the store and applied to every download."""
+    from ..config import Config
+    from ..ingest import test_youtube_auth, update_ytdlp, ytdlp_version
+
+    st.divider()
+    st.subheader("📺 YouTube authentication")
+    st.caption("YouTube increasingly blocks downloads with a \"confirm you're not a bot\" wall. "
+               "Point ShortForge at the browser you're logged into YouTube with — those cookies "
+               "attach to every download automatically.")
+
+    ya = store.get("youtube_auth", {}) or {}
+    browsers = ["none", "firefox", "chrome", "edge", "brave"]
+    cur = ya.get("cookies_from_browser") or "firefox"
+    browser = st.selectbox(
+        "Cookies from browser", browsers,
+        index=browsers.index(cur) if cur in browsers else 1,
+        help="Reads the browser's own YouTube login cookies (yt-dlp --cookies-from-browser).")
+    if browser == "firefox":
+        st.caption("✅ Firefox is the most reliable on Windows.")
+    elif browser in ("chrome", "edge"):
+        st.caption("⚠️ Chrome/Edge encrypt and lock their cookie store while running — this "
+                   "frequently breaks extraction. Prefer Firefox, or fully close the browser first.")
+    cookies_file = st.text_input(
+        "…or a cookies.txt file (optional)", value=ya.get("cookies_file", "") or "",
+        help="A Netscape-format cookies.txt exported from your browser. Tried before browser cookies.")
+    test_url = st.text_input("Test URL (paste one of your video links)", key="yt_test_url",
+                             placeholder="https://www.youtube.com/watch?v=…")
+
+    c1, c2 = st.columns(2)
+    if c1.button("💾 Save authentication", width="stretch"):
+        store["youtube_auth"] = {
+            "cookies_from_browser": None if browser == "none" else browser,
+            "cookies_file": cookies_file.strip() or None,
+        }
+        _persist(store)
+        st.success("Saved — applied to every download.")
+    if c2.button("🔎 Test authentication", width="stretch", disabled=not test_url.strip()):
+        cfg = Config.load()
+        cfg.override("ingest.cookies_from_browser", None if browser == "none" else browser)
+        cfg.override("ingest.cookies", cookies_file.strip() or None)
+        with st.spinner("Fetching metadata (no download)…"):
+            ok, detail = test_youtube_auth(test_url.strip(), cfg)
+        (st.success if ok else st.error)(detail)
+
+    ver = ytdlp_version() or "not installed"
+    st.caption(f"yt-dlp version: **{ver}** — extractors break often; keep it current.")
+    if st.button("⬆️ Update yt-dlp"):
+        with st.spinner("Running pip install -U yt-dlp…"):
+            ok, detail = update_ytdlp()
+        (st.success if ok else st.error)(detail)
+
+
 def _render_backup_restore(store: dict) -> None:
     """Export/import the whole settings store so moving machines needs no re-entry."""
     st.divider()
@@ -173,6 +227,9 @@ def render() -> None:
     # --- per-task routing (R1) + cost-tier guard (R2) ---
     st.divider()
     _render_task_routing(store)
+
+    # --- YouTube authentication (fix the bot wall on downloads) ---
+    _render_youtube_auth(store)
 
     # --- backup / restore (move machines without re-entering keys) ---
     _render_backup_restore(store)

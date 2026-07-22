@@ -18,7 +18,10 @@ DEFAULTS: dict[str, Any] = {
     "paths": {"work_dir": ".shortforge", "output_dir": "out"},
     "ingest": {
         "format": "bv*[height<=1080]+ba/b[height<=1080]/b",
-        "cookies": None,
+        "cookies": None,                 # path to a cookies.txt (Netscape format)
+        "cookies_from_browser": None,    # firefox | chrome | edge | brave (read the browser's cookies)
+        "socket_timeout": 120,           # per-read timeout (s); 20 was too short on slow links
+        "retries": 4,                    # network retries per auth strategy (exponential backoff)
     },
     "transcribe": {
         "model": "small",           # tiny|base|small|medium|large-v3 ('base' garbles; 'small' is the sane CPU default)

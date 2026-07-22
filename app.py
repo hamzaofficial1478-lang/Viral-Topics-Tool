@@ -227,7 +227,12 @@ def _render_job_result(job: dict) -> None:
         st.session_state.pop("job", None)
         st.rerun()
     if job["state"] == "error":
-        st.error(job.get("error", "The job failed."))
+        err = job.get("error", "The job failed.")
+        st.error(err)
+        if "requiring authentication" in err or "not a bot" in err.lower():
+            st.info("👉 Open the **Settings** screen (left sidebar) → **📺 YouTube "
+                    "authentication**, pick the browser you're logged into YouTube with "
+                    "(Firefox is most reliable on Windows), **Save**, then start the job again.")
         if job.get("warnings"):
             st.markdown("**Warnings during the run:**")
             _render_warnings(job["warnings"], limit=10)

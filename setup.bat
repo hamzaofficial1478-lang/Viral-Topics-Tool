@@ -55,6 +55,8 @@ if !ERRORLEVEL! NEQ 0 (
   goto :fail
 )
 echo [ok ] Python packages installed.
+echo [..] Updating yt-dlp to the latest ^(YouTube extractors break often^) ...
+python -m pip install -U yt-dlp
 echo.
 
 REM ---- 3. FFmpeg -----------------------------------------------------------

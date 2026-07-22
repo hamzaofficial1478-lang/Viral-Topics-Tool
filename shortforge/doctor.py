@@ -70,11 +70,27 @@ def _ctranslate2() -> Check:
 def _ytdlp() -> Check:
     try:
         import yt_dlp
-        return Check("yt-dlp", OK, f"version {getattr(yt_dlp, '__version__', '?')} "
-                     "(run `pip install -U yt-dlp` periodically)")
     except ImportError:
-        return Check("yt-dlp", WARN, "not installed (needed only for URL ingest)",
+        return Check("yt-dlp", WARN, "not installed (needed for URL ingest)",
                      "pip install -U yt-dlp")
+    ver = getattr(yt_dlp, "__version__", "?")
+    # yt-dlp versions are date-stamped (YYYY.MM.DD). Extractors break often, so
+    # warn when the install is stale — updating is the single biggest fix.
+    import datetime
+    import re
+    m = re.match(r"(\d{4})\.(\d{2})\.(\d{2})", str(ver))
+    if m:
+        try:
+            released = datetime.date(int(m[1]), int(m[2]), int(m[3]))
+            age = (datetime.date.today() - released).days
+            if age > 30:
+                return Check("yt-dlp", WARN, f"version {ver} is {age} days old",
+                             "YouTube extractors break often — run `pip install -U yt-dlp` "
+                             "(or the 'Update yt-dlp' button in Settings).")
+            return Check("yt-dlp", OK, f"version {ver} ({age} days old)")
+        except ValueError:
+            pass
+    return Check("yt-dlp", OK, f"version {ver} (run `pip install -U yt-dlp` periodically)")
 
 
 def _translation() -> Check:

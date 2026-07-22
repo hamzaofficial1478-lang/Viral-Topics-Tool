@@ -37,6 +37,7 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("paths.work_dir", getattr(args, "work_dir", None))
     cfg.override("paths.output_dir", getattr(args, "output", None))
     cfg.override("ingest.cookies", getattr(args, "cookies", None))
+    cfg.override("ingest.cookies_from_browser", getattr(args, "cookies_from_browser", None))
     cfg.override("reframe.mode", getattr(args, "reframe_mode", None))
     cfg.override("captions.style", getattr(args, "caption_style", None))
     cfg.override("captions.template", getattr(args, "caption_template", None))
@@ -927,6 +928,9 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
                    help="Drop transcript segments below this ASR confidence (0..1)")
     r.add_argument("--cookies", help="Path to cookies.txt for private/unlisted "
                    "videos on your own channel (M1 auth)")
+    r.add_argument("--cookies-from-browser", choices=["firefox", "chrome", "edge", "brave"],
+                   help="Read cookies from this browser for yt-dlp auth (fixes YouTube's "
+                        "bot wall). Firefox is most reliable on Windows.")
     r.add_argument("--transcript", help="Use a supplied .srt/.json instead of ASR")
     r.add_argument("--vision", action="store_true",
                    help="Use Claude-vision multimodal hook scoring (claude-watch; needs key)")

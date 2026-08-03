@@ -54,6 +54,33 @@ def _is_timeout(r: dict) -> bool:
     return r.get("status") is None and "tim" in (r.get("error") or "").lower()
 
 
+# Transport-level failures worth retrying: the request never got a real HTTP
+# answer, so the provider didn't reject us — the socket did. Most common on
+# Windows under concurrent load: WinError 10054 "connection forcibly closed".
+_RETRYABLE_NET = (
+    "10054", "forcibly closed", "reset by peer", "connection reset",
+    "connection aborted", "broken pipe", "remotedisconnected",
+    "connection refused", "temporarily unavailable", "eof occurred",
+    "bad handshake", "connection error",
+)
+
+
+def _is_retryable_net(r: dict) -> bool:
+    """A dropped/refused connection (no HTTP status) — retry like a timeout."""
+    if r.get("status") is not None:
+        return False
+    err = (r.get("error") or "").lower()
+    return any(s in err for s in _RETRYABLE_NET)
+
+
+def _is_retryable(r: dict) -> bool:
+    """Retry only TRANSPORT failures — the request never reached a server that
+    answered (timeout, dropped/refused socket). A real HTTP status means the
+    provider *did* answer, so 4xx/5xx cascade to the next model in the chain
+    instead: failing over to a healthy provider beats retrying a sick one."""
+    return _is_timeout(r) or _is_retryable_net(r)
+
+
 def call_model_chat(model: dict, messages: list, *, json_mode: bool = False,
                     max_tokens: int = 800, timeout: int = 120, retries: int = 2) -> str:
     """One chat-completion against a single flattened store model, via the SHARED
@@ -87,10 +114,12 @@ def call_model_chat(model: dict, messages: list, *, json_mode: bool = False,
                 return _json.loads(r["body"])["choices"][0]["message"]["content"]
             except Exception as e:  # noqa: BLE001
                 raise ShortForgeError(f"unexpected response from {model.get('model')}: {e}") from None
-        if _is_timeout(r) and attempt < retries:
+        if _is_retryable(r) and attempt < retries:
             back = 2 ** (attempt + 1)
-            log.warning("LLM %s timed out after %ds; retry %d/%d in %ds",
-                        model.get("model"), timeout, attempt + 2, retries + 1, back)
+            why = (f"timed out after {timeout}s" if _is_timeout(r)
+                   else f"connection dropped ({(r.get('error') or '')[:80]})")
+            log.warning("LLM %s: %s; retry %d/%d in %ds",
+                        model.get("model"), why, attempt + 2, retries + 1, back)
             time.sleep(back)
             continue
         break
@@ -103,6 +132,14 @@ def call_model_chat(model: dict, messages: list, *, json_mode: bool = False,
             f"{model.get('name') or model.get('model')}: timed out after {timeout}s "
             f"({retries + 1} attempt(s)) — raise the timeout (per-credential 'Request timeout' "
             f"in Settings, or the task default) [{where}]")
+    if _is_retryable_net(r):
+        # No HTTP status: the socket died, the provider never answered. Saying
+        # "HTTP None" reads like a bug — name the real cause and the real fix.
+        raise ShortForgeError(
+            f"{model.get('name') or model.get('model')}: the connection was dropped by the "
+            f"provider after {retries + 1} attempt(s) ({(r.get('error') or '')[:120]}). This is "
+            f"usually transient network trouble or rate-limiting under concurrent load — lower "
+            f"detect.hook_concurrency (try 2) if it repeats. [{where}]")
     raise ShortForgeError(f"{model.get('name') or model.get('model')}: HTTP "
                           f"{r['status']} [{where}] {(r['body'] or r['error'] or '')[:200]}")
 

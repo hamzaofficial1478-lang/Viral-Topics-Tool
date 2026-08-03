@@ -29,6 +29,55 @@ def _timeout():
             "url": "u", "model": "m", "auth": "Authorization"}
 
 
+def _conn_reset():
+    """What Windows reports when the provider drops the socket mid-request."""
+    return {"status": None, "body": "",
+            "error": "[WinError 10054] An existing connection was forcibly closed by the remote host",
+            "url": "u", "model": "m", "auth": "Authorization"}
+
+
+def test_connection_reset_is_retried_then_succeeds(monkeypatch):
+    """WinError 10054 is transient — it must retry, not fall straight through."""
+    n = {"c": 0}
+
+    def fake(*a, **k):
+        n["c"] += 1
+        return _conn_reset() if n["c"] == 1 else _ok("recovered")
+
+    monkeypatch.setattr("shortforge.llm.openai_chat_raw", fake)
+    out = P.call_model_chat({"base_url": "b", "api_key": "k", "model": "m"},
+                            [{"role": "user", "content": "x"}], retries=2)
+    assert out == "recovered" and n["c"] == 2
+
+
+def test_connection_reset_message_is_not_http_none(monkeypatch):
+    """A dead socket must not be reported as the confusing 'HTTP None'."""
+    monkeypatch.setattr("shortforge.llm.openai_chat_raw", lambda *a, **k: _conn_reset())
+    with pytest.raises(ShortForgeError) as ei:
+        P.call_model_chat({"base_url": "b", "api_key": "k", "model": "m"},
+                          [{"role": "user", "content": "x"}], retries=1)
+    msg = str(ei.value)
+    assert "connection was dropped" in msg and "HTTP None" not in msg
+    assert "hook_concurrency" in msg                   # actionable next step
+
+
+def test_http_errors_cascade_instead_of_retrying(monkeypatch):
+    """A real HTTP status means the provider answered — don't burn backoff on it;
+    fail over to the next model in the chain (see the cascade test)."""
+    n = {"c": 0}
+
+    def fake(*a, **k):
+        n["c"] += 1
+        return {"status": 503, "body": "overloaded", "error": None, "url": "u",
+                "model": "m", "auth": "Authorization"}
+
+    monkeypatch.setattr("shortforge.llm.openai_chat_raw", fake)
+    with pytest.raises(ShortForgeError):
+        P.call_model_chat({"base_url": "b", "api_key": "k", "model": "m"},
+                          [{"role": "user", "content": "x"}], retries=2)
+    assert n["c"] == 1                                  # one shot, then cascade
+
+
 def test_task_timeout_defaults():
     assert S.task_timeout("hook_detection") == 600          # long batched call
     assert S.task_timeout("vision_scoring") == 300

@@ -148,6 +148,38 @@ def test_dead_batch_does_not_fail_the_run(tmp_path, monkeypatch):
     assert all(i not in out for i in range(6, 12))            # dead batch's segments unscored
 
 
+def test_resweep_recovers_a_dropped_chunk(tmp_path, monkeypatch):
+    """A chunk killed by a connection reset during the parallel phase is recovered
+    by the sequential re-sweep — no segments left unscored."""
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    state = {"parallel_phase": True}
+
+    def fake(base, key, model, messages, **kw):
+        import re
+        idxs = [int(x) for x in re.findall(r"(?m)^(\d+)\t", messages[0]["content"])]
+        # Big chunks (the parallel batches) die; the small re-sweep pieces succeed.
+        if state["parallel_phase"] and len(idxs) >= 6 and any(i >= 6 for i in idxs):
+            return {"status": None, "body": "",
+                    "error": "[WinError 10054] connection forcibly closed",
+                    "url": base, "model": model, "auth": "Authorization"}
+        scores = [{"index": i, "score": 0.6, "reason": "hook"} for i in idxs]
+        return {"status": 200,
+                "body": json.dumps({"choices": [{"message": {"content": json.dumps({"scores": scores})}}]}),
+                "error": None, "url": base, "model": model, "auth": "Authorization"}
+
+    monkeypatch.setattr("shortforge.llm.openai_chat_raw", fake)
+    cfg = Config.load()
+    cfg.override("paths.work_dir", str(tmp_path))
+    cfg.override("detect.hook_batch", 6)
+    cfg.override("detect.hook_concurrency", 1)
+    cfg.override("providers.retries", 0)
+
+    # The re-sweep runs in small pieces (<6), so it slips past the failure rule.
+    state["parallel_phase"] = True
+    out = PH.score_transcript(_tr(12), cfg, _store())
+    assert set(out) == set(range(12))          # every segment scored after re-sweep
+
+
 def test_partial_result_is_not_cached(tmp_path, monkeypatch):
     """A run with unscored segments must NOT write the cache, so a re-run retries."""
     monkeypatch.setattr("time.sleep", lambda s: None)

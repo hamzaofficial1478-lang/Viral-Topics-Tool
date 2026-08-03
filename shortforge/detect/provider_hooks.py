@@ -184,13 +184,38 @@ def score_transcript(transcript: Transcript, cfg: Config, store: dict,
         out.update(res)
         unscored.extend(miss)
 
+    # Final re-sweep: chunks usually drop because the provider throttles or resets
+    # the socket under concurrent load (e.g. WinError 10054). Once the parallel
+    # batches are done that pressure is gone, so retry the gaps ONE more time,
+    # sequentially and in small pieces — this recovers most losses instead of
+    # leaving a minute of the video unscored.
+    if unscored:
+        gaps = sorted(set(unscored))
+        log.info("hook scoring: re-sweeping %d unscored segment(s) sequentially "
+                 "(provider load has settled)…", len(gaps))
+        recovered: dict[int, tuple[float, str]] = {}
+        still: list[int] = []
+        # Genuinely smaller than the batch that just failed — a re-sweep at the
+        # same size would re-send the same request that the provider dropped.
+        sweep = max(1, min(batch // 2, 4))
+        for i in range(0, len(gaps), sweep):
+            piece = gaps[i:i + sweep]
+            res, miss = _score_indices(piece)
+            recovered.update(res)
+            still.extend(miss)
+        if recovered:
+            out.update(recovered)
+            log.info("hook scoring: re-sweep recovered %d of %d segment(s)",
+                     len(recovered), len(gaps))
+        unscored = still
+
     if unscored:
         unscored.sort()
         shown = ", ".join(f"{i} [{segs[i].start:.1f}-{segs[i].end:.1f}s]" for i in unscored[:12])
         more = "" if len(unscored) <= 12 else f" … (+{len(unscored) - 12} more)"
-        log.warning("hook scoring: %d of %d segment(s) could NOT be scored after retries and "
-                    "half-size splits — CONTINUING with %d scored. Unscored: %s%s",
-                    len(unscored), len(segs), len(out), shown, more)
+        log.warning("hook scoring: %d of %d segment(s) could NOT be scored after retries, "
+                    "half-size splits and a re-sweep — CONTINUING with %d scored. "
+                    "Unscored: %s%s", len(unscored), len(segs), len(out), shown, more)
 
     # Cache only a COMPLETE result — never a partial one, so a re-run retries the
     # gaps instead of returning them from cache.

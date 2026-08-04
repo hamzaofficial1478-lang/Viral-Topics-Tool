@@ -129,13 +129,22 @@ def _tts() -> Check:
 
 
 def _demucs() -> Check:
+    # Report against THIS interpreter: ShortForge shells out to
+    # `sys.executable -m demucs`, so a copy installed into a different Python
+    # (the classic venv-vs-system pip mix-up) does not count.
+    import sys
     try:
         import demucs  # noqa: F401
-        return Check("Demucs (stem separation)", OK, "installed")
+        return Check("Demucs (stem separation)", OK,
+                     f"importable by {os.path.basename(sys.executable)} "
+                     f"({os.path.dirname(sys.executable)})")
     except ImportError:
         return Check("Demucs (stem separation)", WARN,
-                     "not installed (needed to dub without voice bleed)",
-                     "pip install demucs  (also installs torch; large download).")
+                     f"not installed in the Python running ShortForge "
+                     f"({sys.executable}) — needed to dub without voice bleed",
+                     f'"{sys.executable}" -m pip install demucs   '
+                     f"(NOT a bare `pip install demucs` — that can hit a different "
+                     f"Python. Large download: also pulls torch.)")
 
 
 def _disk(cfg: Config) -> Check:

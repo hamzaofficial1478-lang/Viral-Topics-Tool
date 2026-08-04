@@ -229,11 +229,20 @@ def run_pipeline(
                     "-U demucs`) or pass --allow-voice-bleed to accept two voices."
                 )
         elif not allow_voice_bleed:
+            # Name the EXACT interpreter: a bare `pip install demucs` often lands in
+            # the system Python while ShortForge runs in the venv, so the operator
+            # sees "already satisfied" and this error at the same time.
+            import sys as _sys
             raise ShortForgeError(
                 f"Dub requested but stem separation is {stem_reason}. Removing the "
-                f"original voice needs Demucs — install it (`pip install demucs`), "
-                f"or pass --allow-voice-bleed to duck the original (two voices), or "
-                f"drop --dub for translated captions over the original audio."
+                f"original voice needs Demucs, installed into the SAME Python that "
+                f"runs ShortForge:\n"
+                f'    "{_sys.executable}" -m pip install demucs\n'
+                f"(a bare `pip install demucs` can install into a different Python — "
+                f"if pip says 'already satisfied' but you still see this, that's why.)\n"
+                f"Verify with:  \"{_sys.executable}\" -c \"import demucs; print(demucs.__file__)\"\n"
+                f"Or: pass --allow-voice-bleed to duck the original (two voices), or "
+                f"drop the dub option for translated captions over the original audio."
             )
 
     # Lip-sync only makes sense over a NEW voiceover (cross-language dub); it is

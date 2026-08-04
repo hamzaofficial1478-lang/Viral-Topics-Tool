@@ -28,7 +28,7 @@ from ..utils import log
 from .crop import compute_crop
 from .track import Track, ensure_model
 
-_DETECTOR_VERSION = "vcam-2"   # bumped: single-pass ffmpeg sampling (was per-frame seek)
+_DETECTOR_VERSION = "vcam-3"   # bumped: sticky face tracking (was: biggest face per sample)
 
 
 @dataclass
@@ -132,6 +132,31 @@ def _cache_key(clip: Clip, cfg: Config) -> str:
     return f"vcam_{clip.clip_id}_{hz}_{_DETECTOR_VERSION}.json"
 
 
+def _pick_face(faces, prev: tuple[float, float] | None, switch_ratio: float):
+    """Choose which face the camera should follow — with temporal STICKINESS.
+
+    Picking the biggest face independently per sample makes the camera flip
+    between two similarly-sized people on tiny detection noise, which reads as
+    shaky//nervous footage. Instead: stay on whichever face is nearest the one we
+    were already following, and only switch to a different person when they are
+    clearly more prominent (``switch_ratio``x the area) or the tracked face is
+    gone. ``prev`` and the result are (cx, cy) in detection pixels.
+    """
+    boxes = [(float(f[0]), float(f[1]), float(f[2]), float(f[3])) for f in faces]
+    if not boxes:
+        return None
+    centers = [(x + w / 2.0, y + h / 2.0, w * h) for x, y, w, h in boxes]
+    biggest = max(centers, key=lambda c: c[2])
+    if prev is None:
+        return biggest[0], biggest[1]
+    # Nearest to where the camera already is (the face we were following).
+    nearest = min(centers, key=lambda c: (c[0] - prev[0]) ** 2 + (c[1] - prev[1]) ** 2)
+    # Only abandon it for someone clearly more prominent.
+    if biggest[2] >= nearest[2] * switch_ratio:
+        return biggest[0], biggest[1]
+    return nearest[0], nearest[1]
+
+
 def _read_exact(stream, n: int) -> bytes | None:
     """Read exactly ``n`` bytes from a pipe (a read may return a partial chunk);
     None at end of stream."""
@@ -209,6 +234,11 @@ def detect_saliency(source_path: str, clip: Clip, cfg: Config, cache=None) -> li
     _t0 = time.time()
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
+    # Follow one person steadily instead of re-picking the biggest face every
+    # sample (that flip-flopping is what made the output look shaky).
+    switch_ratio = float(cfg.get("reframe.face_switch_ratio", 1.4))
+    prev_face: tuple[float, float] | None = None
+
     samples: list[Sample] = []
     prev_gray = None
     det_secs = 0.0
@@ -241,10 +271,12 @@ def detect_saliency(source_path: str, clip: Clip, cfg: Config, cache=None) -> li
             _d0 = time.time()
             _, faces = detector.detect(small)
             det_secs += time.time() - _d0
-            if faces is not None and len(faces) > 0:
-                f = max(faces, key=lambda r: float(r[2]) * float(r[3]))
-                cx = float(f[0] + f[2] / 2.0) / scale
-                cy = float(f[1] + f[3] / 2.0) / scale
+            if cut:
+                prev_face = None          # new shot: no one to stay locked onto
+            picked = _pick_face(faces, prev_face, switch_ratio) if faces is not None else None
+            if picked is not None:
+                prev_face = picked        # follow this person until someone clearly wins
+                cx, cy = picked[0] / scale, picked[1] / scale
                 signal = "speaker"
             elif motion_c is not None and motion_area >= motion_min_area and not cut:
                 cx, cy = motion_c

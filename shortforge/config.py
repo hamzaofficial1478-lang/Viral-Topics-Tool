@@ -88,11 +88,14 @@ DEFAULTS: dict[str, Any] = {
         "sample_hz": 4,             # saliency sample rate (interpolated + smoothed; 6 over-samples)
         "redetect_on_scene_cut": True,
         "scene_cut_threshold": 0.18,  # mean frame-diff fraction that marks a cut
-        "motion_min_area_pct": 0.3,   # min changed-area % to treat motion as salient
-        "deadzone_pct": 8,          # ignore camera moves under this % of width
-        "max_pan_speed_pct_s": 35,  # cap pan speed (% of width / second)
-        "min_dwell_s": 1.2,         # min time before honoring a new target
-        "snap_threshold_pct": 45,   # displacement over this % of width => hard cut
+        "motion_min_area_pct": 0.8,   # min changed-area % to treat motion as salient (was 0.3: too twitchy)
+        # Camera smoothness. These defaults favour STEADY footage over chasing
+        # every movement — a shaky auto-crop looks worse than a slightly late one.
+        "deadzone_pct": 12,         # ignore camera moves under this % of width
+        "max_pan_speed_pct_s": 22,  # cap pan speed (% of width / second) — gentler sweep
+        "min_dwell_s": 2.0,         # min time before honoring a new target
+        "snap_threshold_pct": 60,   # displacement over this % => hard cut (else pan smoothly)
+        "face_switch_ratio": 1.4,   # a different face must be this much bigger to steal the camera
         "smoothing": "one_euro",    # documented; planner eases + caps velocity
         "multi_subject": "cut",     # cut (follow speaker) | split | widen
         "punch_in_max_scale": 1.12,

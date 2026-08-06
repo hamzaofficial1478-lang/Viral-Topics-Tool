@@ -5,10 +5,9 @@ REM  Double-click to start, or let Windows run it at logon (see below) so a
 REM  power cut simply resumes: interrupted links go back in the queue and
 REM  already-rendered clips are skipped.
 REM
-REM  Run at every logon (one-time setup, no admin needed):
-REM      schtasks /create /tn ShortForgeQueue /tr "\"%~f0\"" /sc onlogon /rl highest
-REM  Remove it again with:
-REM      schtasks /delete /tn ShortForgeQueue /f
+REM  To start this automatically at logon: just double-click
+REM  install_autostart.bat and choose "Queue mode". It works out the paths
+REM  itself (typing them by hand breaks when the folder name has a space).
 REM ===========================================================================
 cd /d "%~dp0"
 

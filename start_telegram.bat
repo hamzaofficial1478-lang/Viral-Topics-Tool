@@ -3,10 +3,9 @@ REM ===========================================================================
 REM  ShortForge - Telegram mode. Send links from your phone; this PC does the
 REM  work and messages you as each one finishes.
 REM
-REM  Start automatically at every logon (one-time, no admin needed):
-REM      schtasks /create /tn ShortForgeTelegram /tr "\"%~f0\"" /sc onlogon
-REM  Remove it again:
-REM      schtasks /delete /tn ShortForgeTelegram /f
+REM  To start this automatically at logon: just double-click
+REM  install_autostart.bat and choose "Telegram mode". It works out the paths
+REM  itself (typing them by hand breaks when the folder name has a space).
 REM
 REM  Only the chat id saved in Settings can command it - other chats are ignored.
 REM ===========================================================================

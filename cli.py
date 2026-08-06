@@ -450,11 +450,12 @@ def cmd_telegram(args: argparse.Namespace) -> int:
     from shortforge.runner import drain_queue
     from shortforge.providers.store import load_store
 
+    from shortforge import ntfy_bot as NB
     tg = load_store().get("telegram", {}) or {}
     token, chat = tg.get("bot_token"), str(tg.get("chat_id") or "")
-    if not token or not chat:
-        log.error("Telegram is not configured. Open Settings → Telegram, paste your "
-                  "bot token and chat id, press Test, then re-run this.")
+    if not (token and chat) and not NB.configured():
+        log.error("No remote control configured. Open Settings → Notifications and set up "
+                  "either Telegram (bot token + chat id) or an ntfy COMMAND topic.")
         return 2
 
     cfg0 = Config.load(args.config)
@@ -482,14 +483,22 @@ def cmd_telegram(args: argparse.Namespace) -> int:
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
 
+    # ntfy command listener (works where Telegram is blocked).
+    if NB.configured():
+        threading.Thread(target=NB.listen, args=(work_dir,),
+                         kwargs={"stop": stop.is_set}, daemon=True).start()
+
     N.notify("🤖 <b>ShortForge is online</b> and listening.\n"
              + (f"Resumed {resumed} interrupted job(s).\n" if resumed else "")
              + "Send me a link, or /help.")
-    log.info("telegram: listening (owner chat only). Ctrl+C to stop.")
+    log.info("listening for commands. Ctrl+C to stop.")
     offset = 0
     try:
         while True:
-            offset = TB.poll_once(token, chat, offset, work_dir)
+            if token and chat:
+                offset = TB.poll_once(token, chat, offset, work_dir)
+            else:
+                stop.wait(5)          # ntfy-only mode: its own thread does the polling
     except KeyboardInterrupt:
         log.info("telegram: stopping…")
         stop.set()

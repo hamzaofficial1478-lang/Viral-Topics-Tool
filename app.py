@@ -410,8 +410,13 @@ def _render_queue() -> None:
 
     # ---- add links -------------------------------------------------------- #
     st.subheader("1. Add links")
+    st.info("**The settings below apply only to the links you add in THIS step.** "
+            "Add your first batch, then change the settings and add the next link — "
+            "each link keeps the settings it was added with. You never need to delete "
+            "anything. Every link's own settings are shown in the table at the bottom.")
     urls_text = st.text_area(
-        "Video links (one per line)", height=120, key="q_urls",
+        "Video links (one per line — same settings for all of them)", height=120,
+        key="q_urls",
         placeholder="https://www.youtube.com/watch?v=...\nhttps://youtu.be/...")
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -499,6 +504,39 @@ def _render_queue() -> None:
             "note": (j.get("error") or "")[:60],
         } for i, j in enumerate(jobs, 1)]
         st.dataframe(rows, width="stretch", hide_index=True)
+
+        with st.expander("✏️ Change one link's settings (or remove it)", expanded=False):
+            opts = [f"{i}. {j['url'][:55]}" for i, j in enumerate(jobs, 1)]
+            pick = st.selectbox("Which link?", opts, key="q_edit_pick")
+            j = jobs[opts.index(pick)]
+            done = j["status"] in (Q.DONE, Q.RUNNING)
+            e1, e2, e3, e4 = st.columns(4)
+            ec = e1.number_input("Clips", min_value=0, key="q_e_clips",
+                                 value=int(j["settings"].get("num_clips") or 0))
+            ed = e2.number_input("Seconds", min_value=5, key="q_e_dur",
+                                 value=int(j["settings"].get("duration") or 60))
+            shapes = ["16:9", "9:16", "1:1"]
+            cur_shape = j["settings"].get("aspect", "16:9")
+            es = e3.selectbox("Shape", shapes, key="q_e_shape",
+                              index=shapes.index(cur_shape) if cur_shape in shapes else 0)
+            resl = ["1080p", "720p", "480p"]
+            cur_res = j["settings"].get("resolution", "1080p")
+            er = e4.selectbox("Res", resl, key="q_e_res",
+                              index=resl.index(cur_res) if cur_res in resl else 0)
+            b1, b2 = st.columns(2)
+            if b1.button("💾 Save this link's settings", width="stretch", disabled=done):
+                j["settings"].update({"num_clips": int(ec) or None, "duration": int(ed),
+                                      "aspect": es, "resolution": er})
+                j["settings"] = {k: v for k, v in j["settings"].items() if v is not None}
+                Q.save_queue(q, work_dir)
+                st.success("Saved for this link only.")
+                st.rerun()
+            if b2.button("🗑 Remove this link", width="stretch"):
+                q["jobs"] = [x for x in jobs if x["id"] != j["id"]]
+                Q.save_queue(q, work_dir)
+                st.rerun()
+            if done:
+                st.caption("This link is already running/finished — settings are locked.")
     else:
         st.caption("The queue is empty.")
 

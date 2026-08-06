@@ -138,9 +138,21 @@ def _render_telegram(store: dict) -> None:
     topic = st.text_input("ntfy topic", value=nt.get("topic", "") or "",
                           placeholder="shortforge-yourname-7f3k9")
     server = st.text_input("ntfy server", value=nt.get("server", "") or "https://ntfy.sh")
+    st.caption("**Send commands from your phone too** (optional). Use a DIFFERENT, longer "
+               "topic for commands — anyone who knows a topic name can publish to it, and "
+               "publishing is how commands arrive.")
+    cmd_topic = st.text_input("ntfy command topic (optional)",
+                              value=nt.get("command_topic", "") or "",
+                              placeholder="shortforge-cmd-9x2v7q4b1m")
+    token_v = st.text_input("ntfy access token (optional, recommended)",
+                            value=nt.get("token", "") or "", type="password",
+                            help="From a paid/self-hosted ntfy account. With a token the "
+                                 "topic is private; without one, treat the name as the secret.")
     n1, n2 = st.columns(2)
     if n1.button("💾 Save ntfy", width="stretch"):
-        store["ntfy"] = {"topic": topic.strip() or None, "server": server.strip() or None}
+        store["ntfy"] = {"topic": topic.strip() or None, "server": server.strip() or None,
+                         "command_topic": cmd_topic.strip() or None,
+                         "token": token_v.strip() or None}
         _persist(store)
         st.success("Saved — notifications will also go to ntfy.")
     if n2.button("🔔 Test ntfy", width="stretch", disabled=not topic.strip()):

@@ -110,12 +110,28 @@ def advise(results: list[tuple[str, bool, str]], proxy: str | None = None) -> st
                     f'FIX: set the proxy for Python, then restart ShortForge:\n'
                     f'    setx HTTPS_PROXY "http://{win_proxy}"\n'
                     f'    setx HTTP_PROXY  "http://{win_proxy}"')
-        return ("Port 443 to Telegram is blocked before any encryption starts.\n"
-                "FIX: this is usually antivirus/firewall blocking python.exe specifically "
-                "(your browser is allowed, Python isn't). Add an outbound rule for "
-                "python.exe in your antivirus, or temporarily disable its web/HTTPS shield "
-                "and test again. If you use a VPN, make sure it's in full-tunnel mode, not "
-                "split-tunnel — split-tunnel often excludes non-browser apps like Python.")
+        timed_out = any("timed out" in d.lower() or "timeout" in d.lower()
+                        for n, ok_, d in results if n == "TCP connect :443")
+        if timed_out:
+            return (
+                "DNS resolves but the connection to port 443 TIMES OUT (it is not refused).\n"
+                "A local firewall/antivirus REFUSES instantly; a silent timeout means your "
+                "packets are being dropped upstream — i.e. your ISP/country blocks Telegram "
+                "by IP. Retrying will never help.\n\n"
+                "FIX, in order of what actually works:\n"
+                "1. Use a SYSTEM-WIDE VPN, not a browser extension. Browser add-on VPNs only "
+                "tunnel the browser, so Python stays blocked — that is why your browser works "
+                "and this doesn't. Free system-wide options: Cloudflare WARP (the 1.1.1.1 app), "
+                "Proton VPN, Windscribe. Install, connect, then re-run this check.\n"
+                "2. If you have a working proxy, point Python at it:\n"
+                '   setx HTTPS_PROXY "http://host:port"   (then restart ShortForge)\n'
+                "3. Or skip Telegram entirely: set up ntfy.sh in Settings → Notifications. "
+                "It is a normal HTTPS host that is not blocked, needs no account, and has a "
+                "free phone app — you still get every progress message.")
+        return ("Port 443 to Telegram is refused. That is a local block: antivirus or firewall "
+                "is stopping python.exe specifically (your browser is allowed, Python isn't).\n"
+                "FIX: add an outbound rule for python.exe, or turn off the AV web/HTTPS shield "
+                "and test again.")
     if not ok.get("TLS handshake", False):
         return ("TCP connects but the secure handshake fails — something is intercepting "
                 "HTTPS (antivirus 'SSL/HTTPS scanning' or a corporate proxy).\n"

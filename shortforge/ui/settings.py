@@ -90,7 +90,7 @@ def _render_telegram(store: dict) -> None:
     from ..notify import test_telegram
 
     st.divider()
-    st.subheader("📨 Telegram notifications")
+    st.subheader("📨 Notifications")
     st.caption("Get a message when each link finishes and when the whole queue is done — "
                "so you can leave it running and walk away.")
     with st.expander("How to get these two values", expanded=False):
@@ -120,6 +120,31 @@ def _render_telegram(store: dict) -> None:
     if c2.button("🔔 Send test message", width="stretch",
                  disabled=not (token.strip() and chat_id.strip())):
         ok, detail = test_telegram(token.strip(), chat_id.strip())
+        (st.success if ok else st.error)(detail)
+
+    # --- ntfy.sh: works where Telegram is IP-blocked ------------------------ #
+    st.markdown("**Alternative: ntfy.sh** — use this if Telegram is blocked on your "
+                "connection. No account, no token.")
+    with st.expander("How to set up ntfy (2 minutes)", expanded=False):
+        st.markdown(
+            "1. Install the free **ntfy** app (Android/iOS) — or just open ntfy.sh in a browser.\n"
+            "2. Invent a **topic name** nobody else would guess, e.g. "
+            "`shortforge-ammar-7f3k9`. Anyone who knows the topic can read your "
+            "messages, so make it long and random.\n"
+            "3. In the app: **Subscribe to topic** → type the same name.\n"
+            "4. Paste it below → Save → Test.")
+    from ..notify import test_ntfy
+    nt = store.get("ntfy", {}) or {}
+    topic = st.text_input("ntfy topic", value=nt.get("topic", "") or "",
+                          placeholder="shortforge-yourname-7f3k9")
+    server = st.text_input("ntfy server", value=nt.get("server", "") or "https://ntfy.sh")
+    n1, n2 = st.columns(2)
+    if n1.button("💾 Save ntfy", width="stretch"):
+        store["ntfy"] = {"topic": topic.strip() or None, "server": server.strip() or None}
+        _persist(store)
+        st.success("Saved — notifications will also go to ntfy.")
+    if n2.button("🔔 Test ntfy", width="stretch", disabled=not topic.strip()):
+        ok, detail = test_ntfy(topic.strip(), server.strip() or "https://ntfy.sh")
         (st.success if ok else st.error)(detail)
 
 

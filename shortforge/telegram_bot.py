@@ -75,7 +75,8 @@ HELP = (
 def _call(token: str, method: str, params: dict, timeout: int = 40) -> dict:
     data = urllib.parse.urlencode(params).encode()
     req = urllib.request.Request(_API.format(token=token, method=method), data=data)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    from .netdiag import build_opener   # honours HTTPS_PROXY / the Windows proxy
+    with build_opener().open(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
 

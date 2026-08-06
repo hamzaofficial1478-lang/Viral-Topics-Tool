@@ -42,7 +42,8 @@ def send(text: str, *, silent: bool = False) -> tuple[bool, str]:
             "parse_mode": "HTML", "disable_notification": "true" if silent else "false",
         }).encode()
         req = urllib.request.Request(_API.format(token=token, method="sendMessage"), data=data)
-        with urllib.request.urlopen(req, timeout=20) as r:
+        from .netdiag import build_opener
+        with build_opener().open(req, timeout=20) as r:
             body = json.loads(r.read().decode("utf-8", "replace"))
         if body.get("ok"):
             return True, "sent"
@@ -91,7 +92,8 @@ def test_telegram(token: str, chat_id: str) -> tuple[bool, str]:
             "text": "✅ ShortForge is connected. You'll get progress updates here.",
         }).encode()
         req = urllib.request.Request(_API.format(token=token, method="sendMessage"), data=data)
-        with urllib.request.urlopen(req, timeout=20) as r:
+        from .netdiag import build_opener
+        with build_opener().open(req, timeout=20) as r:
             body = json.loads(r.read().decode("utf-8", "replace"))
         if body.get("ok"):
             return True, "Message sent — check your Telegram."

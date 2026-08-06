@@ -106,6 +106,11 @@ def _render_telegram(store: dict) -> None:
     token = st.text_input("Bot token", value=tg.get("bot_token", "") or "", type="password")
     chat_id = st.text_input("Chat id", value=str(tg.get("chat_id", "") or ""))
 
+    if st.button("🩺 Diagnose connection (run this if Test times out)", width="stretch"):
+        from ..netdiag import report
+        with st.spinner("Checking DNS → TCP → TLS → HTTPS…"):
+            st.code(report(timeout=10))
+
     c1, c2 = st.columns(2)
     if c1.button("💾 Save Telegram", width="stretch"):
         store["telegram"] = {"bot_token": token.strip() or None,

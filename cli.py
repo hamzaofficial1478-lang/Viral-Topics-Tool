@@ -503,6 +503,15 @@ def _cfg_for_queue(args) -> Config:
     return cfg
 
 
+def cmd_telegram_doctor(args: argparse.Namespace) -> int:
+    """Pinpoint WHICH network layer is blocking Telegram (DNS/TCP/TLS/HTTP)."""
+    setup_logging(args.verbose)
+    from shortforge.netdiag import report
+    print(report(timeout=int(getattr(args, "timeout", 10) or 10),
+                 proxy=getattr(args, "proxy", None)))
+    return 0
+
+
 def cmd_encode_sample(args: argparse.Namespace) -> int:
     """STEP 1: render the SAME slice with x264 and each hardware encoder so the
     operator can judge quality vs speed side-by-side before switching the default."""
@@ -1051,6 +1060,12 @@ def build_parser() -> argparse.ArgumentParser:
     tg.add_argument("--owner-confirmed", action="store_true",
                     help="Confirm every link you send is your own / licensed content")
     tg.set_defaults(func=cmd_telegram)
+
+    td = sub.add_parser("telegram-doctor",
+                        help="Diagnose why Telegram won't connect (DNS/TCP/TLS/proxy)")
+    td.add_argument("--timeout", type=int, default=10)
+    td.add_argument("--proxy", help="Test through this proxy, e.g. http://127.0.0.1:8080")
+    td.set_defaults(func=cmd_telegram_doctor)
 
     es = sub.add_parser("encode-sample",
                         help="Render one slice with x264 vs hardware encoders to compare quality")

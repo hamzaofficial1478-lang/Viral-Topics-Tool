@@ -85,6 +85,39 @@ def _render_autodetect_import(store: dict) -> None:
         st.rerun()
 
 
+def _render_telegram(store: dict) -> None:
+    """Telegram progress messages: one per finished link, one when the queue ends."""
+    from ..notify import test_telegram
+
+    st.divider()
+    st.subheader("📨 Telegram notifications")
+    st.caption("Get a message when each link finishes and when the whole queue is done — "
+               "so you can leave it running and walk away.")
+    with st.expander("How to get these two values", expanded=False):
+        st.markdown(
+            "1. In Telegram, message **@BotFather** → `/newbot` → follow the prompts. "
+            "It gives you a **bot token** like `123456:ABC-DEF...`.\n"
+            "2. Send any message to your new bot (this is required — bots can't "
+            "message you first).\n"
+            "3. Message **@userinfobot** → it replies with your **chat id** (a number).\n"
+            "4. Paste both below, Save, then press Test.")
+
+    tg = store.get("telegram", {}) or {}
+    token = st.text_input("Bot token", value=tg.get("bot_token", "") or "", type="password")
+    chat_id = st.text_input("Chat id", value=str(tg.get("chat_id", "") or ""))
+
+    c1, c2 = st.columns(2)
+    if c1.button("💾 Save Telegram", width="stretch"):
+        store["telegram"] = {"bot_token": token.strip() or None,
+                             "chat_id": chat_id.strip() or None}
+        _persist(store)
+        st.success("Saved.")
+    if c2.button("🔔 Send test message", width="stretch",
+                 disabled=not (token.strip() and chat_id.strip())):
+        ok, detail = test_telegram(token.strip(), chat_id.strip())
+        (st.success if ok else st.error)(detail)
+
+
 def _render_youtube_auth(store: dict) -> None:
     """YouTube auth: browser/cookies picker + Test + Update yt-dlp. Persisted to
     the store and applied to every download."""
@@ -228,6 +261,9 @@ def render() -> None:
     # --- per-task routing (R1) + cost-tier guard (R2) ---
     st.divider()
     _render_task_routing(store)
+
+    # --- Telegram progress notifications ---
+    _render_telegram(store)
 
     # --- YouTube authentication (fix the bot wall on downloads) ---
     _render_youtube_auth(store)

@@ -182,6 +182,11 @@ def run_pipeline(
     lang = transcript.language or "xx"
     date = _dt.date.today().strftime("%Y%m%d")
     slug = _slug(meta.title, "source")
+    # Queue runs tag every output with which link produced it, so a folder of
+    # clips from ten links stays readable (e.g. link03_my-video_en_01_20260806.mp4).
+    _prefix = str(cfg.get("paths.output_prefix", "") or "").strip()
+    if _prefix:
+        slug = f"{_slug(_prefix, 'link')}_{slug}"
 
     logo = logo_spec(cfg, out_w, out_h)
     _cap_style = resolve_caption_style(cfg) if cfg.get("captions.enabled", True) else None

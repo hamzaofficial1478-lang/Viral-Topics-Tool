@@ -1,0 +1,123 @@
+"""Telegram notifications + keeping Windows awake during long runs.
+
+Credentials live in the same gitignored provider store as the API keys (set them
+in Settings → Telegram), never in the repo. Every send is best-effort: a failed
+notification must never take down a render that is otherwise fine.
+"""
+
+from __future__ import annotations
+
+import json
+import urllib.parse
+import urllib.request
+
+from .utils import log
+
+_API = "https://api.telegram.org/bot{token}/{method}"
+
+
+def _creds() -> tuple[str | None, str | None]:
+    """(bot_token, chat_id) from the provider store."""
+    try:
+        from .providers.store import load_store
+        tg = load_store().get("telegram", {}) or {}
+        return (tg.get("bot_token") or None), (str(tg.get("chat_id")) if tg.get("chat_id") else None)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def configured() -> bool:
+    token, chat = _creds()
+    return bool(token and chat)
+
+
+def send(text: str, *, silent: bool = False) -> tuple[bool, str]:
+    """Send a Telegram message. Returns (ok, detail); never raises."""
+    token, chat = _creds()
+    if not token or not chat:
+        return False, "Telegram not configured (Settings → Telegram)"
+    try:
+        data = urllib.parse.urlencode({
+            "chat_id": chat, "text": text[:4000],
+            "parse_mode": "HTML", "disable_notification": "true" if silent else "false",
+        }).encode()
+        req = urllib.request.Request(_API.format(token=token, method="sendMessage"), data=data)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = json.loads(r.read().decode("utf-8", "replace"))
+        if body.get("ok"):
+            return True, "sent"
+        return False, str(body.get("description") or body)[:200]
+    except Exception as e:  # noqa: BLE001 - a failed notify must never break a run
+        return False, str(e)[:200]
+
+
+def notify(text: str) -> None:
+    """Fire-and-forget send; logs the failure reason but keeps the run going."""
+    if not configured():
+        return
+    ok, detail = send(text)
+    if not ok:
+        log.warning("telegram notify failed: %s", detail)
+
+
+def test_telegram(token: str, chat_id: str) -> tuple[bool, str]:
+    """Validate credentials from the Settings screen without saving them first."""
+    try:
+        data = urllib.parse.urlencode({
+            "chat_id": chat_id,
+            "text": "✅ ShortForge is connected. You'll get progress updates here.",
+        }).encode()
+        req = urllib.request.Request(_API.format(token=token, method="sendMessage"), data=data)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            body = json.loads(r.read().decode("utf-8", "replace"))
+        if body.get("ok"):
+            return True, "Message sent — check your Telegram."
+        return False, str(body.get("description") or body)[:300]
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)[:300]
+
+
+# --- keep the machine working while the screen sleeps ----------------------- #
+
+_ES_CONTINUOUS = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+_ES_AWAYMODE_REQUIRED = 0x00000040
+
+
+class KeepAwake:
+    """Stop Windows suspending the machine mid-render.
+
+    The screen may still blank (that's fine and saves power) but the SYSTEM stays
+    awake, so a queue keeps rendering with the monitor off. No-op off Windows.
+    Use as a context manager around long work.
+    """
+
+    def __init__(self, reason: str = "ShortForge is rendering"):
+        self.reason = reason
+        self._active = False
+
+    def __enter__(self):
+        try:
+            import ctypes
+            if not hasattr(ctypes, "windll"):
+                return self          # not Windows
+            flags = _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED | _ES_AWAYMODE_REQUIRED
+            if ctypes.windll.kernel32.SetThreadExecutionState(flags) == 0:
+                # Away-mode is refused on some editions; retry without it.
+                flags = _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED
+                ctypes.windll.kernel32.SetThreadExecutionState(flags)
+            self._active = True
+            log.info("power: sleep suppressed while working (screen may still turn off)")
+        except Exception as e:  # noqa: BLE001
+            log.debug("could not suppress sleep: %s", e)
+        return self
+
+    def __exit__(self, *exc):
+        if not self._active:
+            return False
+        try:
+            import ctypes
+            ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS)  # release
+        except Exception:  # noqa: BLE001
+            pass
+        return False

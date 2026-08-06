@@ -342,6 +342,142 @@ def cmd_ui(args: argparse.Namespace) -> int:
     return subprocess.call(["streamlit", "run", app])
 
 
+def _fmt_hms(seconds: float) -> str:
+    m, s = divmod(int(max(0, seconds)), 60)
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m{s:02d}s"
+
+
+def cmd_queue(args: argparse.Namespace) -> int:
+    """Persistent link queue: add links with per-link settings, then work through
+    them one at a time, surviving restarts and power cuts."""
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+    from shortforge import queue as Q
+    from shortforge import notify as N
+
+    cfg0 = Config.load(args.config)
+    work_dir = cfg0.get("paths.work_dir", ".shortforge")
+    q = Q.load_queue(work_dir)
+    action = args.queue_action
+
+    if action == "add":
+        urls = list(args.urls or [])
+        if getattr(args, "from_file", None):
+            with open(args.from_file, "r", encoding="utf-8") as f:
+                urls += [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+        if not urls:
+            log.error("queue add needs at least one URL (or --from-file).")
+            return 2
+        settings = {k: getattr(args, k, None) for k in Q.JOB_SETTINGS}
+        for u in urls:
+            job = Q.add_job(q, u, settings, label=getattr(args, "label", "") or "")
+            print(f"  + {job['id']}  {u}" + (f"   {job['settings']}" if job["settings"] else ""))
+        Q.save_queue(q, work_dir)
+        print(Q.describe(q))
+        return 0
+
+    if action == "list":
+        jobs = q.get("jobs", [])
+        if not jobs:
+            print("Queue is empty. Add links with:  python cli.py queue add <url> ...")
+            return 0
+        for i, j in enumerate(jobs, 1):
+            mark = {"pending": "…", "running": "▶", "done": "✓", "failed": "✗"}.get(j["status"], "?")
+            extra = f"  {len(j['clips'])} clip(s)" if j["clips"] else ""
+            err = f"  ERROR: {str(j['error'])[:80]}" if j.get("error") else ""
+            print(f" {mark} {i:2d}. [{j['id']}] {j['url'][:70]}{extra}{err}")
+            if j["settings"]:
+                print(f"        settings: {j['settings']}")
+        print(Q.describe(q))
+        return 0
+
+    if action == "clear":
+        keep = [j for j in q.get("jobs", []) if j["status"] in (Q.PENDING, Q.RUNNING)] \
+            if args.done_only else []
+        removed = len(q.get("jobs", [])) - len(keep)
+        q["jobs"] = keep
+        Q.save_queue(q, work_dir)
+        print(f"Removed {removed} job(s). {Q.describe(q)}")
+        return 0
+
+    # --- run ---------------------------------------------------------------- #
+    resumed = Q.requeue_interrupted(q)
+    if resumed:
+        log.info("resuming: %d job(s) were interrupted and are back in the queue", resumed)
+    Q.save_queue(q, work_dir)
+
+    if not Q.next_pending(q):
+        print("Nothing pending. " + Q.describe(q))
+        return 0
+
+    started_msg = (f"▶️ <b>ShortForge started</b>\n{Q.describe(q)}"
+                   + (f"\nResumed {resumed} interrupted job(s)." if resumed else ""))
+    N.notify(started_msg)
+
+    t_all = _dt.datetime.now()
+    made = 0
+    with N.KeepAwake():                      # don't let Windows sleep mid-queue
+        while True:
+            q = Q.load_queue(work_dir)       # re-read: the UI/Telegram may have added links
+            job = Q.next_pending(q)
+            if job is None:
+                break
+            idx = q["jobs"].index(job) + 1
+            total = len(q["jobs"])
+            Q.mark(q, job["id"], Q.RUNNING)
+            Q.save_queue(q, work_dir)
+            log.info("=== queue %d/%d [%s] %s ===", idx, total, job["id"], job["url"])
+
+            cfg = Config.load(args.config)
+            _apply_common_overrides(cfg, args)
+            Q.apply_job_settings(cfg, job)                     # per-link settings
+            cfg.override("paths.output_prefix", Q.job_slug(job, idx))   # tag outputs
+            cfg.override("render.resume", True)                # continue a part-done job
+            t0 = _dt.datetime.now()
+            try:
+                manifest = run_pipeline(job["url"], cfg, owner_confirmed=True,
+                                        transcript_path=None, confirm_cost=lambda est: True)
+                clips = [c.get("file_path") for c in manifest.get("clips", [])]
+                q = Q.load_queue(work_dir)
+                Q.mark(q, job["id"], Q.DONE, clips=clips)
+                Q.save_queue(q, work_dir)
+                made += len(clips)
+                took = (_dt.datetime.now() - t0).total_seconds()
+                left = Q.counts(q)[Q.PENDING]
+                log.info("queue: job %s done — %d clip(s) in %s", job["id"], len(clips),
+                         _fmt_hms(took))
+                N.notify(
+                    f"✅ <b>Link {idx}/{total} done</b> — {len(clips)} clip(s) in {_fmt_hms(took)}\n"
+                    f"{(manifest.get('source') or {}).get('title', job['url'])[:80]}\n"
+                    + (f"➡️ Moving to the next link ({left} left)." if left else "That was the last one."))
+            except KeyboardInterrupt:
+                q = Q.load_queue(work_dir)
+                Q.mark(q, job["id"], Q.PENDING, error="interrupted")
+                Q.save_queue(q, work_dir)
+                log.warning("interrupted — job %s stays queued and will resume next run", job["id"])
+                return 130
+            except Exception as e:  # noqa: BLE001 - one bad link must not stop the queue
+                q = Q.load_queue(work_dir)
+                Q.mark(q, job["id"], Q.FAILED, error=str(e)[:500])
+                Q.save_queue(q, work_dir)
+                log.error("queue: job %s FAILED: %s", job["id"], e)
+                N.notify(f"⚠️ <b>Link {idx}/{total} failed</b>\n{job['url'][:80]}\n{str(e)[:300]}\n"
+                         f"➡️ Continuing with the rest of the queue.")
+
+    q = Q.load_queue(work_dir)
+    c = Q.counts(q)
+    took_all = (_dt.datetime.now() - t_all).total_seconds()
+    summary = (f"🏁 <b>All links processed</b>\n"
+               f"{c[Q.DONE]} done, {c[Q.FAILED]} failed\n"
+               f"<b>{Q.total_clips(q)} clip(s)</b> total in {_fmt_hms(took_all)}\n"
+               f"Output: {os.path.abspath(cfg0.get('paths.output_dir', 'out'))}")
+    log.info("queue finished: %s", Q.describe(q))
+    N.notify(summary)
+    print(Q.describe(q))
+    return 0 if c[Q.FAILED] == 0 else 1
+
+
 def cmd_encode_sample(args: argparse.Namespace) -> int:
     """STEP 1: render the SAME slice with x264 and each hardware encoder so the
     operator can judge quality vs speed side-by-side before switching the default."""
@@ -862,6 +998,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     usub = sub.add_parser("ui", help="Launch the web dashboard (job + settings screens)")
     usub.set_defaults(func=cmd_ui)
+
+    qp = sub.add_parser("queue", help="Persistent link queue: add links, then run them one by one")
+    qsub = qp.add_subparsers(dest="queue_action", required=True)
+    qadd = qsub.add_parser("add", help="Add link(s) with their own settings")
+    qadd.add_argument("urls", nargs="*", help="One or more video URLs")
+    qadd.add_argument("--from-file", help="Read URLs from a text file (one per line)")
+    qadd.add_argument("--label", default="", help="Short name used to tag this link's outputs")
+    qadd.add_argument("--num-clips", type=int, dest="num_clips", help="Clips from THIS link")
+    qadd.add_argument("--duration", type=int, dest="duration", help="Clip seconds for THIS link")
+    qadd.add_argument("--tolerance", type=int, dest="tolerance")
+    qadd.add_argument("--aspect", dest="aspect", help="9:16 | 1:1 | 16:9 | WxH")
+    qadd.add_argument("--resolution", dest="resolution", help="1080p | 720p | 480p | WxH")
+    qadd.add_argument("--language", dest="language")
+    qadd.add_argument("--caption-template", dest="caption_template")
+    qsub.add_parser("list", help="Show the queue and each job's status")
+    qrun = qsub.add_parser("run", help="Work through pending links (resumes after a crash)")
+    qrun.add_argument("--owner-confirmed", action="store_true",
+                      help="Confirm every queued link is your own / licensed content")
+    qclear = qsub.add_parser("clear", help="Remove jobs from the queue")
+    qclear.add_argument("--done-only", action="store_true",
+                        help="Keep pending/running jobs, drop finished ones")
+    qp.set_defaults(func=cmd_queue)
 
     es = sub.add_parser("encode-sample",
                         help="Render one slice with x264 vs hardware encoders to compare quality")

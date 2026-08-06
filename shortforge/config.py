@@ -15,7 +15,8 @@ import yaml
 
 # Baked-in defaults so the pipeline runs even without a settings file present.
 DEFAULTS: dict[str, Any] = {
-    "paths": {"work_dir": ".shortforge", "output_dir": "out"},
+    # output_prefix tags each rendered file with the queue link it came from.
+    "paths": {"work_dir": ".shortforge", "output_dir": "out", "output_prefix": ""},
     "ingest": {
         "format": "bv*[height<=1080]+ba/b[height<=1080]/b",
         "cookies": None,                 # path to a cookies.txt (Netscape format)

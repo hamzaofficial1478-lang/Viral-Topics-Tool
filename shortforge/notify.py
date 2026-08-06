@@ -60,6 +60,29 @@ def notify(text: str) -> None:
         log.warning("telegram notify failed: %s", detail)
 
 
+def reachable() -> tuple[bool, str]:
+    """Can this machine reach Telegram at all? Distinguishes a network block from
+    a bad token — they produce very different fixes."""
+    try:
+        urllib.request.urlopen("https://api.telegram.org", timeout=12)
+        return True, "api.telegram.org is reachable"
+    except Exception as e:  # noqa: BLE001
+        return False, str(e)[:200]
+
+
+NETWORK_HELP = (
+    "This PC cannot reach api.telegram.org — the request timed out before Telegram "
+    "answered, so the token was never even checked.\n\n"
+    "This is a network block, not a settings problem. Common causes:\n"
+    "• Your ISP or country blocks Telegram (very common) — connect a VPN and test again.\n"
+    "• A firewall/antivirus is blocking Python's outbound HTTPS.\n"
+    "• You're behind a proxy that Python isn't configured to use.\n\n"
+    "Quick check: open https://api.telegram.org in your browser. If that also fails "
+    "or needs a VPN, Telegram is blocked on this connection — everything else in "
+    "ShortForge keeps working, you just won't get phone notifications until it's reachable."
+)
+
+
 def test_telegram(token: str, chat_id: str) -> tuple[bool, str]:
     """Validate credentials from the Settings screen without saving them first."""
     try:
@@ -72,9 +95,14 @@ def test_telegram(token: str, chat_id: str) -> tuple[bool, str]:
             body = json.loads(r.read().decode("utf-8", "replace"))
         if body.get("ok"):
             return True, "Message sent — check your Telegram."
-        return False, str(body.get("description") or body)[:300]
+        return False, f"Telegram rejected it: {str(body.get('description') or body)[:200]}"
     except Exception as e:  # noqa: BLE001
-        return False, str(e)[:300]
+        text = str(e).lower()
+        if "timed out" in text or "timeout" in text or "urlopen error" in text:
+            ok, _ = reachable()
+            if not ok:
+                return False, NETWORK_HELP
+        return False, f"{type(e).__name__}: {str(e)[:250]}"
 
 
 # --- keep the machine working while the screen sleeps ----------------------- #

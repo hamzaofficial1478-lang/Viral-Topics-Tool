@@ -16,8 +16,15 @@ def _fresh():
     return AppTest.from_file("app.py", default_timeout=30).run()
 
 
-def test_new_job_screen_renders():
+def _new_job():
+    """The sidebar defaults to the Queue screen now; switch to the job form."""
     at = _fresh()
+    at.sidebar.radio[0].set_value("New job").run()
+    return at
+
+
+def test_new_job_screen_renders():
+    at = _new_job()
     assert not at.exception
     subs = [s.value for s in at.subheader]
     assert "1. Your video" in subs and "3. What happens next" in subs
@@ -26,7 +33,7 @@ def test_new_job_screen_renders():
 
 
 def test_run_is_gated_on_source_and_ownership():
-    at = _fresh()
+    at = _new_job()
     assert at.button[0].disabled is True                      # nothing entered yet
     at.text_input[0].set_value("https://example.com/my-video").run()
     assert at.button[0].disabled is True                      # still need ownership
@@ -35,7 +42,7 @@ def test_run_is_gated_on_source_and_ownership():
 
 
 def test_no_duration_or_clip_cap():
-    at = _fresh()
+    at = _new_job()
     at.number_input[0].set_value(300).run()                   # old slider capped at 90
     at.number_input[1].set_value(35).run()                    # old number_input capped at 20
     assert not at.exception
@@ -128,3 +135,21 @@ def test_import_store_rejects_junk():
     assert UI._valid_store({"nonsense": 1}) is False
     with _pytest.raises(ValueError):
         UI._import_store({"nonsense": 1})
+
+
+def test_queue_screen_is_the_default_and_renders():
+    """The Queue screen is where links get pasted — it must be the landing screen."""
+    at = _fresh()
+    assert not at.exception
+    assert "🎬 Link queue" in [h.value for h in at.header]
+    subs = [s.value for s in at.subheader]
+    assert "1. Add links" in subs and "2. Work through the queue" in subs
+    labels = [t.label for t in at.text_area]
+    assert any("links" in (l or "").lower() for l in labels)   # the paste box exists
+
+
+def test_queue_add_is_gated_on_links_and_ownership():
+    """No links pasted / ownership unticked -> the Add button stays disabled."""
+    at = _fresh()
+    add = next(b for b in at.button if "Add" in b.label)
+    assert add.disabled is True

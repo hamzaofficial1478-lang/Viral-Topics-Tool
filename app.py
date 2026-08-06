@@ -381,6 +381,132 @@ def _render_results(manifest: dict, out_dir: str | None = None,
         _render_clip(c, f"{key_prefix}_{i}")
 
 
+def _worker_running() -> bool:
+    p = st.session_state.get("queue_proc")
+    return bool(p and p.poll() is None)
+
+
+def _start_worker() -> None:
+    """Launch the queue runner as its own process so it survives UI reruns and
+    keeps going even if you close the browser tab."""
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    st.session_state.queue_proc = subprocess.Popen(
+        [sys.executable, os.path.join(here, "cli.py"), "queue", "run", "--owner-confirmed"],
+        cwd=here)
+
+
+def _render_queue() -> None:
+    """Paste a batch of links with their settings and let the PC work through them."""
+    from shortforge import queue as Q
+    from shortforge.config import Config as _C
+
+    st.header("🎬 Link queue")
+    st.caption("Paste one or more video links, choose the settings for this batch, and add "
+               "them. ShortForge works through them one at a time — you can close this tab.")
+
+    work_dir = _C.load().get("paths.work_dir", ".shortforge")
+    q = Q.load_queue(work_dir)
+
+    # ---- add links -------------------------------------------------------- #
+    st.subheader("1. Add links")
+    urls_text = st.text_area(
+        "Video links (one per line)", height=120, key="q_urls",
+        placeholder="https://www.youtube.com/watch?v=...\nhttps://youtu.be/...")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        n_clips = st.number_input("How many clips from each link", min_value=0, value=3, step=1,
+                                  help="0 = let ShortForge decide from the video's length.")
+    with c2:
+        dur = st.number_input("Clip length (seconds)", min_value=5, value=60, step=5,
+                              help="No upper limit — 120 or 180 for long clips is fine.")
+    with c3:
+        shape = st.selectbox("Orientation", ["16:9 landscape", "9:16 portrait", "1:1 square"], 0,
+                             help="Landscape and square centre-crop (fast, no face tracking). "
+                                  "Portrait can follow the speaker.")
+    c4, c5 = st.columns(2)
+    with c4:
+        res = st.selectbox("Resolution", ["1080p", "720p", "480p"], 0)
+    with c5:
+        label = st.text_input("Label (optional)", placeholder="podcast",
+                              help="Tags this batch's output files so you can tell them apart.")
+
+    aspect = {"16:9 landscape": "16:9", "9:16 portrait": "9:16", "1:1 square": "1:1"}[shape]
+    owner = st.checkbox("I confirm these are my own or licensed videos", value=False)
+    urls = [u.strip() for u in (urls_text or "").splitlines() if u.strip()]
+    if st.button(f"➕ Add {len(urls) or ''} link(s) to the queue".replace("  ", " "),
+                 type="primary", width="stretch", disabled=not (urls and owner)):
+        settings = {"num_clips": int(n_clips) or None, "duration": int(dur),
+                    "aspect": aspect, "resolution": res}
+        for u in urls:
+            Q.add_job(q, u, settings, label=label)
+        Q.save_queue(q, work_dir)
+        st.success(f"Added {len(urls)} link(s). {Q.describe(q)}")
+        st.rerun()
+    if not urls:
+        st.info("➕ Paste at least one link above.")
+    elif not owner:
+        st.info("☑️ Tick the ownership confirmation to add them.")
+
+    # ---- run controls ------------------------------------------------------ #
+    st.divider()
+    st.subheader("2. Work through the queue")
+    counts = Q.counts(q)
+    paused = Q.is_paused(q)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Pending", counts[Q.PENDING])
+    m2.metric("Running", counts[Q.RUNNING])
+    m3.metric("Done", counts[Q.DONE])
+    m4.metric("Clips made", Q.total_clips(q))
+
+    r1, r2, r3 = st.columns(3)
+    running = _worker_running()
+    if r1.button("▶ Start working", type="primary", width="stretch",
+                 disabled=running or counts[Q.PENDING] == 0):
+        if paused:
+            Q.set_paused(q, False)
+            Q.save_queue(q, work_dir)
+        _start_worker()
+        st.success("Started. It keeps running even if you close this tab.")
+        st.rerun()
+    if r2.button("⏸ Pause" if not paused else "▶ Resume", width="stretch"):
+        Q.set_paused(q, not paused)
+        Q.save_queue(q, work_dir)
+        st.rerun()
+    if r3.button("🧹 Clear finished", width="stretch"):
+        q["jobs"] = [j for j in q.get("jobs", []) if j["status"] in (Q.PENDING, Q.RUNNING)]
+        Q.save_queue(q, work_dir)
+        st.rerun()
+
+    if running:
+        st.info("⏳ Working… this page refreshes as links complete.")
+    elif paused:
+        st.warning("⏸ Paused — new links are still accepted, nothing new starts.")
+
+    # ---- the queue itself --------------------------------------------------- #
+    jobs = q.get("jobs", [])
+    if jobs:
+        st.divider()
+        marks = {Q.PENDING: "⏳", Q.RUNNING: "▶", Q.DONE: "✅", Q.FAILED: "✗"}
+        rows = [{
+            "#": i,
+            "": marks.get(j["status"], "?"),
+            "link": j["url"][:60],
+            "clips": j["settings"].get("num_clips", "auto"),
+            "seconds": j["settings"].get("duration", "-"),
+            "shape": j["settings"].get("aspect", "-"),
+            "made": len(j.get("clips") or []),
+            "note": (j.get("error") or "")[:60],
+        } for i, j in enumerate(jobs, 1)]
+        st.dataframe(rows, width="stretch", hide_index=True)
+    else:
+        st.caption("The queue is empty.")
+
+    if running:
+        time.sleep(3)
+        st.rerun()
+
+
 def _render_history() -> None:
     st.header("📚 History")
     st.caption("Every finished run and its clips — review earlier work without hunting "
@@ -588,7 +714,7 @@ def main() -> None:
     st.title("🎬 ShortForge")
 
     with st.sidebar:
-        screen = st.radio("Screen", ["New job", "Settings", "History"], index=0)
+        screen = st.radio("Screen", ["Queue", "New job", "Settings", "History"], index=0)
         st.divider()
 
     if screen == "Settings":
@@ -597,6 +723,9 @@ def main() -> None:
         return
     if screen == "History":
         _render_history()
+        return
+    if screen == "Queue":
+        _render_queue()
         return
 
     # New job — one of three states, all persisted in session_state so results

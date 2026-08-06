@@ -25,8 +25,8 @@ if exist "%TG%" echo   [currently ON]  Telegram mode
 if exist "%QU%" echo   [currently ON]  Queue mode
 if not exist "%TG%" if not exist "%QU%" echo   [currently OFF] nothing starts automatically
 echo.
-echo   1  Telegram mode   - send links from your phone; also works the queue
-echo   2  Queue mode      - just work through links already in the queue
+echo   1  Everything      - dashboard UI + Telegram listener + queue worker
+echo   2  Queue only      - work through queued links, no UI, no Telegram
 echo   3  Turn autostart OFF
 echo   4  Cancel
 echo.
@@ -39,10 +39,10 @@ if "%CHOICE%"=="3" goto :remove
 goto :cancel
 
 :telegram
-set "TARGET=%~dp0start_telegram.bat"
+set "TARGET=%~dp0start_all.bat"
 set "LINK=%TG%"
 set "OTHER=%QU%"
-set "NAME=Telegram mode"
+set "NAME=Everything (UI + Telegram + queue)"
 goto :install
 
 :queue

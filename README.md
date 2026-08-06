@@ -45,6 +45,12 @@ Three steps — no command line needed after cloning:
    offers to import it automatically. That file contains your API keys in
    plaintext — keep it private; it's gitignored so it can't be committed.
 
+**Start automatically at logon:** double-click **`install_autostart.bat`** and pick
+Telegram mode or Queue mode (option 3 turns it off again). It needs no admin
+rights and works out its own paths — it drops a small launcher into your Startup
+folder. Don't use `schtasks` for this: many machines refuse it with
+"Access is denied".
+
 **Desktop shortcut / taskbar:** right-click `start_ui.vbs` → **Send to → Desktop
 (create shortcut)** and rename it "ShortForge". To pin it to the taskbar, make a
 shortcut whose **Target** is `wscript.exe "C:\path\to\start_ui.vbs"` (Windows

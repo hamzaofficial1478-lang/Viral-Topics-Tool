@@ -21,12 +21,12 @@ transcribe:
   min_confidence: 0.0            # >0 drops low-confidence segments from clip selection (STEP 3.5)
 
 detect:
-  backend: auto                  # auto | llm | heuristic
+  backend: heuristic             # FAST default: transcript-only. auto = LLM hook scorer
   #   auto      -> use Claude if ANTHROPIC_API_KEY is set, else heuristic
   llm_model: claude-opus-4-8
   min_segment_score: 0.35        # candidates below this are dropped
   # M3++ visual hook signals (local, no API): score what's SHOWN, not just said.
-  visual: true                   # fuse motion / scene-cut / face signals
+  visual: false                  # OFF: full-source CV pass (minutes on long videos)
   visual_weight: 0.35            # final = (1-w)*transcript + w*visual
   visual_sample_interval: 0.5    # seconds between sampled frames
   visual_cut_threshold: 0.25     # frame-diff level counted as a scene cut
@@ -52,7 +52,7 @@ reframe:
   width: 1080
   height: 1920
   fill: crop                     # crop (center smart-crop) | blur (fit + blurred bg)
-  mode: track                    # track (virtual camera, A4) | center | static
+  mode: center                   # center (fast, no face detection) | track | static
   face_score: 0.6                # YuNet detection confidence threshold
   # A4 virtual camera — a crop path that follows the action, re-centers at scene
   # cuts, and cuts (not sweeps) between subjects. Signals: face -> motion -> center.

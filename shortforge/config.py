@@ -31,7 +31,10 @@ DEFAULTS: dict[str, Any] = {
         "min_confidence": 0.0,      # >0 excludes low-confidence segments from clip selection
     },
     "detect": {
-        "backend": "auto",          # auto | provider (C1 LLM+frames) | llm | heuristic
+        # FAST PATH (default): score hooks from the TRANSCRIPT only — no LLM call,
+        # no per-frame vision work. Set "auto" to re-enable the LLM hook scorer
+        # (C1 provider path) when a hook_detection model is bound.
+        "backend": "heuristic",     # auto | provider (C1 LLM+frames) | llm | heuristic
         "llm_model": "claude-opus-4-8",
         "min_segment_score": 0.35,
         # C1: provider hook scorer (task-routing LLM + vision frame fusion).
@@ -44,8 +47,10 @@ DEFAULTS: dict[str, Any] = {
         "hook_batch": 12,           # segments per hook-scoring call (small+predictable beats fewer+large; timeouts split to half)
         "hook_timeout": 0,          # per-call timeout override (s); 0 = task default (600)
         "hook_concurrency": 4,      # hook-scoring batches run in parallel (respect provider RPM)
-        # M3++ visual hook signals (local, no API).
-        "visual": True,
+        # M3++ visual hook signals (local, no API) — a CV pass over the WHOLE
+        # source (up to visual_max_samples frames). Off by default: it costs
+        # minutes on a long video and the transcript already picks good moments.
+        "visual": False,
         "visual_weight": 0.35,          # blend: (1-w)*transcript + w*visual
         "visual_sample_interval": 0.5,  # seconds between sampled frames
         "visual_max_samples": 1500,
@@ -80,7 +85,9 @@ DEFAULTS: dict[str, Any] = {
         "width": 1080,
         "height": 1920,
         "fill": "crop",
-        "mode": "track",            # track (virtual camera) | center | static
+        # Centre crop by default: no face detection, no saliency pass. Pick
+        # "track" in the UI/CLI when you want the camera to follow a speaker.
+        "mode": "center",           # track (virtual camera) | center | static
         "track_sample_interval": 0.33,   # legacy tracker
         "track_smooth_window": 5,        # legacy tracker
         "face_score": 0.6,

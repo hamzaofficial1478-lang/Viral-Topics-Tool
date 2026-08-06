@@ -88,6 +88,7 @@ def test_detect_hooks_routes_to_provider_when_bound(monkeypatch):
     monkeypatch.setattr("shortforge.llm.openai_chat_raw",
                         _fake_chat([{"index": i, "score": 0.8, "reason": "strong"} for i in range(5)]))
     cfg = Config.load()
+    cfg.override("detect.backend", "auto")   # LLM hook scoring is opt-in now (default: heuristic)
     cfg.override("detect.min_segment_score", 0.0)
     cfg.override("detect.hook_frames", False)
     cands = detect_hooks(_tr(), cfg, None)

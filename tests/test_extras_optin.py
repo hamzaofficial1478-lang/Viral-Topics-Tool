@@ -16,3 +16,16 @@ def test_overrides_turn_them_on():
     c.override("metadata.enabled", True)
     c.override("thumbnail.enabled", True)
     assert c.get("metadata.enabled") is True and c.get("thumbnail.enabled") is True
+
+
+def test_fast_path_defaults():
+    """Speed-first defaults: shorts get cut from the transcript with no LLM call
+    and no per-frame vision work anywhere in the pipeline."""
+    c = Config.load()
+    assert c.get("detect.backend") == "heuristic"   # no LLM hook scoring
+    assert c.get("detect.visual") is False          # no full-source CV pass
+    assert c.get("detect.hook_frames") is False     # no vision frame scoring
+    assert c.get("detect.vision_llm") is False      # no contact-sheet scorer
+    assert c.get("reframe.mode") == "center"        # no face detection / saliency
+    assert c.get("metadata.enabled") is False       # no per-clip LLM call
+    assert c.get("thumbnail.enabled") is False

@@ -487,8 +487,10 @@ def _render_new_job_form() -> None:
             except Exception:  # noqa: BLE001
                 pass
             reframe = st.selectbox(
-                "Reframing", ["Track the action (virtual camera)", "Center crop"], 0,
-                help="Track follows the speaker/motion across the frame; center is a fixed crop.")
+                "Reframing", ["Center crop (fast)", "Track the action (virtual camera)"], 0,
+                help="Center crop is a fixed crop — no face detection, fastest. Track follows "
+                     "the speaker across the frame (only used for portrait output; it adds a "
+                     "per-frame vision pass).")
             whisper_model = st.selectbox(
                 "Transcription accuracy", ["small", "base", "medium", "large-v3"], 0,
                 help="'small' is the balanced CPU default. 'base' is faster but garbles hard "

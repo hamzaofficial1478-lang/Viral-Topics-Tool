@@ -57,6 +57,10 @@ class _Transient(Exception):
     """A network hiccup — worth retrying with backoff."""
 
 
+class _NoFormat(Exception):
+    """Auth worked, but no stream matched the format selector — loosen it."""
+
+
 _ANSI = None
 
 
@@ -74,6 +78,8 @@ def _clean_err(e: Exception) -> str:
 
 def _classify(e: Exception) -> Exception:
     msg = str(e).lower()
+    if "requested format is not available" in msg or "no video formats found" in msg:
+        return _NoFormat(str(e))
     if "not a bot" in msg or "confirm you" in msg or "sign in to confirm" in msg:
         return _BotWall(str(e))
     if any(s in msg for s in ("private video", "removed", "does not exist",
@@ -88,6 +94,37 @@ def _classify(e: Exception) -> Exception:
 
 
 # --- auth strategies (the fallback chain) ----------------------------------- #
+
+def _materialise_cookies(value: str | None) -> str | None:
+    """Accept either a path to cookies.txt OR the pasted CONTENTS of one.
+
+    Operators reasonably paste the file's text into a field labelled "cookies.txt";
+    handing that to yt-dlp as a filename raises a baffling "[Errno 22] Invalid
+    argument". Detect Netscape cookie data and write it to a real file instead."""
+    if not value:
+        return None
+    v = value.strip()
+    if os.path.isfile(v):
+        return v
+    looks_like_data = ("\t" in v or "# Netscape" in v or "# HTTP Cookie File" in v
+                       or ".youtube.com" in v)
+    if not looks_like_data:
+        return v          # a path that doesn't exist yet — let yt-dlp complain clearly
+    import hashlib
+    import tempfile
+    name = "sf_cookies_" + hashlib.sha1(v.encode("utf-8")).hexdigest()[:10] + ".txt"
+    path = os.path.join(tempfile.gettempdir(), name)
+    if not v.startswith("#"):
+        v = "# Netscape HTTP Cookie File\n" + v
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(v if v.endswith("\n") else v + "\n")
+        log.info("cookies: pasted cookie data saved to a temporary file")
+        return path
+    except OSError as e:
+        log.warning("could not write pasted cookie data: %s", e)
+        return None
+
 
 def _resolve_auth(cfg: Config) -> tuple[str | None, str | None]:
     """(cookies_file, cookies_from_browser) from cfg (CLI/form) falling back to
@@ -104,7 +141,7 @@ def _resolve_auth(cfg: Config) -> tuple[str | None, str | None]:
             pass
     if browser and str(browser).lower() not in _BROWSERS:
         browser = None
-    return (cookies_file or None), (browser or None)
+    return _materialise_cookies(cookies_file), (browser or None)
 
 
 def _auth_strategies(cfg: Config) -> list[tuple[str, dict]]:
@@ -118,6 +155,19 @@ def _auth_strategies(cfg: Config) -> list[tuple[str, dict]]:
         chain.append((f"{browser} browser cookies", {"cookiesfrombrowser": (browser,)}))
     chain.append(("no cookies", {}))
     return chain
+
+
+# Progressively looser selectors. YouTube does not always offer a <=1080p
+# video+audio pair (SABR / per-client format restrictions), so falling back to
+# "whatever plays" beats failing the download.
+def _format_chain(cfg: Config) -> list[str]:
+    configured = cfg.get("ingest.format") or "bv*[height<=1080]+ba/b[height<=1080]/b"
+    chain = [configured, "bv*+ba/b", "best[ext=mp4]/best", "best"]
+    out: list[str] = []
+    for f in chain:                      # de-dup, keep order
+        if f and f not in out:
+            out.append(f)
+    return out
 
 
 def _base_opts(cfg: Config, dl_dir: str) -> dict:
@@ -236,7 +286,20 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
     for label, overlay in strategies:
         try:
             log.info("download: trying auth strategy '%s'", label)
-            info, file_path = _download_with_retries(url, {**base, **overlay}, cfg)
+            formats = _format_chain(cfg)
+            for fi, fmt in enumerate(formats):
+                try:
+                    info, file_path = _download_with_retries(
+                        url, {**base, **overlay, "format": fmt}, cfg)
+                    if fi:
+                        log.info("download: format '%s' worked (the preferred one wasn't "
+                                 "offered for this video)", fmt)
+                    break
+                except _NoFormat:
+                    if fi + 1 < len(formats):
+                        log.warning("format '%s' not offered; trying a looser one", fmt)
+                        continue
+                    raise
             log.info("download succeeded via '%s'", label)
             break
         except _BotWall as e:
@@ -249,6 +312,11 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
                 f"'{url}' is unavailable or not a valid video URL ({e}). "
                 f"Check the link is public/unlisted and that you own it."
             ) from e
+        except _NoFormat as e:
+            last_err = e
+            log.warning("auth strategy '%s': signed in fine, but YouTube offered no usable "
+                        "video format for this link", label)
+            continue
         except _Transient as e:
             last_err = e
             log.warning("auth strategy '%s' failed on a network error; trying next", label)
@@ -315,6 +383,8 @@ def test_youtube_auth(url: str, cfg: Config) -> tuple[bool, str]:
         except Exception as e:  # noqa: BLE001
             c = _classify(e)
             why = ("bot wall" if isinstance(c, _BotWall) else
+                   "SIGNED IN OK (no matching video format — the download will retry "
+                   "looser formats)" if isinstance(c, _NoFormat) else
                    "unavailable" if isinstance(c, _Unavailable) else
                    "network" if isinstance(c, _Transient) else "error")
             lines.append(f"✗ {label}: {why} — {_clean_err(e)[:140]}")

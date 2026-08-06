@@ -1,6 +1,8 @@
 """Link ingestion reliability: error classification, the cookie fallback chain,
 and the friendly bot-detection message."""
 
+import os
+
 import pytest
 
 import importlib
@@ -113,3 +115,41 @@ def test_test_youtube_auth_handles_missing_ytdlp(monkeypatch):
                         lambda: (_ for _ in ()).throw(ShortForgeError("yt-dlp is not installed.")))
     ok, detail = I.test_youtube_auth("https://youtube.com/watch?v=x", Config.load())
     assert ok is False and "yt-dlp is not installed" in detail
+
+
+# --- pasted cookie text + format fallback ----------------------------------- #
+
+def test_pasted_cookie_text_is_written_to_a_file(tmp_path, monkeypatch):
+    """Operators paste the file CONTENTS into the cookies field; yt-dlp then got
+    '[Errno 22] Invalid argument' because it expects a path."""
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    pasted = (".youtube.com\tTRUE\t/\tFALSE\t1819444429\tSID\tg.a000AwmDkSdW\n"
+              ".youtube.com\tTRUE\t/\tTRUE\t1801591123\t__Secure-ROLLOUT_TOKEN\tCKDex\n")
+    path = I._materialise_cookies(pasted)
+    assert path and os.path.isfile(path)
+    body = open(path, encoding="utf-8").read()
+    assert body.startswith("# Netscape")          # header added so yt-dlp accepts it
+    assert "SID" in body
+
+
+def test_real_path_is_passed_through_untouched(tmp_path):
+    f = tmp_path / "cookies.txt"
+    f.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    assert I._materialise_cookies(str(f)) == str(f)
+    assert I._materialise_cookies(None) is None
+
+
+def test_format_error_is_not_an_auth_error():
+    """'Requested format is not available' means we signed in FINE — it must not
+    be reported as a bot wall."""
+    c = I._classify(Exception("ERROR: [youtube] abc: Requested format is not available"))
+    assert isinstance(c, I._NoFormat)
+    assert not isinstance(c, I._BotWall)
+
+
+def test_format_chain_gets_looser():
+    from shortforge.config import Config
+    chain = I._format_chain(Config.load())
+    assert len(chain) >= 3
+    assert chain[-1] == "best"                     # always ends with "anything that plays"
+    assert len(set(chain)) == len(chain)           # no duplicates

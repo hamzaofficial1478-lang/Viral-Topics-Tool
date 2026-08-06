@@ -18,8 +18,6 @@ needs OpenCV + the YuNet model and is cached so re-renders never recompute it.
 
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass, asdict
 
 from ..config import Config

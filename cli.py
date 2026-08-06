@@ -468,8 +468,9 @@ def cmd_telegram(args: argparse.Namespace) -> int:
     def _worker():
         """Drain the queue whenever something is pending; idle quietly otherwise."""
         while not stop.is_set():
-            if Q.next_pending(Q.load_queue(work_dir)) is None:
-                stop.wait(5)
+            _q = Q.load_queue(work_dir)
+            if Q.is_paused(_q) or Q.next_pending(_q) is None:
+                stop.wait(5)                 # paused or idle: stay alive, keep listening
                 continue
             with N.KeepAwake():
                 s = drain_queue(lambda: _cfg_for_queue(args), work_dir,

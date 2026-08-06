@@ -16,7 +16,6 @@ import json
 import os
 import time
 import uuid
-from typing import Any
 
 from .utils import log
 
@@ -151,6 +150,15 @@ def apply_job_settings(cfg, job: dict) -> None:
     for key, dotted in JOB_SETTINGS.items():
         if key in job.get("settings", {}):
             cfg.override(dotted, job["settings"][key])
+
+
+def is_paused(q: dict) -> bool:
+    """Paused = keep listening and accepting links, but start no new jobs."""
+    return bool(q.get("paused", False))
+
+
+def set_paused(q: dict, paused: bool) -> None:
+    q["paused"] = bool(paused)
 
 
 def describe(q: dict) -> str:

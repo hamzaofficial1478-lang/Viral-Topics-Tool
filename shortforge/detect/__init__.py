@@ -8,7 +8,6 @@ otherwise a keyword heuristic.
 
 from __future__ import annotations
 
-import os
 
 from ..config import Config
 from ..models import Candidate, Transcript

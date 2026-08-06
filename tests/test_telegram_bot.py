@@ -110,3 +110,31 @@ def test_commands(tmp_path):
     assert "1." in TB.handle_text("/list", work)
     assert "Dropped 1" in TB.handle_text("/cancel", work)
     assert Q.counts(Q.load_queue(work))[Q.PENDING] == 0
+
+
+# --- remote on/off ---------------------------------------------------------- #
+
+def test_pause_and_resume_from_telegram(tmp_path):
+    work = str(tmp_path)
+    TB.handle_text("https://a/1", work)
+    assert "Paused" in TB.handle_text("/pause", work)
+    assert Q.is_paused(Q.load_queue(work)) is True
+    assert "PAUSED" in TB.handle_text("/status", work)
+    assert "Working again" in TB.handle_text("/resume", work)
+    assert Q.is_paused(Q.load_queue(work)) is False
+
+
+def test_stop_and_on_aliases(tmp_path):
+    work = str(tmp_path)
+    TB.handle_text("/stop", work)
+    assert Q.is_paused(Q.load_queue(work)) is True
+    TB.handle_text("/on", work)
+    assert Q.is_paused(Q.load_queue(work)) is False
+
+
+def test_pause_does_not_lose_queued_links(tmp_path):
+    work = str(tmp_path)
+    TB.handle_text("/pause", work)
+    TB.handle_text("https://a/1 clips=3", work)          # still accepted while paused
+    q = Q.load_queue(work)
+    assert Q.counts(q)[Q.PENDING] == 1 and Q.is_paused(q) is True

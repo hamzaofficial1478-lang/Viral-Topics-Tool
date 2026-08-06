@@ -62,6 +62,8 @@ HELP = (
     "<b>Commands:</b>\n"
     "/status — how the queue is doing\n"
     "/list — the queued links\n"
+    "/pause — stop starting new links (the current one finishes)\n"
+    "/resume — start working again\n"
     "/clear — remove finished jobs\n"
     "/cancel — drop everything still pending\n"
     "/help — this message"
@@ -154,12 +156,27 @@ def handle_text(text: str, work_dir: str) -> str:
         q = Q.load_queue(work_dir)
         c = Q.counts(q)
         running = next((j for j in q.get("jobs", []) if j["status"] == Q.RUNNING), None)
-        msg = (f"📊 <b>Queue</b>\n⏳ {c[Q.PENDING]} pending · ▶ {c[Q.RUNNING]} running · "
+        state = "⏸ PAUSED" if Q.is_paused(q) else "▶ working"
+        msg = (f"📊 <b>Queue</b> — {state}\n"
+               f"⏳ {c[Q.PENDING]} pending · ▶ {c[Q.RUNNING]} running · "
                f"✅ {c[Q.DONE]} done · ✗ {c[Q.FAILED]} failed\n"
                f"🎬 {Q.total_clips(q)} clip(s) produced")
         if running:
             msg += f"\n\nNow: {running['url'][:70]}"
         return msg
+    if low.startswith(("/pause", "/stop", "/off")):
+        q = Q.load_queue(work_dir)
+        Q.set_paused(q, True)
+        Q.save_queue(q, work_dir)
+        return ("⏸ <b>Paused.</b> The link being worked on will finish, then I'll stop "
+                "starting new ones. Links you send are still queued. /resume to continue.")
+    if low.startswith(("/resume", "/on")):   # /start stays Telegram's "introduce yourself"
+        q = Q.load_queue(work_dir)
+        Q.set_paused(q, False)
+        Q.save_queue(q, work_dir)
+        pending = Q.counts(q)[Q.PENDING]
+        return (f"▶️ <b>Working again.</b> {pending} link(s) pending."
+                if pending else "▶️ <b>Working again.</b> Nothing queued — send me a link.")
     if low.startswith("/list"):
         q = Q.load_queue(work_dir)
         jobs = q.get("jobs", [])

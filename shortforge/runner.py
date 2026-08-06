@@ -38,11 +38,33 @@ def run_one(job: dict, idx: int, total: int, make_cfg: Callable[[], Config],
         manifest = run_pipeline(job["url"], cfg, owner_confirmed=True,
                                 transcript_path=None, confirm_cost=lambda est: True)
     except Exception as e:  # noqa: BLE001
+        # Triage: apply a safe automatic remedy if one exists, then retry ONCE.
+        from . import selfheal
+        fixed, msg = selfheal.report(str(e), context=job["url"][:80])
+        if fixed and int(job.get("attempts", 0)) < 2:
+            log.info("self-heal succeeded — retrying job %s once", job["id"])
+            try:
+                manifest = run_pipeline(job["url"], cfg, owner_confirmed=True,
+                                        transcript_path=None, confirm_cost=lambda est: True)
+            except Exception as e2:  # noqa: BLE001 - retry failed; report the new error
+                q = Q.load_queue(work_dir)
+                Q.mark(q, job["id"], Q.FAILED, error=str(e2)[:500])
+                Q.save_queue(q, work_dir)
+                log.error("queue: job %s FAILED after self-heal: %s", job["id"], e2)
+                return False, 0, (f"⚠️ <b>Link {idx}/{total} still failed after the fix</b>\n"
+                                  f"{job['url'][:80]}\n{str(e2)[:300]}")
+            else:
+                clips = [c.get("file_path") for c in manifest.get("clips", [])]
+                q = Q.load_queue(work_dir)
+                Q.mark(q, job["id"], Q.DONE, clips=clips)
+                Q.save_queue(q, work_dir)
+                return True, len(clips), (f"{msg}\n✅ <b>Link {idx}/{total} done after the fix</b> "
+                                          f"— {len(clips)} clip(s)")
         q = Q.load_queue(work_dir)
         Q.mark(q, job["id"], Q.FAILED, error=str(e)[:500])
         Q.save_queue(q, work_dir)
         log.error("queue: job %s FAILED: %s", job["id"], e)
-        return False, 0, f"⚠️ <b>Link {idx}/{total} failed</b>\n{job['url'][:80]}\n{str(e)[:300]}"
+        return False, 0, f"{msg}\n<i>Link {idx}/{total}</i> — continuing with the rest."
 
     clips = [c.get("file_path") for c in manifest.get("clips", [])]
     q = Q.load_queue(work_dir)
@@ -72,6 +94,8 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
         if should_stop is not None and should_stop():
             break
         q = Q.load_queue(work_dir)
+        if Q.is_paused(q):       # /pause from Telegram: finish nothing new, stay alive
+            break
         job = Q.next_pending(q)
         if job is None:
             break

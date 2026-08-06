@@ -8,7 +8,6 @@ never has to be present for the pipeline to run.
 
 from __future__ import annotations
 
-import json
 
 from ..config import Config
 from ..models import Candidate, Transcript

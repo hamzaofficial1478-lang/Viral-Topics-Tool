@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from .config import Config
 from .cost import _CHARS_PER_SEC
 from .detect import rubric
-from .llm import anthropic_messages_url, normalize_chat_url, openai_chat_raw
+from .llm import anthropic_messages_url, openai_chat_raw
 from .models import Transcript
 from .utils import log
 

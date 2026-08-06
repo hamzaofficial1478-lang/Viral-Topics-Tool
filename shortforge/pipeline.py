@@ -27,7 +27,6 @@ from .lipsync import available as lipsync_available, lipsync_clip
 from .localize import build_translated_transcript, dub_clip
 from .localize.translate import resolve_backend
 from .metadata import generate as gen_metadata
-from .models import Clip
 from .publish import write_sidecar
 from .qc import review_clip
 from .reframe import parse_aspect, plan_vcam, tracking_available

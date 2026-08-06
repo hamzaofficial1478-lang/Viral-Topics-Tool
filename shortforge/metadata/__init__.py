@@ -18,7 +18,6 @@ per-page profile (Section 8) in config.
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any
 

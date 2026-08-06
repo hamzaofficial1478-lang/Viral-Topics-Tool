@@ -415,67 +415,91 @@ def cmd_queue(args: argparse.Namespace) -> int:
                    + (f"\nResumed {resumed} interrupted job(s)." if resumed else ""))
     N.notify(started_msg)
 
-    t_all = _dt.datetime.now()
-    made = 0
-    with N.KeepAwake():                      # don't let Windows sleep mid-queue
-        while True:
-            q = Q.load_queue(work_dir)       # re-read: the UI/Telegram may have added links
-            job = Q.next_pending(q)
-            if job is None:
-                break
-            idx = q["jobs"].index(job) + 1
-            total = len(q["jobs"])
-            Q.mark(q, job["id"], Q.RUNNING)
-            Q.save_queue(q, work_dir)
-            log.info("=== queue %d/%d [%s] %s ===", idx, total, job["id"], job["url"])
+    from shortforge.runner import drain_queue, fmt_hms
+    try:
+        with N.KeepAwake():                  # don't let Windows sleep mid-queue
+            s = drain_queue(lambda: _cfg_for_queue(args), work_dir)
+    except KeyboardInterrupt:
+        q = Q.load_queue(work_dir)
+        n = Q.requeue_interrupted(q)         # the running job goes back in the queue
+        Q.save_queue(q, work_dir)
+        log.warning("interrupted — %d job(s) stay queued and resume on the next run", n)
+        return 130
 
-            cfg = Config.load(args.config)
-            _apply_common_overrides(cfg, args)
-            Q.apply_job_settings(cfg, job)                     # per-link settings
-            cfg.override("paths.output_prefix", Q.job_slug(job, idx))   # tag outputs
-            cfg.override("render.resume", True)                # continue a part-done job
-            t0 = _dt.datetime.now()
-            try:
-                manifest = run_pipeline(job["url"], cfg, owner_confirmed=True,
-                                        transcript_path=None, confirm_cost=lambda est: True)
-                clips = [c.get("file_path") for c in manifest.get("clips", [])]
-                q = Q.load_queue(work_dir)
-                Q.mark(q, job["id"], Q.DONE, clips=clips)
-                Q.save_queue(q, work_dir)
-                made += len(clips)
-                took = (_dt.datetime.now() - t0).total_seconds()
-                left = Q.counts(q)[Q.PENDING]
-                log.info("queue: job %s done — %d clip(s) in %s", job["id"], len(clips),
-                         _fmt_hms(took))
-                N.notify(
-                    f"✅ <b>Link {idx}/{total} done</b> — {len(clips)} clip(s) in {_fmt_hms(took)}\n"
-                    f"{(manifest.get('source') or {}).get('title', job['url'])[:80]}\n"
-                    + (f"➡️ Moving to the next link ({left} left)." if left else "That was the last one."))
-            except KeyboardInterrupt:
-                q = Q.load_queue(work_dir)
-                Q.mark(q, job["id"], Q.PENDING, error="interrupted")
-                Q.save_queue(q, work_dir)
-                log.warning("interrupted — job %s stays queued and will resume next run", job["id"])
-                return 130
-            except Exception as e:  # noqa: BLE001 - one bad link must not stop the queue
-                q = Q.load_queue(work_dir)
-                Q.mark(q, job["id"], Q.FAILED, error=str(e)[:500])
-                Q.save_queue(q, work_dir)
-                log.error("queue: job %s FAILED: %s", job["id"], e)
-                N.notify(f"⚠️ <b>Link {idx}/{total} failed</b>\n{job['url'][:80]}\n{str(e)[:300]}\n"
-                         f"➡️ Continuing with the rest of the queue.")
-
-    q = Q.load_queue(work_dir)
-    c = Q.counts(q)
-    took_all = (_dt.datetime.now() - t_all).total_seconds()
     summary = (f"🏁 <b>All links processed</b>\n"
-               f"{c[Q.DONE]} done, {c[Q.FAILED]} failed\n"
-               f"<b>{Q.total_clips(q)} clip(s)</b> total in {_fmt_hms(took_all)}\n"
+               f"{s['done']} done, {s['failed']} failed\n"
+               f"<b>{s['total_clips']} clip(s)</b> total in {fmt_hms(s['elapsed'])}\n"
                f"Output: {os.path.abspath(cfg0.get('paths.output_dir', 'out'))}")
-    log.info("queue finished: %s", Q.describe(q))
+    log.info("queue finished: %s", Q.describe(Q.load_queue(work_dir)))
     N.notify(summary)
-    print(Q.describe(q))
-    return 0 if c[Q.FAILED] == 0 else 1
+    print(Q.describe(Q.load_queue(work_dir)))
+    return 0 if s["failed"] == 0 else 1
+
+
+def cmd_telegram(args: argparse.Namespace) -> int:
+    """Listen for links on Telegram and work the queue — the phone-driven mode.
+
+    Two threads: a long-poll listener that only ever accepts YOUR chat id, and a
+    worker that drains the queue. Both talk through the queue file, so either can
+    restart without losing anything.
+    """
+    import threading
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+    from shortforge import notify as N, queue as Q, telegram_bot as TB
+    from shortforge.runner import drain_queue
+    from shortforge.providers.store import load_store
+
+    tg = load_store().get("telegram", {}) or {}
+    token, chat = tg.get("bot_token"), str(tg.get("chat_id") or "")
+    if not token or not chat:
+        log.error("Telegram is not configured. Open Settings → Telegram, paste your "
+                  "bot token and chat id, press Test, then re-run this.")
+        return 2
+
+    cfg0 = Config.load(args.config)
+    work_dir = cfg0.get("paths.work_dir", ".shortforge")
+    q = Q.load_queue(work_dir)
+    resumed = Q.requeue_interrupted(q)
+    Q.save_queue(q, work_dir)
+
+    stop = threading.Event()
+
+    def _worker():
+        """Drain the queue whenever something is pending; idle quietly otherwise."""
+        while not stop.is_set():
+            if Q.next_pending(Q.load_queue(work_dir)) is None:
+                stop.wait(5)
+                continue
+            with N.KeepAwake():
+                s = drain_queue(lambda: _cfg_for_queue(args), work_dir,
+                                should_stop=stop.is_set)
+            if s["made"]:
+                N.notify(f"🏁 <b>Queue empty</b>\n{s['done']} done, {s['failed']} failed\n"
+                         f"<b>{s['total_clips']} clip(s)</b> total")
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+    N.notify("🤖 <b>ShortForge is online</b> and listening.\n"
+             + (f"Resumed {resumed} interrupted job(s).\n" if resumed else "")
+             + "Send me a link, or /help.")
+    log.info("telegram: listening (owner chat only). Ctrl+C to stop.")
+    offset = 0
+    try:
+        while True:
+            offset = TB.poll_once(token, chat, offset, work_dir)
+    except KeyboardInterrupt:
+        log.info("telegram: stopping…")
+        stop.set()
+        return 0
+
+
+def _cfg_for_queue(args) -> Config:
+    """A fresh Config per job with the run-wide CLI overrides applied."""
+    cfg = Config.load(getattr(args, "config", None))
+    _apply_common_overrides(cfg, args)
+    return cfg
 
 
 def cmd_encode_sample(args: argparse.Namespace) -> int:
@@ -1020,6 +1044,12 @@ def build_parser() -> argparse.ArgumentParser:
     qclear.add_argument("--done-only", action="store_true",
                         help="Keep pending/running jobs, drop finished ones")
     qp.set_defaults(func=cmd_queue)
+
+    tg = sub.add_parser("telegram",
+                        help="Listen for links on Telegram (owner-only) and work the queue")
+    tg.add_argument("--owner-confirmed", action="store_true",
+                    help="Confirm every link you send is your own / licensed content")
+    tg.set_defaults(func=cmd_telegram)
 
     es = sub.add_parser("encode-sample",
                         help="Render one slice with x264 vs hardware encoders to compare quality")

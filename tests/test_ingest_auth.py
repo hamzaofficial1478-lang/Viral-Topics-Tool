@@ -153,3 +153,115 @@ def test_format_chain_gets_looser():
     assert len(chain) >= 3
     assert chain[-1] == "best"                     # always ends with "anything that plays"
     assert len(set(chain)) == len(chain)           # no duplicates
+
+
+def test_with_format_fallback_loosens_then_succeeds():
+    cfg = Config.load()
+    tried: list[str] = []
+
+    def attempt(fmt):
+        tried.append(fmt)
+        if len(tried) < 3:
+            raise I._NoFormat("Requested format is not available")
+        return "downloaded"
+
+    result, fmt, fell_back = I._with_format_fallback(cfg, attempt)
+    assert result == "downloaded" and fell_back is True
+    assert fmt == tried[-1] and tried == I._format_chain(cfg)[:3]
+
+
+def test_with_format_fallback_reports_no_fallback_on_first_hit():
+    cfg = Config.load()
+    result, fmt, fell_back = I._with_format_fallback(cfg, lambda f: f)
+    assert fell_back is False and fmt == I._format_chain(cfg)[0] and result == fmt
+
+
+def test_with_format_fallback_reraises_when_every_format_refused():
+    cfg = Config.load()
+    calls = []
+
+    def attempt(fmt):
+        calls.append(fmt)
+        raise I._NoFormat("Requested format is not available")
+
+    with pytest.raises(I._NoFormat):
+        I._with_format_fallback(cfg, attempt)
+    assert calls == I._format_chain(cfg)           # exhausted the whole chain
+
+
+def test_with_format_fallback_does_not_swallow_other_errors():
+    """A bot wall must reach the auth chain immediately — retrying formats there
+    would just re-hit the wall three more times."""
+    def attempt(fmt):
+        raise I._BotWall("Sign in to confirm you're not a bot")
+
+    with pytest.raises(I._BotWall):
+        I._with_format_fallback(Config.load(), attempt)
+
+
+# --- the Settings "Test" button must agree with the download ----------------- #
+
+class _FakeYDL:
+    """Minimal yt_dlp.YoutubeDL stand-in: refuses every format except `ok_fmt`."""
+    ok_fmt = "best"
+    seen: list[str] = []
+
+    def __init__(self, opts):
+        self.opts = opts
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def extract_info(self, url, download=False, process=True):
+        fmt = self.opts.get("format")
+        type(self).seen.append(fmt)
+        if fmt is not None and fmt != self.ok_fmt:
+            raise Exception("ERROR: [youtube] z0: Requested format is not available")
+        return {"title": "My video", "duration": 610.0,
+                "formats": [{"format_id": "18", "width": 640, "height": 360,
+                             "ext": "mp4", "vcodec": "avc1", "acodec": "mp4a"}]}
+
+
+@pytest.fixture
+def _fake_ytdlp(monkeypatch):
+    _FakeYDL.seen = []
+    monkeypatch.setattr(I, "_require_ytdlp",
+                        lambda: type("M", (), {"YoutubeDL": _FakeYDL}))
+    return _FakeYDL
+
+
+def test_auth_test_retries_looser_formats_like_the_download_does(_fake_ytdlp):
+    """The operator saw '✗ firefox: SIGNED IN OK (no matching video format)' while
+    the download would have succeeded. A ✓ here must mean the download works."""
+    cfg = Config.load()
+    cfg.override("ingest.cookies_from_browser", "firefox")
+    ok, detail = I.test_youtube_auth("https://youtu.be/z0", cfg)
+    assert ok is True
+    assert "✓ firefox browser cookies" in detail
+    assert "My video" in detail
+    assert "looser format" in detail                   # says which one saved it
+    assert _FakeYDL.seen[:2] == I._format_chain(cfg)[:2]   # it really did loosen
+
+
+def test_auth_test_still_fails_loudly_when_nothing_works(_fake_ytdlp, monkeypatch):
+    monkeypatch.setattr(_FakeYDL, "ok_fmt", "no-such-format")
+    cfg = Config.load()
+    ok, detail = I.test_youtube_auth("https://youtu.be/z0", cfg)
+    assert ok is False and detail.startswith("✗")
+    assert "no downloadable format" in detail          # not blamed on auth
+
+
+def test_list_formats_reports_what_youtube_offers(_fake_ytdlp):
+    ok, detail = I.list_formats("https://youtu.be/z0", Config.load())
+    assert ok is True and "1 format(s)" in detail and "640x360" in detail
+    assert _FakeYDL.seen == [None]                     # never selects a format
+
+
+def test_list_formats_flags_an_extractor_break(_fake_ytdlp, monkeypatch):
+    monkeypatch.setattr(_FakeYDL, "extract_info",
+                        lambda self, url, download=False, process=True: {"formats": []})
+    ok, detail = I.list_formats("https://youtu.be/z0", Config.load())
+    assert ok is False and "0 formats" in detail and "Update yt-dlp" in detail

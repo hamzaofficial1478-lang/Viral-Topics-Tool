@@ -164,7 +164,7 @@ def _render_youtube_auth(store: dict) -> None:
     """YouTube auth: browser/cookies picker + Test + Update yt-dlp. Persisted to
     the store and applied to every download."""
     from ..config import Config
-    from ..ingest import test_youtube_auth, update_ytdlp, ytdlp_version
+    from ..ingest import list_formats, test_youtube_auth, update_ytdlp, ytdlp_version
 
     st.divider()
     st.subheader("📺 YouTube authentication")
@@ -204,8 +204,21 @@ def _render_youtube_auth(store: dict) -> None:
         cfg.override("ingest.cookies", cookies_file.strip() or None)
         with st.spinner("Fetching metadata (no download) — trying every strategy…"):
             ok, detail = test_youtube_auth(test_url.strip(), cfg)
-        (st.success if ok else st.error)("Reachable ✓" if ok else "No strategy worked ✗")
+        # The Test walks the same format fallback chain the download does, so a ✓
+        # here means the real download works — not merely that the page loaded.
+        (st.success if ok else st.error)(
+            "This link will download ✓" if ok else "No strategy worked ✗")
         st.code(detail or "(no result)")   # per-strategy: confirms whether your browser cookies work
+
+    if st.button("🧾 List available formats (diagnostic)", disabled=not test_url.strip()):
+        cfg = Config.load()
+        cfg.override("ingest.cookies_from_browser", None if browser == "none" else browser)
+        cfg.override("ingest.cookies", cookies_file.strip() or None)
+        with st.spinner("Asking YouTube what it will serve…"):
+            ok, detail = list_formats(test_url.strip(), cfg)
+        st.code(detail or "(no result)")
+        if not ok:
+            st.warning("Update yt-dlp below, then test again.")
 
     ver = ytdlp_version() or "not installed"
     st.caption(f"yt-dlp version: **{ver}** — extractors break often; keep it current.")

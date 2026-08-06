@@ -170,6 +170,28 @@ def _format_chain(cfg: Config) -> list[str]:
     return out
 
 
+def _with_format_fallback(cfg: Config, attempt):
+    """Run ``attempt(format_selector)`` down `_format_chain`, loosening the
+    selector each time YouTube refuses it.
+
+    The download and the Settings "Test" button must agree about what works, so
+    they both go through here — a Test that doesn't retry reports ✗ for a link
+    the download would have fetched fine.
+
+    Returns ``(result, format_used, fell_back)``. Re-raises the final `_NoFormat`
+    if every selector is refused; any other exception propagates immediately.
+    """
+    formats = _format_chain(cfg)
+    for i, fmt in enumerate(formats):
+        try:
+            return attempt(fmt), fmt, bool(i)
+        except _NoFormat:
+            if i + 1 >= len(formats):
+                raise
+            log.warning("format '%s' not offered for this video; trying a looser one", fmt)
+    raise _NoFormat("no format selectors configured")   # pragma: no cover - chain is never empty
+
+
 def _base_opts(cfg: Config, dl_dir: str) -> dict:
     return {
         "format": cfg.get("ingest.format"),
@@ -286,20 +308,12 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
     for label, overlay in strategies:
         try:
             log.info("download: trying auth strategy '%s'", label)
-            formats = _format_chain(cfg)
-            for fi, fmt in enumerate(formats):
-                try:
-                    info, file_path = _download_with_retries(
-                        url, {**base, **overlay, "format": fmt}, cfg)
-                    if fi:
-                        log.info("download: format '%s' worked (the preferred one wasn't "
-                                 "offered for this video)", fmt)
-                    break
-                except _NoFormat:
-                    if fi + 1 < len(formats):
-                        log.warning("format '%s' not offered; trying a looser one", fmt)
-                        continue
-                    raise
+            (info, file_path), fmt, fell_back = _with_format_fallback(
+                cfg,
+                lambda f: _download_with_retries(url, {**base, **overlay, "format": f}, cfg))
+            if fell_back:
+                log.info("download: format '%s' worked (the preferred one wasn't "
+                         "offered for this video)", fmt)
             log.info("download succeeded via '%s'", label)
             break
         except _BotWall as e:
@@ -373,22 +387,73 @@ def test_youtube_auth(url: str, cfg: Config) -> tuple[bool, str]:
     lines: list[str] = []
     any_ok = False
     for label, overlay in _auth_strategies(cfg):
+
+        def probe(fmt, overlay=overlay):
+            try:
+                with yt_dlp.YoutubeDL({**opts, **overlay, "format": fmt}) as ydl:
+                    return ydl.extract_info(url, download=False)
+            except Exception as e:  # noqa: BLE001 - classify so the chain can react
+                raise _classify(e) from e
+
         try:
-            with yt_dlp.YoutubeDL({**opts, **overlay}) as ydl:
-                info = ydl.extract_info(url, download=False)
+            # Walk the same format chain the download walks, so a ✓ here means
+            # the download will succeed and a ✗ means it genuinely won't.
+            info, fmt, fell_back = _with_format_fallback(cfg, probe)
             title = (info or {}).get("title", "?")
             dur = float((info or {}).get("duration") or 0)
-            lines.append(f"✓ {label}: “{title}” ({dur:.0f}s)")
+            note = f"  [via looser format “{fmt}”]" if fell_back else ""
+            lines.append(f"✓ {label}: “{title}” ({dur:.0f}s){note}")
             any_ok = True
         except Exception as e:  # noqa: BLE001
             c = _classify(e)
             why = ("bot wall" if isinstance(c, _BotWall) else
-                   "SIGNED IN OK (no matching video format — the download will retry "
-                   "looser formats)" if isinstance(c, _NoFormat) else
+                   "signed in OK, but YouTube offered no downloadable format for this "
+                   "video (try Update yt-dlp, or List formats below)"
+                   if isinstance(c, _NoFormat) else
                    "unavailable" if isinstance(c, _Unavailable) else
                    "network" if isinstance(c, _Transient) else "error")
             lines.append(f"✗ {label}: {why} — {_clean_err(e)[:140]}")
     return any_ok, "\n".join(lines)
+
+
+def list_formats(url: str, cfg: Config) -> tuple[bool, str]:
+    """What streams YouTube is actually offering for ``url``, using the first auth
+    strategy that can read it. Diagnostic for "Requested format is not available":
+    an empty/audio-only list means YouTube withheld the video streams from this
+    client, not that the selector is wrong."""
+    try:
+        yt_dlp = _require_ytdlp()
+    except ShortForgeError as e:
+        return False, str(e)
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True,
+            "socket_timeout": int(cfg.get("ingest.socket_timeout", 120) or 120)}
+    last_err: Exception | None = None
+    for label, overlay in _auth_strategies(cfg):
+        try:
+            # No "format" key at all: never selects, so it cannot raise _NoFormat.
+            with yt_dlp.YoutubeDL({**opts, **overlay}) as ydl:
+                info = ydl.extract_info(url, download=False, process=False)
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            continue
+        formats = (info or {}).get("formats") or []
+        if not formats:
+            return False, (f"{label}: read the page but YouTube listed 0 formats. "
+                           f"Update yt-dlp — this is an extractor break, not a settings problem.")
+        rows = [f"via {label} — {len(formats)} format(s):"]
+        for f in formats[-40:]:           # last entries are the highest quality
+            rows.append("  {:>7}  {:>9}  {:<5}  v={:<12} a={}".format(
+                str(f.get("format_id", "?")),
+                f"{f.get('width') or '-'}x{f.get('height') or '-'}",
+                str(f.get("ext", "?")),
+                str(f.get("vcodec", "?"))[:12],
+                str(f.get("acodec", "?"))[:12]))
+        has_video = any((f.get("vcodec") or "none") != "none" for f in formats)
+        if not has_video:
+            rows.append("\n⚠️ Audio-only: YouTube withheld every video stream from this "
+                        "client. Update yt-dlp, then retry.")
+        return True, "\n".join(rows)
+    return False, f"Could not read formats with any auth strategy: {_clean_err(last_err) if last_err else '?'}"
 
 
 def ytdlp_version() -> str | None:

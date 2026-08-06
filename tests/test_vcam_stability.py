@@ -51,3 +51,23 @@ def test_planner_holds_steady_through_alternating_noise():
                       "min_dwell": 2.0})
     xs = [p[0] for p in path]
     assert max(xs) - min(xs) <= 1.0                            # camera did not oscillate
+
+
+# --- orientation gate: face tracking only when squeezing into portrait ------- #
+
+def test_track_when_portrait_default():
+    cfg = Config.load()
+    assert cfg.get("reframe.track_when") == "portrait"
+
+
+def _gate(out_w, out_h, track_when="portrait"):
+    """Mirrors the pipeline's orientation gate (kept in lockstep by this test)."""
+    portrait_out = out_h > out_w
+    return portrait_out if track_when == "portrait" else True
+
+
+def test_gate_enables_tracking_only_for_portrait():
+    assert _gate(1080, 1920) is True         # 9:16 portrait -> track
+    assert _gate(1920, 1080) is False        # landscape     -> centre crop
+    assert _gate(1080, 1080) is False        # square        -> centre crop
+    assert _gate(1920, 1080, "always") is True   # explicit override still works

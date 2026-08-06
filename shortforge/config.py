@@ -96,6 +96,10 @@ DEFAULTS: dict[str, Any] = {
         "min_dwell_s": 2.0,         # min time before honoring a new target
         "snap_threshold_pct": 60,   # displacement over this % => hard cut (else pan smoothly)
         "face_switch_ratio": 1.4,   # a different face must be this much bigger to steal the camera
+        # Face tracking only earns its cost when squeezing landscape -> portrait.
+        # "portrait" = track only for portrait output (landscape/square centre-crop,
+        # no per-frame vision work); "always" = track whenever mode=track.
+        "track_when": "portrait",
         "smoothing": "one_euro",    # documented; planner eases + caps velocity
         "multi_subject": "cut",     # cut (follow speaker) | split | widen
         "punch_in_max_scale": 1.12,

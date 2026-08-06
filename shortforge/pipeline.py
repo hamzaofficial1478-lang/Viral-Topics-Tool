@@ -312,8 +312,18 @@ def run_pipeline(
         log.info("jump cuts on: trimming silences > %.2fs",
                  float(cfg.get("edit.min_silence", 0.8)))
 
-    use_track = mode == "track" and tracking_available()
-    if mode == "track" and not use_track:
+    # Orientation gate: face tracking exists to keep a speaker in frame when a
+    # LANDSCAPE source is squeezed into a PORTRAIT crop. Exporting landscape or
+    # square doesn't need it — skip the per-frame CV pass entirely and centre-crop,
+    # which is both faster and steadier. Override with reframe.track_when.
+    portrait_out = out_h > out_w
+    track_when = str(cfg.get("reframe.track_when", "portrait")).lower()
+    orientation_ok = portrait_out if track_when == "portrait" else True
+    use_track = mode == "track" and orientation_ok and tracking_available()
+    if mode == "track" and not orientation_ok:
+        log.info("reframe: %dx%d output is not portrait — skipping face tracking "
+                 "(centre crop; no per-frame vision work)", out_w, out_h)
+    elif mode == "track" and not use_track:
         log.info("subject tracking unavailable (opencv/model); using center-crop")
     log.info("reframe mode: %s%s", "track" if use_track else "center",
              " + logo" if logo else "")
@@ -529,14 +539,37 @@ def run_pipeline(
         from concurrent.futures import ThreadPoolExecutor
 
         def _run_job(item):
+            """Never raise: one bad clip must not throw away the whole run (every
+            other clip is already fully analysed and rendered by this point)."""
+            clip_id, thunk = item
             timing.activate(_timings)     # per-thread: record ffmpeg into the shared Timings
-            item[1]()
+            try:
+                thunk()
+                return clip_id, None
+            except Exception as e:  # noqa: BLE001
+                return clip_id, e
 
         log.info("rendering %d clip(s) in parallel: %d workers, %s threads/ffmpeg each",
                  len(render_jobs), render_workers, render_threads or "auto")
         with timing.stage("render"):
             with ThreadPoolExecutor(max_workers=render_workers) as ex:
-                list(ex.map(_run_job, render_jobs))   # order preserved; exceptions re-raised
+                results_r = list(ex.map(_run_job, render_jobs))
+
+        failed_ids = {cid for cid, err in results_r if err is not None}
+        for cid, err in results_r:
+            if err is not None:
+                log.error("clip %s failed to render: %s", cid, err)
+        if failed_ids:
+            if len(failed_ids) == len(render_jobs):
+                raise ShortForgeError(
+                    "Every clip failed to render. First error: "
+                    f"{next(e for _, e in results_r if e is not None)}")
+            # Deliver what DID render; drop the failures from the manifest so it
+            # never points at a file that doesn't exist.
+            rendered = [e for e in rendered if e.get("clip_id") not in failed_ids]
+            log.warning("%d of %d clip(s) failed to render — CONTINUING with the %d that "
+                        "succeeded (failed: %s)", len(failed_ids), len(render_jobs),
+                        len(rendered), ", ".join(sorted(failed_ids)))
 
     if not do_meta:
         timing.note("metadata", "off")

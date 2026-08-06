@@ -15,13 +15,25 @@ REM Dashboard in the background + open the browser at it.
 start "ShortForge UI" /min cmd /c "python cli.py ui"
 start "" /b cmd /c "ping -n 6 127.0.0.1 >nul & start http://localhost:8501"
 
-REM Telegram listener in THIS window (restarts itself if it drops).
+REM Listener in THIS window (restarts itself if it drops).
 :loop
 python cli.py telegram --owner-confirmed
 if %ERRORLEVEL% EQU 0 goto :done
+if %ERRORLEVEL% EQU 2 goto :notconfigured
 echo Listener stopped - restarting in 30s. Close this window to stop everything.
 ping -n 31 127.0.0.1 >nul
 goto :loop
+
+:notconfigured
+REM Exit code 2 means nothing is set up yet - retrying forever would just spam.
+echo.
+echo   Notifications are not configured yet, so there is nothing to listen to.
+echo   Open the dashboard (it should already be on http://localhost:8501),
+echo   go to Settings - Notifications, and set up ntfy or Telegram. Then run
+echo   this file again.
+echo.
+pause
+exit /b 2
 
 :done
 echo Stopped.

@@ -84,3 +84,56 @@ def test_job_slug_tags_outputs_readably():
     assert Q.job_slug(a, 1) == "pirates-guilds"              # safe for filenames
     assert Q.job_slug(b, 2) == "link02"                      # falls back to position
     assert len(Q.job_slug({"id": "x", "label": "y" * 99}, 1)) <= 32
+
+
+# --- what the phone sees ----------------------------------------------------- #
+
+def test_describe_settings_reads_like_a_sentence():
+    job = {"settings": {"num_clips": 6, "duration": 90, "aspect": "16:9",
+                        "resolution": "1080p"}}
+    assert Q.describe_settings(job) == "6 clip(s) of 1m30s, 16:9, 1080p"
+    assert Q.describe_settings({"settings": {}}) == "default settings"
+    assert Q.describe_settings({"settings": {"num_clips": 3}}) == "3 clip(s)"
+    assert Q.fmt_duration(60) == "1m00s" and Q.fmt_duration(45) == "45s"
+
+
+def test_each_link_announces_its_start_with_the_numbers(tmp_path, monkeypatch):
+    """After a reboot the operator wants to read WHICH link is running and how
+    many clips it was told to make — not just 'online'."""
+    from shortforge import runner
+
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.add_job(q, "https://youtu.be/AAA", {"num_clips": 6, "duration": 60})
+    Q.save_queue(q, work)
+
+    said = []
+    monkeypatch.setattr(runner, "run_one", lambda *a, **k: (True, 6, "done"))
+    runner.drain_queue(lambda: Config.load(), work, announce=said.append)
+
+    start = said[0]
+    assert "Link 1/1 started" in start
+    assert "6 clip(s) of 1m00s" in start and "https://youtu.be/AAA" in start
+
+
+def test_the_running_link_is_recorded_for_crash_reporting(tmp_path, monkeypatch):
+    """A power cut mid-render must leave enough on disk to name the link."""
+    from shortforge import lifecycle, runner
+
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.add_job(q, "https://youtu.be/BBB", {"num_clips": 2})
+    Q.save_queue(q, work)
+
+    seen = {}
+
+    def _mid_job(*a, **k):
+        seen["state"] = lifecycle.read_state(work)     # what a power cut would leave
+        return True, 2, "done"
+
+    monkeypatch.setattr(runner, "run_one", _mid_job)
+    runner.drain_queue(lambda: Config.load(), work, announce=lambda m: None)
+
+    assert seen["state"]["current"]["url"] == "https://youtu.be/BBB"
+    assert "2 clip(s)" in seen["state"]["current"]["detail"]
+    assert lifecycle.read_state(work)["current"] is None      # cleared when finished

@@ -59,7 +59,8 @@ def _strip_html(text: str) -> str:
     return re.sub(r"<[^>]+>", "", text or "")
 
 
-def send_ntfy(text: str, topic: str | None = None, server: str | None = None) -> tuple[bool, str]:
+def send_ntfy(text: str, topic: str | None = None, server: str | None = None,
+              timeout: int = 20) -> tuple[bool, str]:
     """POST a notification to ntfy.sh. Returns (ok, detail); never raises."""
     topic = topic or _ntfy_topic()
     if not topic:
@@ -71,7 +72,7 @@ def send_ntfy(text: str, topic: str | None = None, server: str | None = None) ->
         req = urllib.request.Request(url, data=body,
                                      headers={"Title": "ShortForge",
                                               "Content-Type": "text/plain; charset=utf-8"})
-        with build_opener().open(req, timeout=20) as r:
+        with build_opener().open(req, timeout=timeout) as r:
             return (200 <= r.status < 300), f"HTTP {r.status}"
     except Exception as e:  # noqa: BLE001
         return False, f"{type(e).__name__}: {str(e)[:200]}"
@@ -84,7 +85,7 @@ def test_ntfy(topic: str, server: str = "https://ntfy.sh") -> tuple[bool, str]:
             if ok else f"Failed: {detail}")
 
 
-def send(text: str, *, silent: bool = False) -> tuple[bool, str]:
+def send(text: str, *, silent: bool = False, timeout: int = 20) -> tuple[bool, str]:
     """Send a Telegram message. Returns (ok, detail); never raises."""
     token, chat = _creds()
     if not token or not chat:
@@ -96,7 +97,7 @@ def send(text: str, *, silent: bool = False) -> tuple[bool, str]:
         }).encode()
         req = urllib.request.Request(_API.format(token=token, method="sendMessage"), data=data)
         from .netdiag import build_opener
-        with build_opener().open(req, timeout=20) as r:
+        with build_opener().open(req, timeout=timeout) as r:
             body = json.loads(r.read().decode("utf-8", "replace"))
         if body.get("ok"):
             return True, "sent"
@@ -105,25 +106,85 @@ def send(text: str, *, silent: bool = False) -> tuple[bool, str]:
         return False, str(e)[:200]
 
 
-def notify(text: str) -> None:
+def notify(text: str, *, timeout: int = 20) -> bool:
     """Fire-and-forget notification over every configured channel.
 
     Telegram first (richer), ntfy as a fallback that still works where Telegram
-    is IP-blocked. A failure on either never interrupts a render.
+    is IP-blocked. A failure on either never interrupts a render. Returns whether
+    at least one channel took it — callers that care (the shutdown notice) can
+    log the difference, but none of them may raise.
+
+    ``timeout`` is short on the shutdown path: Windows gives a closing console
+    about five seconds before it kills the process.
     """
     token, chat = _creds()
     delivered = False
     if token and chat:
-        ok, detail = send(text)
+        ok, detail = send(text, timeout=timeout)
         delivered = delivered or ok
         if not ok:
             log.warning("telegram notify failed: %s", detail)
     if _ntfy_topic():
-        ok, detail = send_ntfy(text)
+        ok, detail = send_ntfy(text, timeout=timeout)
         delivered = delivered or ok
         if not ok:
             log.warning("ntfy notify failed: %s", detail)
-    return None
+    return delivered
+
+
+# --- network outages -------------------------------------------------------- #
+
+class OutageWatch:
+    """Notice when the machine loses its connection, and say so when it returns.
+
+    Deliberate honesty about what is possible: while the network is down, an
+    alert cannot be delivered — that is the definition of the problem. So the
+    outage is *attempted* immediately (if only Telegram is blocked, ntfy still
+    gets through, which is the common case here) and *reported for certain* on
+    recovery, with how long the gap was.
+
+    A single dropped poll is normal on any connection, so an outage is only
+    declared after ``threshold`` consecutive failures.
+    """
+
+    def __init__(self, what: str = "the network", threshold: int = 3, notify_fn=None):
+        self.what = what
+        self.threshold = max(1, threshold)
+        self._notify = notify_fn or notify
+        self._fails = 0
+        self._down_since: float | None = None
+
+    @property
+    def down(self) -> bool:
+        return self._down_since is not None
+
+    def record(self, ok: bool, detail: str = "") -> str | None:
+        """Feed one poll result. Returns the message sent, or None."""
+        import time
+        if ok:
+            if self._down_since is None:
+                self._fails = 0
+                return None
+            mins = max(1, int((time.time() - self._down_since) // 60))
+            self._down_since = None
+            self._fails = 0
+            msg = (f"🌐 <b>Back online</b> — {self.what} was unreachable for about "
+                   f"{mins} min. Nothing was lost; the queue kept its place.")
+            self._notify(msg)
+            log.info("network recovered after ~%d min", mins)
+            return msg
+
+        self._fails += 1
+        if self._down_since is not None or self._fails < self.threshold:
+            return None
+        self._down_since = time.time()
+        msg = (f"⚠️ <b>Network problem</b> — can't reach {self.what} "
+               f"({self._fails} tries failed).\n"
+               f"{detail[:200]}\n"
+               f"Rendering carries on; phone commands resume when the connection does.")
+        self._notify(msg)          # may itself fail — that is exactly the situation
+        log.warning("network: %s unreachable after %d attempts", self.what, self._fails)
+        return msg
 
 
 def reachable() -> tuple[bool, str]:

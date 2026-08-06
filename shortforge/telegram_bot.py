@@ -48,17 +48,64 @@ _ALIASES = {
 }
 
 _ASPECTS = {"9:16", "16:9", "1:1", "4:5", "portrait", "landscape", "square"}
-_ASPECT_WORDS = {"portrait": "9:16", "landscape": "16:9", "square": "1:1"}
+_ASPECT_WORDS = {"portrait": "9:16", "vertical": "9:16",
+                 "landscape": "16:9", "horizontal": "16:9", "square": "1:1"}
 _RESOLUTIONS = {"1080p", "720p", "480p", "360p"}
+
+# Bounds. Refusing an absurd value beats clamping it into something the operator
+# did not ask for — they'd never know the number changed.
+_BOUNDS = {"num_clips": (1, 50), "duration": (5, 1800), "tolerance": (1, 120)}
+
+_UNIT_SECONDS = {"h": 3600, "hr": 3600, "hrs": 3600, "hour": 3600, "hours": 3600,
+                 "m": 60, "min": 60, "mins": 60, "minute": 60, "minutes": 60,
+                 "s": 1, "sec": 1, "secs": 1, "second": 1, "seconds": 1}
+_DUR_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(h|hrs?|hours?|m|mins?|minutes?|s|secs?|seconds?)\b",
+                     re.I)
+_MMSS_RE = re.compile(r"\b(\d{1,2}):([0-5]\d)\b")
+_CLIPS_RE = re.compile(r"\b(\d{1,3})\s*(?:x\s*)?(?:clips?|shorts?|videos?)\b", re.I)
+_ASPECT_RE = re.compile(r"\b(9:16|16:9|1:1|4:5|portrait|landscape|square|vertical|horizontal)\b",
+                        re.I)
+_RES_RE = re.compile(r"\b(1080p|720p|480p|360p)\b", re.I)
+
+
+def _bounded(key: str, value) -> int | None:
+    lo, hi = _BOUNDS[key]
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if lo <= n <= hi else None
+
+
+def _parse_duration(val: str) -> int | None:
+    """Seconds from '120', '2min', '90s', '1:30' — people write all four."""
+    v = (val or "").strip().lower()
+    m = _MMSS_RE.fullmatch(v)
+    if m:
+        return int(m.group(1)) * 60 + int(m.group(2))
+    m = _DUR_RE.fullmatch(v)
+    if m:
+        return int(round(float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()]))
+    try:
+        return int(float(v))
+    except ValueError:
+        return None
 
 HELP = (
     "<b>ShortForge</b> — send me links, I'll cut the shorts.\n\n"
-    "<b>Add links</b> (settings are optional, and apply to the links in that message):\n"
-    "<code>https://youtu.be/AAA clips=5 duration=120 res=720p</code>\n"
+    "<b>Add links.</b> Write it however you like — these all work:\n"
+    "<code>https://youtu.be/AAA 5 clips of 2 min landscape</code>\n"
     "<code>https://youtu.be/BBB clips=6 duration=60 aspect=9:16 label=podcast</code>\n"
-    "You can paste several links in one message.\n\n"
-    "<b>Settings:</b> clips, duration (seconds), aspect (9:16 / 16:9 / 1:1 / portrait / "
-    "landscape / square), res (1080p / 720p / 480p), lang, template, label\n\n"
+    "<code>https://youtu.be/CCC 3 shorts 1:30 1080p</code>\n"
+    "Settings apply to every link in that message, so send one message per "
+    "setting group.\n\n"
+    "<b>Settings:</b>\n"
+    "• clips — how many (1–50)\n"
+    "• duration — <code>120</code>, <code>2min</code>, <code>90s</code> or "
+    "<code>1:30</code> (5s–30min)\n"
+    "• orientation — landscape (16:9), portrait (9:16), square, 4:5\n"
+    "• res — 1080p / 720p / 480p\n"
+    "• lang, template, label\n\n"
     "<b>Commands:</b>\n"
     "/status — how the queue is doing\n"
     "/list — the queued links\n"
@@ -91,8 +138,12 @@ def _reply(token: str, chat_id: str, text: str) -> None:
 # --- parsing (pure, unit-tested) -------------------------------------------- #
 
 def parse_settings(text: str) -> dict:
-    """Extract whitelisted key=value settings. Unknown keys and out-of-range
-    values are dropped rather than trusted."""
+    """Extract whitelisted settings. Unknown keys and out-of-range values are
+    dropped rather than trusted.
+
+    Two passes: exact ``key=value`` first, then a tolerant pass over what's left
+    for the way the operator actually types — "5 clips of 2 min, landscape".
+    """
     out: dict = {}
     for raw_key, raw_val in _KV_RE.findall(text):
         key = _ALIASES.get(raw_key.strip().lower())
@@ -100,18 +151,10 @@ def parse_settings(text: str) -> dict:
             continue
         val = raw_val.strip().strip(",;")
         if key in ("num_clips", "duration", "tolerance"):
-            try:
-                n = int(val)
-            except ValueError:
-                continue
-            # Bounded: refuse absurd values that would wedge the machine.
-            if key == "num_clips" and not (0 < n <= 50):
-                continue
-            if key == "duration" and not (5 <= n <= 1800):
-                continue
-            if key == "tolerance" and not (1 <= n <= 120):
-                continue
-            out[key] = n
+            n = _parse_duration(val) if key == "duration" else val
+            n = _bounded(key, n)
+            if n is not None:
+                out[key] = n
         elif key == "aspect":
             v = val.lower()
             v = _ASPECT_WORDS.get(v, v)
@@ -129,7 +172,51 @@ def parse_settings(text: str) -> dict:
                 out[key] = val.lower()
         elif key == "_label":
             out[key] = re.sub(r"[^A-Za-z0-9 _-]", "", val)[:32]
+    _parse_loose(text, out)
     return out
+
+
+def _parse_loose(text: str, out: dict) -> None:
+    """Fill in anything not given as key=value, from plain phrasing.
+
+    Only ever *adds* — an explicit ``duration=90`` always wins. URLs and the
+    key=value pairs are stripped first so no number is ever read out of a link.
+    """
+    t = _KV_RE.sub(" ", _URL_RE.sub(" ", text or ""))
+
+    # Aspect first, and consumed: "9:16" would otherwise read as 9 min 16 s.
+    m = _ASPECT_RE.search(t)
+    if m:
+        if "aspect" not in out:
+            v = m.group(1).lower()
+            out["aspect"] = _ASPECT_WORDS.get(v, v)
+        t = t[:m.start()] + " " + t[m.end():]
+    t = _ASPECT_RE.sub(" ", t)
+
+    m = _RES_RE.search(t)
+    if m:
+        out.setdefault("resolution", m.group(1).lower())
+        t = t[:m.start()] + " " + t[m.end():]
+
+    # Clips before duration, and consumed, so "5 clips of 2 min" doesn't read the
+    # 5 as five seconds.
+    m = _CLIPS_RE.search(t)
+    if m:
+        n = _bounded("num_clips", m.group(1))
+        if n is not None and "num_clips" not in out:
+            out["num_clips"] = n
+        t = t[:m.start()] + " " + t[m.end():]
+
+    if "duration" not in out:
+        m = _MMSS_RE.search(t)
+        secs = (int(m.group(1)) * 60 + int(m.group(2))) if m else None
+        if secs is None:
+            m = _DUR_RE.search(t)
+            if m:
+                secs = int(round(float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()]))
+        n = _bounded("duration", secs) if secs is not None else None
+        if n is not None:
+            out["duration"] = n
 
 
 def parse_links(text: str) -> list[str]:
@@ -216,24 +303,35 @@ def handle_text(text: str, work_dir: str) -> str:
         Q.add_job(q, url, settings, label=label)
     Q.save_queue(q, work_dir)
 
-    detail = ", ".join(f"{k}={v}" for k, v in settings.items()) or "default settings"
-    return (f"➕ Queued <b>{len(links)}</b> link(s) with {detail}.\n"
-            f"⏳ {Q.counts(q)[Q.PENDING]} pending — I'll start working and message you "
-            f"as each one finishes.")
+    # Echo back what was UNDERSTOOD, not what was typed — that is how a
+    # misread "2 min" gets caught before an hour of rendering.
+    detail = Q.describe_settings({"settings": settings})
+    return (f"➕ Queued <b>{len(links)}</b> link(s): {detail}.\n"
+            f"⏳ {Q.counts(q)[Q.PENDING]} pending — I'll message you when each one "
+            f"starts and finishes.")
 
 
 # --- polling loop ----------------------------------------------------------- #
 
 def poll_once(token: str, owner_chat: str, offset: int, work_dir: str,
-              timeout: int = 30) -> int:
-    """One long-poll. Returns the next offset. Non-owner updates are dropped."""
+              timeout: int = 30, on_result=None) -> int:
+    """One long-poll. Returns the next offset. Non-owner updates are dropped.
+
+    ``on_result(ok, detail)`` (optional) is told whether the poll reached Telegram
+    at all, so the caller can notice an outage — the poll itself swallows network
+    errors by design, which would otherwise hide a dead connection completely.
+    """
     try:
         body = _call(token, "getUpdates",
                      {"offset": offset, "timeout": timeout,
                       "allowed_updates": json.dumps(["message"])},
                      timeout=timeout + 15)
+        if on_result:
+            on_result(True, "")
     except Exception as e:  # noqa: BLE001 - network blips must not kill the listener
         log.debug("telegram poll error: %s", e)
+        if on_result:
+            on_result(False, f"{type(e).__name__}: {str(e)[:150]}")
         time.sleep(5)
         return offset
 

@@ -40,11 +40,12 @@ def configured() -> bool:
 
 
 def poll_once(topic: str, server: str, since: str | int, token: str | None = None,
-              work_dir: str = ".shortforge") -> tuple[str | int, int]:
+              work_dir: str = ".shortforge", on_result=None) -> tuple[str | int, int]:
     """Fetch messages published since ``since`` and act on them.
 
     Returns (new_since, handled_count). Never raises — a network blip just means
-    we try again on the next tick.
+    we try again on the next tick. ``on_result(ok, detail)`` (optional) reports
+    whether the server was reachable, so an outage isn't silently swallowed.
     """
     from .netdiag import build_opener
     from .notify import send_ntfy
@@ -56,8 +57,12 @@ def poll_once(topic: str, server: str, since: str | int, token: str | None = Non
     try:
         with build_opener().open(req, timeout=30) as r:
             raw = r.read().decode("utf-8", "replace")
+        if on_result:
+            on_result(True, "")
     except Exception as e:  # noqa: BLE001
         log.debug("ntfy poll error: %s", e)
+        if on_result:
+            on_result(False, f"{type(e).__name__}: {str(e)[:150]}")
         time.sleep(5)
         return since, 0
 
@@ -89,14 +94,20 @@ def poll_once(topic: str, server: str, since: str | int, token: str | None = Non
 
 def listen(work_dir: str = ".shortforge", stop=None, interval: int = 5) -> None:
     """Poll the command topic until ``stop()`` returns True."""
+    from .notify import OutageWatch
+
     topic, server, token = _creds()
     if not topic:
         log.warning("ntfy commands not configured (Settings → Notifications → command topic)")
         return
     since = int(time.time())          # ignore anything sent before we started
+    # A dropped connection here is the operator's own internet: worth reporting,
+    # but only after a few consecutive misses (one blip is normal).
+    watch = OutageWatch("ntfy", threshold=4)
     log.info("ntfy: listening for commands on '%s'", topic[:6] + "…")
     while not (stop and stop()):
-        since, n = poll_once(topic, server, since, token, work_dir)
+        since, n = poll_once(topic, server, since, token, work_dir,
+                             on_result=watch.record)
         if n:
             log.info("ntfy: handled %d command(s)", n)
         time.sleep(interval)

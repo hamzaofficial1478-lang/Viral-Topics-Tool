@@ -145,6 +145,37 @@ def job_slug(job: dict, index: int | None = None) -> str:
     return (base or f"job{job['id']}")[:32]
 
 
+def fmt_duration(seconds) -> str:
+    """'90' -> '1m30s'. Phone notifications read better in minutes."""
+    try:
+        s = int(float(seconds))
+    except (TypeError, ValueError):
+        return str(seconds)
+    return f"{s // 60}m{s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+def describe_settings(job: dict) -> str:
+    """Plain-English 'what this link will produce' — used in the phone message
+    sent when a link STARTS, so the operator knows the numbers were understood."""
+    s = job.get("settings", {}) or {}
+    bits: list[str] = []
+    n, d = s.get("num_clips"), s.get("duration")
+    if n and d:
+        bits.append(f"{n} clip(s) of {fmt_duration(d)}")
+    elif n:
+        bits.append(f"{n} clip(s)")
+    elif d:
+        bits.append(f"clips of {fmt_duration(d)}")
+    for key in ("aspect", "resolution"):
+        if s.get(key):
+            bits.append(str(s[key]))
+    if s.get("language"):
+        bits.append(f"→ {s['language']}")
+    if s.get("caption_template"):
+        bits.append(f"{s['caption_template']} captions")
+    return ", ".join(bits) or "default settings"
+
+
 def apply_job_settings(cfg, job: dict) -> None:
     """Overlay this job's own settings onto a fresh Config (per-link settings)."""
     for key, dotted in JOB_SETTINGS.items():

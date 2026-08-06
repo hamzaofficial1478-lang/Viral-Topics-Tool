@@ -402,6 +402,10 @@ def cmd_queue(args: argparse.Namespace) -> int:
         return 0
 
     # --- run ---------------------------------------------------------------- #
+    from shortforge import lifecycle
+    prev = lifecycle.mark_online(work_dir, mode="queue")
+    lifecycle.install_exit_notice(work_dir)      # say goodbye however we're closed
+
     resumed = Q.requeue_interrupted(q)
     if resumed:
         log.info("resuming: %d job(s) were interrupted and are back in the queue", resumed)
@@ -409,9 +413,13 @@ def cmd_queue(args: argparse.Namespace) -> int:
 
     if not Q.next_pending(q):
         print("Nothing pending. " + Q.describe(q))
+        lifecycle.clear_state(work_dir)
         return 0
 
-    started_msg = (f"▶️ <b>ShortForge started</b>\n{Q.describe(q)}"
+    hard_stop = lifecycle.interrupted_note(prev)
+    started_msg = ("▶️ <b>ShortForge started</b>\n"
+                   + (hard_stop + "\n" if hard_stop else "")
+                   + Q.describe(q)
                    + (f"\nResumed {resumed} interrupted job(s)." if resumed else ""))
     N.notify(started_msg)
 
@@ -424,6 +432,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
         n = Q.requeue_interrupted(q)         # the running job goes back in the queue
         Q.save_queue(q, work_dir)
         log.warning("interrupted — %d job(s) stay queued and resume on the next run", n)
+        lifecycle.announce_offline(work_dir, "stopped with Ctrl+C")
         return 130
 
     summary = (f"🏁 <b>All links processed</b>\n"
@@ -433,7 +442,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
     log.info("queue finished: %s", Q.describe(Q.load_queue(work_dir)))
     N.notify(summary)
     print(Q.describe(Q.load_queue(work_dir)))
-    return 0 if s["failed"] == 0 else 1
+    return 0 if s["failed"] == 0 else 1      # the atexit hook sends the goodbye
 
 
 def cmd_telegram(args: argparse.Namespace) -> int:
@@ -458,8 +467,12 @@ def cmd_telegram(args: argparse.Namespace) -> int:
                   "either Telegram (bot token + chat id) or an ntfy COMMAND topic.")
         return 2
 
+    from shortforge import lifecycle
+
     cfg0 = Config.load(args.config)
     work_dir = cfg0.get("paths.work_dir", ".shortforge")
+    prev = lifecycle.mark_online(work_dir, mode="telegram")
+    lifecycle.install_exit_notice(work_dir)
     q = Q.load_queue(work_dir)
     resumed = Q.requeue_interrupted(q)
     Q.save_queue(q, work_dir)
@@ -488,20 +501,33 @@ def cmd_telegram(args: argparse.Namespace) -> int:
         threading.Thread(target=NB.listen, args=(work_dir,),
                          kwargs={"stop": stop.is_set}, daemon=True).start()
 
-    N.notify("🤖 <b>ShortForge is online</b> and listening.\n"
-             + (f"Resumed {resumed} interrupted job(s).\n" if resumed else "")
-             + "Send me a link, or /help.")
+    # What the operator wants to read at 8am after a reboot: that it woke up, and
+    # exactly which link it is on with which numbers.
+    q = Q.load_queue(work_dir)
+    pending = Q.counts(q)[Q.PENDING]
+    nxt = Q.next_pending(q)
+    hard_stop = lifecycle.interrupted_note(prev)
+    N.notify("🟢 <b>ShortForge is awake</b> and listening.\n"
+             + (hard_stop + "\n" if hard_stop else "")
+             + (f"Resumed {resumed} interrupted link(s).\n" if resumed else "")
+             + (f"⏳ {pending} link(s) queued.\n"
+                f"▶️ Next: {nxt['url'][:70]} — {Q.describe_settings(nxt)}"
+                if nxt else "Nothing queued — send me a link, or /help."))
     log.info("listening for commands. Ctrl+C to stop.")
+
+    watch = N.OutageWatch("Telegram", threshold=4)
     offset = 0
     try:
         while True:
             if token and chat:
-                offset = TB.poll_once(token, chat, offset, work_dir)
+                offset = TB.poll_once(token, chat, offset, work_dir,
+                                      on_result=watch.record)
             else:
                 stop.wait(5)          # ntfy-only mode: its own thread does the polling
     except KeyboardInterrupt:
         log.info("telegram: stopping…")
         stop.set()
+        lifecycle.announce_offline(work_dir, "stopped with Ctrl+C")
         return 0
 
 

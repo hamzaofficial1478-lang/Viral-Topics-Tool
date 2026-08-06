@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 from typing import Callable
 
+from . import lifecycle
 from . import notify as N
 from . import queue as Q
 from .config import Config
@@ -104,8 +105,18 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
         Q.mark(q, job["id"], Q.RUNNING)
         Q.save_queue(q, work_dir)
         log.info("=== queue %d/%d [%s] %s ===", idx, total, job["id"], job["url"])
+
+        # Record the link in flight BEFORE starting: if the power goes out mid-job
+        # the next startup can name what it was doing instead of guessing.
+        detail = Q.describe_settings(job)
+        lifecycle.heartbeat(work_dir, current={"url": job["url"], "detail": detail,
+                                               "index": idx, "total": total})
+        # Announce the start too — "it's alive and this is what it understood".
+        announce(f"🎬 <b>Link {idx}/{total} started</b> — making {detail}\n{job['url'][:80]}")
+
         ok, n, msg = run_one(job, idx, total, make_cfg, work_dir)
         made += n
+        lifecycle.heartbeat(work_dir, current=None)
         announce(msg)
 
     q = Q.load_queue(work_dir)

@@ -159,6 +159,55 @@ def _render_telegram(store: dict) -> None:
         ok, detail = test_ntfy(topic.strip(), server.strip() or "https://ntfy.sh")
         (st.success if ok else st.error)(detail)
 
+    _render_notification_reference()
+
+
+def _render_notification_reference() -> None:
+    """Exactly which messages arrive, and what to send back. Both were asked for
+    directly: 'which notifications i will get on ntfy?' and 'make it so i can add
+    links with details from ntfy'."""
+    from ..config import Config
+    from ..lifecycle import read_state
+
+    with st.expander("What you'll be messaged, and what you can send back", expanded=False):
+        st.markdown(
+            "**You get a message when:**\n"
+            "- 🟢 ShortForge starts (says how many links are queued and which is next)\n"
+            "- ⚡ it restarts after a power cut (names the link it was interrupted on)\n"
+            "- 🎬 each link **starts** — with the numbers it understood "
+            "(*“making 6 clip(s) of 1m00s, 16:9”*)\n"
+            "- ✅ each link **finishes** — clip count and how long it took\n"
+            "- ⚠️ a link **fails** — plain-language cause, and whether it self-healed\n"
+            "- 🌐 the **connection drops** and again when it comes back\n"
+            "- 🏁 the whole batch is **done**\n"
+            "- 🔴 ShortForge **stops** — Ctrl+C, closing the window, or PC shutdown\n\n"
+            "**You can send** (to the *command* topic, or to the Telegram bot):\n"
+            "```\n"
+            "https://youtu.be/AAA 5 clips of 2 min landscape\n"
+            "https://youtu.be/BBB clips=6 duration=90s aspect=9:16 label=podcast\n"
+            "```\n"
+            "Settings apply to every link in that message — send one message per "
+            "group. Duration accepts `120`, `2min`, `90s` or `1:30`.\n\n"
+            "`/status` · `/list` · `/pause` · `/resume` · `/clear` · `/cancel` · `/help`")
+
+    work_dir = Config.load().get("paths.work_dir", ".shortforge")
+    state = read_state(work_dir)
+    if state:
+        import time as _t
+        ago = int(max(0, _t.time() - float(state.get("last_seen") or 0)))
+        cur = (state.get("current") or {}).get("url", "")
+        if ago < 120:
+            st.success(f"🟢 A worker is running right now ({state.get('mode', '?')} mode)"
+                       + (f" — on {cur[:60]}" if cur else ""))
+        else:
+            # Not "offline": this file is exactly what a power cut leaves behind.
+            st.warning(f"⚠️ A worker registered {ago // 60} min ago and hasn't checked in. "
+                       f"If you didn't close it, it was killed — starting it again resumes "
+                       f"the queue.")
+    else:
+        st.info("⚪ No worker is running. Start one with `start_all.bat` "
+                "(or `python cli.py queue run --owner-confirmed`).")
+
 
 def _render_youtube_auth(store: dict) -> None:
     """YouTube auth: browser/cookies picker + Test + Update yt-dlp. Persisted to

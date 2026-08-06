@@ -87,9 +87,21 @@ echo.
 echo [ok] %NAME% will now start automatically when you log in.
 echo      Created: "%LINK%"
 echo.
-echo  Test it right now without rebooting - just double-click:
-echo      "%TARGET%"
 echo  Turn it off later: run this file again and choose 3.
+echo.
+REM Start it NOW as well, so autostart is proven today rather than at next boot -
+REM the operator previously rebooted and found nothing had started.
+set "STARTNOW="
+set /p STARTNOW=Start it now too, to check it works? (Y/N):
+if /i "%STARTNOW%"=="Y" (
+  echo   Launching "%TARGET%" in a new window...
+  start "ShortForge" cmd /c "%TARGET%"
+  echo.
+  echo   A new window opened. If notifications are set up you should get a
+  echo   "ShortForge is awake" message on your phone within a few seconds.
+  echo   You should also get a "ShortForge stopped" message when you close it -
+  echo   that is how you can always tell whether it is really running.
+)
 goto :done
 
 :remove

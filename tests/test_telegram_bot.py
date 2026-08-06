@@ -72,6 +72,52 @@ def test_parse_settings_whitelist_and_bounds():
     assert "duration" not in TB.parse_settings("duration=abc")
 
 
+# --- the way the operator actually types ------------------------------------ #
+
+def test_plain_english_from_the_phone():
+    """'5 clips of 2 min from link 1' is how the operator writes it — nobody
+    types duration=120 on a phone keyboard."""
+    s = TB.parse_settings("https://youtu.be/AAA 5 clips of 2 min landscape")
+    assert s == {"num_clips": 5, "duration": 120, "aspect": "16:9"}
+
+
+def test_duration_units_and_mmss():
+    assert TB.parse_settings("dur=2min")["duration"] == 120
+    assert TB.parse_settings("duration=90s")["duration"] == 90
+    assert TB.parse_settings("duration=1:30")["duration"] == 90
+    assert TB.parse_settings("https://a/1 3 shorts 1:30 1080p") == {
+        "num_clips": 3, "duration": 90, "resolution": "1080p"}
+
+
+def test_aspect_is_read_before_duration():
+    """'9:16' must be an aspect ratio, not nine minutes sixteen seconds."""
+    s = TB.parse_settings("https://a/1 9:16 4 clips")
+    assert s["aspect"] == "9:16" and "duration" not in s
+    assert TB.parse_settings("https://a/1 16:9 2 clips")["aspect"] == "16:9"
+
+
+def test_explicit_key_value_always_wins_over_loose_phrasing():
+    s = TB.parse_settings("https://a/1 duration=45 make it 5 min long, 2 clips")
+    assert s["duration"] == 45 and s["num_clips"] == 2
+
+
+def test_numbers_are_never_read_out_of_a_link():
+    """A URL full of digits must not become the clip count or duration."""
+    assert TB.parse_settings("https://youtu.be/9x16clips8m") == {}
+    assert TB.parse_settings("https://a/b?t=120s&n=9%20clips") == {}
+
+
+def test_loose_values_are_bounded_like_explicit_ones():
+    assert "num_clips" not in TB.parse_settings("https://a/1 900 clips")
+    assert "duration" not in TB.parse_settings("https://a/1 5 hours")   # over 30 min
+
+
+def test_the_reply_echoes_what_was_understood(tmp_path):
+    """A misread '2 min' has to be visible before an hour of rendering."""
+    reply = TB.handle_text("https://youtu.be/AAA 6 clips of 90s portrait", str(tmp_path))
+    assert "6 clip(s) of 1m30s" in reply and "9:16" in reply
+
+
 def test_parse_links_http_only_deduped_and_capped():
     assert TB.parse_links("no links here") == []
     assert TB.parse_links("file:///etc/passwd ftp://x/y") == []      # http(s) only

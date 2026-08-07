@@ -10,6 +10,13 @@ ingest:
   format: "bv*[height<=1080]+ba/b[height<=1080]/b"
   # Path to a cookies.txt for private/unlisted videos (M1 auth). Optional.
   cookies: null
+  # yt-dlp player client(s) to query (comma-separated). The "default" (web)
+  # client is the one most restricted by YouTube's PO-token check — it can
+  # report a signed-in success and still withhold every format above ~360p.
+  # Adding "tv" queries a client that isn't gated the same way and merges its
+  # formats into the same request, so this is usually the fix for "signed in
+  # OK but no usable high-res format" without touching cookies at all.
+  player_client: "default,tv"
 
 transcribe:
   # 'base' garbles hard sources; 'small' is the sane CPU default. 'medium'/'large-v3'

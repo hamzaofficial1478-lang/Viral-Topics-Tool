@@ -21,6 +21,12 @@ DEFAULTS: dict[str, Any] = {
         "format": "bv*[height<=1080]+ba/b[height<=1080]/b",
         "cookies": None,                 # path to a cookies.txt (Netscape format)
         "cookies_from_browser": None,    # firefox | chrome | edge | brave (read the browser's cookies)
+        # yt-dlp player client(s) to query (comma-separated). "default" (the
+        # "web" client) alone is the most PO-token-gated — it can be signed in
+        # fine and still only offer ~360p. "tv" isn't gated the same way and
+        # its formats get merged into the same response, so this alone often
+        # fixes "signed in OK but no usable high-res format".
+        "player_client": "default,tv",
         "socket_timeout": 120,           # per-read timeout (s); 20 was too short on slow links
         "retries": 4,                    # network retries per auth strategy (exponential backoff)
     },

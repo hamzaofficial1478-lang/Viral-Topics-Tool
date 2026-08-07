@@ -155,6 +155,34 @@ def test_format_chain_gets_looser():
     assert len(set(chain)) == len(chain)           # no duplicates
 
 
+def test_extractor_args_default_queries_web_and_tv():
+    """The 'web' client alone is the one YouTube PO-token-gates down to ~360p;
+    'tv' isn't gated the same way, so it must be queried by default too."""
+    args = I._extractor_args(Config.load())
+    assert args == {"youtube": {"player_client": ["default", "tv"]}}
+
+
+def test_extractor_args_is_configurable():
+    cfg = Config.load()
+    cfg.override("ingest.player_client", "default, android , tv")
+    assert I._extractor_args(cfg) == {"youtube": {"player_client": ["default", "android", "tv"]}}
+
+
+def test_extractor_args_blank_config_falls_back_to_the_safe_default():
+    """Same convention as ingest.format: a blank override means "unset", not
+    "query nothing" — an accidentally-cleared field must not silently regress
+    to the PO-token-gated single-client behavior."""
+    cfg = Config.load()
+    cfg.override("ingest.player_client", "")
+    assert I._extractor_args(cfg) == {"youtube": {"player_client": ["default", "tv"]}}
+
+
+def test_base_opts_carries_extractor_args():
+    cfg = Config.load()
+    opts = I._base_opts(cfg, "/tmp/dl")
+    assert opts["extractor_args"] == I._extractor_args(cfg)
+
+
 def test_with_format_fallback_loosens_then_succeeds():
     cfg = Config.load()
     tried: list[str] = []
@@ -205,9 +233,11 @@ class _FakeYDL:
     """Minimal yt_dlp.YoutubeDL stand-in: refuses every format except `ok_fmt`."""
     ok_fmt = "best"
     seen: list[str] = []
+    opts_seen: list[dict] = []
 
     def __init__(self, opts):
         self.opts = opts
+        type(self).opts_seen.append(opts)
 
     def __enter__(self):
         return self
@@ -228,6 +258,7 @@ class _FakeYDL:
 @pytest.fixture
 def _fake_ytdlp(monkeypatch):
     _FakeYDL.seen = []
+    _FakeYDL.opts_seen = []
     monkeypatch.setattr(I, "_require_ytdlp",
                         lambda: type("M", (), {"YoutubeDL": _FakeYDL}))
     return _FakeYDL
@@ -265,3 +296,21 @@ def test_list_formats_flags_an_extractor_break(_fake_ytdlp, monkeypatch):
                         lambda self, url, download=False, process=True: {"formats": []})
     ok, detail = I.list_formats("https://youtu.be/z0", Config.load())
     assert ok is False and "0 formats" in detail and "Update yt-dlp" in detail
+
+
+def test_list_formats_flags_po_token_gating_when_capped_below_480p(_fake_ytdlp):
+    """The exact symptom reported: signed in fine, formats exist, but nothing
+    above 360p — that's the client being gated, not the selector being wrong."""
+    ok, detail = I.list_formats("https://youtu.be/z0", Config.load())
+    assert ok is True
+    assert "PO-token-gated" in detail
+    assert "360p" in detail
+
+
+def test_probe_calls_carry_the_same_extractor_args_as_downloads(_fake_ytdlp):
+    cfg = Config.load()
+    I.test_youtube_auth("https://youtu.be/z0", cfg)
+    I.list_formats("https://youtu.be/z0", cfg)
+    assert _FakeYDL.opts_seen                      # the fake was actually exercised
+    for opts in _FakeYDL.opts_seen:
+        assert opts["extractor_args"] == I._extractor_args(cfg)

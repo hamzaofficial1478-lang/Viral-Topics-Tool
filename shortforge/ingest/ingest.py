@@ -12,6 +12,10 @@ Link ingestion reliability (the operator only ever uses links):
   * cookie auth — a cookies.txt file and/or the browser's own cookies
     (``--cookies-from-browser``), tried as a fallback chain so a bot-detection
     wall is worked around automatically;
+  * multiple yt-dlp player clients queried per request (default: web + tv) so
+    a PO-token-gated client that silently caps out at ~360p doesn't win —
+    "signed in fine, no usable high-res format" is a client problem, not an
+    auth problem, and cookies alone don't fix it;
   * a *friendly* message on YouTube's "confirm you're not a bot" wall that
     points at Settings → YouTube authentication (never the raw yt-dlp error);
   * a configurable read timeout (default 120s), resumable partial downloads,
@@ -157,6 +161,19 @@ def _auth_strategies(cfg: Config) -> list[tuple[str, dict]]:
     return chain
 
 
+# The "web" client YouTube gives yt-dlp by default is the one most tightly
+# gated by PO-token / SABR restrictions — signed in fine, but only a handful
+# of low-res formats (often just 360p) come back. Also querying "tv" (a
+# device-code client that isn't PO-token-gated the same way) merges in
+# whatever higher-res formats "web" withheld, in the SAME request — no extra
+# round trip, no auth-chain change. Configurable since YouTube's per-client
+# rules shift; comma-separated, e.g. "default,tv,web_safari".
+def _extractor_args(cfg: Config) -> dict:
+    raw = cfg.get("ingest.player_client") or "default,tv"
+    clients = [c.strip() for c in str(raw).split(",") if c.strip()]
+    return {"youtube": {"player_client": clients}} if clients else {}
+
+
 # Progressively looser selectors. YouTube does not always offer a <=1080p
 # video+audio pair (SABR / per-client format restrictions), so falling back to
 # "whatever plays" beats failing the download.
@@ -200,6 +217,7 @@ def _base_opts(cfg: Config, dl_dir: str) -> dict:
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        "extractor_args": _extractor_args(cfg),
         # resumable partial downloads + yt-dlp's own fragment retries.
         "continuedl": True,
         "retries": 5,
@@ -383,6 +401,7 @@ def test_youtube_auth(url: str, cfg: Config) -> tuple[bool, str]:
     except ShortForgeError as e:
         return False, str(e)
     opts = {"quiet": True, "no_warnings": True, "skip_download": True,
+            "extractor_args": _extractor_args(cfg),
             "socket_timeout": int(cfg.get("ingest.socket_timeout", 120) or 120)}
     lines: list[str] = []
     any_ok = False
@@ -426,6 +445,7 @@ def list_formats(url: str, cfg: Config) -> tuple[bool, str]:
     except ShortForgeError as e:
         return False, str(e)
     opts = {"quiet": True, "no_warnings": True, "skip_download": True,
+            "extractor_args": _extractor_args(cfg),
             "socket_timeout": int(cfg.get("ingest.socket_timeout", 120) or 120)}
     last_err: Exception | None = None
     for label, overlay in _auth_strategies(cfg):
@@ -452,6 +472,14 @@ def list_formats(url: str, cfg: Config) -> tuple[bool, str]:
         if not has_video:
             rows.append("\n⚠️ Audio-only: YouTube withheld every video stream from this "
                         "client. Update yt-dlp, then retry.")
+        else:
+            max_h = max((f.get("height") or 0) for f in formats)
+            if 0 < max_h < 480:
+                rows.append(f"\n⚠️ Best video offered is only {max_h}p even though the "
+                            f"source is higher on YouTube. This client is being "
+                            f"PO-token-gated, not out of formats — update yt-dlp, and "
+                            f"check Settings → ingest player_client includes 'tv' "
+                            f"(default: {cfg.get('ingest.player_client')}).")
         return True, "\n".join(rows)
     return False, f"Could not read formats with any auth strategy: {_clean_err(last_err) if last_err else '?'}"
 

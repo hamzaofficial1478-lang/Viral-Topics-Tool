@@ -545,6 +545,45 @@ def _render_queue() -> None:
         st.rerun()
 
 
+def _render_chat() -> None:
+    """Command the queue by typing, in the browser — the exact same parser and
+    vocabulary `ntfy_bot.py` uses, so a link or command typed here behaves
+    identically to one sent from your phone (CLAUDE.md rule 6: one shared
+    command path, never a second one that can drift)."""
+    from shortforge import remote_control as RC
+    from shortforge.config import Config as _C
+    from shortforge import lifecycle
+
+    st.header("💬 Chat")
+    st.caption("Type a link, settings, or a command — `/help` lists everything. This "
+               "reads and writes the SAME queue as the Queue screen and ntfy.")
+
+    work_dir = _C.load().get("paths.work_dir", ".shortforge")
+    state = lifecycle.read_state(work_dir)
+    worker_live = bool(state and (time.time() - float(state.get("last_seen") or 0)) < 120)
+    if not worker_live:
+        st.warning("⚪ No worker is currently running — typing here still adds links and "
+                  "can pause/resume the queue, but nothing will actually render until "
+                  "`start_all.bat` is running (or you press ▶ Start working on the Queue "
+                  "screen).")
+
+    history = st.session_state.setdefault("chat_history", [])
+    for role, text in history:
+        with st.chat_message(role):
+            st.markdown(text, unsafe_allow_html=True)
+
+    msg = st.chat_input("https://youtu.be/... 5 clips of 2 min landscape  —  or /status, start, pause…")
+    if msg:
+        history.append(("user", msg))
+        reply = RC.handle_text(msg, work_dir)
+        history.append(("assistant", reply))
+        st.rerun()
+
+    if history and st.button("🧹 Clear chat (queue itself is untouched)"):
+        st.session_state["chat_history"] = []
+        st.rerun()
+
+
 def _render_history() -> None:
     st.header("📚 History")
     st.caption("Every finished run and its clips — review earlier work without hunting "
@@ -752,7 +791,7 @@ def main() -> None:
     st.title("🎬 ShortForge")
 
     with st.sidebar:
-        screen = st.radio("Screen", ["Queue", "New job", "Settings", "History"], index=0)
+        screen = st.radio("Screen", ["Queue", "Chat", "New job", "Settings", "History"], index=0)
         st.divider()
 
     if screen == "Settings":
@@ -761,6 +800,9 @@ def main() -> None:
         return
     if screen == "History":
         _render_history()
+        return
+    if screen == "Chat":
+        _render_chat()
         return
     if screen == "Queue":
         _render_queue()

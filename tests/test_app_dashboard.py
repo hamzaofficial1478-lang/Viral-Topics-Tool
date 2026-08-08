@@ -5,15 +5,21 @@ headless AppTest so a broken form is caught in CI without a browser.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
 pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
+# Absolute, not "app.py": AppTest.from_file resolves a relative path against the
+# CALLING file's directory (tests/), not the CWD — a bare "app.py" looks for
+# tests/app.py and raises FileNotFoundError regardless of where pytest is run from.
+_APP = str(Path(__file__).resolve().parent.parent / "app.py")
+
 
 def _fresh():
-    return AppTest.from_file("app.py", default_timeout=30).run()
+    return AppTest.from_file(_APP, default_timeout=30).run()
 
 
 def _new_job():
@@ -84,6 +90,18 @@ def test_history_screen_renders():
     at.sidebar.radio[0].set_value("History").run()
     assert not at.exception
     assert "📚 History" in [h.value for h in at.header]
+
+
+def test_chat_screen_renders_with_a_command_input():
+    """The in-dashboard chat (types the same vocabulary ntfy reads) has to at
+    least render — the actual parsing is covered exhaustively against the
+    shared `remote_control.handle_text` in test_remote_control.py; this only
+    guards that the screen wires up without crashing."""
+    at = _fresh()
+    at.sidebar.radio[0].set_value("Chat").run()
+    assert not at.exception
+    assert "💬 Chat" in [h.value for h in at.header]
+    assert len(at.chat_input) == 1
 
 
 def test_stage_from_lines_tracks_furthest_progress():

@@ -487,15 +487,21 @@ def cmd_listen(args: argparse.Namespace) -> int:
     def _worker():
         """Drain the queue whenever unpaused and something is pending; idle quietly
         otherwise (this is also how the startup permission gate holds: paused
-        stays paused until an explicit reply flips it)."""
+        stays paused until an explicit reply flips it).
+
+        No per-drain KeepAwake here — the whole `listen` process holds it
+        continuously (below) for as long as it's running, idle or not. A link
+        sent from the phone only does any good if the machine is still awake
+        to receive it; sleep must never kick in just because nothing HAPPENED
+        to be rendering at that exact moment.
+        """
         while not stop.is_set():
             _q = Q.load_queue(work_dir)
             if Q.is_paused(_q) or Q.next_pending(_q) is None:
                 stop.wait(5)
                 continue
-            with N.KeepAwake():
-                s = drain_queue(lambda: _cfg_for_queue(args), work_dir,
-                                should_stop=stop.is_set)
+            s = drain_queue(lambda: _cfg_for_queue(args), work_dir,
+                            should_stop=stop.is_set)
             if s["made"]:
                 N.notify(f"🏁 <b>Queue empty</b>\n{s['done']} done, {s['failed']} failed\n"
                          f"<b>{s['total_clips']} clip(s)</b> total")
@@ -529,14 +535,20 @@ def cmd_listen(args: argparse.Namespace) -> int:
     N.notify("\n".join(lines))
     log.info("listening for commands (paused=%s). Ctrl+C to stop.", has_work)
 
-    try:
-        while not stop.is_set():
-            stop.wait(5)
-    except KeyboardInterrupt:
-        log.info("listen: stopping…")
-        stop.set()
-        lifecycle.announce_offline(work_dir, "stopped with Ctrl+C")
-        return 0
+    # Held for the ENTIRE listening lifetime, not just while a job is actively
+    # rendering: Windows' idle-sleep timer would otherwise suspend this whole
+    # process (ntfy polling included) during any quiet stretch, silently
+    # cutting off phone control until someone physically touches the machine.
+    # The screen can still blank normally (KeepAwake only blocks SYSTEM sleep).
+    with N.KeepAwake("ShortForge is listening for phone commands"):
+        try:
+            while not stop.is_set():
+                stop.wait(5)
+        except KeyboardInterrupt:
+            log.info("listen: stopping…")
+            stop.set()
+            lifecycle.announce_offline(work_dir, "stopped with Ctrl+C")
+            return 0
     return 0
 
 

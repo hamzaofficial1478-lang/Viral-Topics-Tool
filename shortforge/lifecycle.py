@@ -31,6 +31,14 @@ import time
 from .utils import log
 
 STATE_FILE = "runstate.json"
+# The dashboard (`cli.py ui`) is a separate OS process from the worker
+# (`cli.py listen` / `queue run`) and must never share the worker's state
+# file: mark_online() unconditionally overwrites pid/mode/current, so if the
+# UI process wrote to the SAME file it would stomp the worker's own in-flight
+# job record — corrupting the exact crash-recovery detail (interrupted_note)
+# that feature depends on. A separate file makes the two trackers independent
+# by construction, not by convention.
+UI_STATE_FILE = "ui_runstate.json"
 
 # Windows kills a console app ~5s after the X is clicked; leave room to write.
 GOODBYE_TIMEOUT = 4
@@ -40,20 +48,20 @@ _announced = False          # the goodbye is sent exactly once, whichever path w
 _installed = False
 
 
-def state_path(work_dir: str = ".shortforge") -> str:
-    return os.path.join(work_dir, STATE_FILE)
+def state_path(work_dir: str = ".shortforge", state_file: str = STATE_FILE) -> str:
+    return os.path.join(work_dir, state_file)
 
 
-def read_state(work_dir: str = ".shortforge") -> dict | None:
+def read_state(work_dir: str = ".shortforge", state_file: str = STATE_FILE) -> dict | None:
     try:
-        with open(state_path(work_dir), "r", encoding="utf-8") as f:
+        with open(state_path(work_dir, state_file), "r", encoding="utf-8") as f:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
 
 
-def _write_state(work_dir: str, state: dict) -> None:
-    path = state_path(work_dir)
+def _write_state(work_dir: str, state: dict, state_file: str = STATE_FILE) -> None:
+    path = state_path(work_dir, state_file)
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = path + ".tmp"
@@ -64,21 +72,22 @@ def _write_state(work_dir: str, state: dict) -> None:
         log.debug("could not write run state: %s", e)
 
 
-def clear_state(work_dir: str = ".shortforge") -> None:
+def clear_state(work_dir: str = ".shortforge", state_file: str = STATE_FILE) -> None:
     try:
-        os.remove(state_path(work_dir))
+        os.remove(state_path(work_dir, state_file))
     except OSError:
         pass
 
 
-def mark_online(work_dir: str = ".shortforge", mode: str = "queue") -> dict | None:
+def mark_online(work_dir: str = ".shortforge", mode: str = "queue",
+                state_file: str = STATE_FILE) -> dict | None:
     """Claim the running state. Returns the PREVIOUS state when the last run
     never said goodbye — that is how a power cut is detected."""
     global _announced
-    prev = read_state(work_dir)
+    prev = read_state(work_dir, state_file)
     now = time.time()
     _write_state(work_dir, {"pid": os.getpid(), "mode": mode,
-                            "started": now, "last_seen": now, "current": None})
+                            "started": now, "last_seen": now, "current": None}, state_file)
     with _lock:
         _announced = False
     return prev
@@ -87,15 +96,16 @@ def mark_online(work_dir: str = ".shortforge", mode: str = "queue") -> dict | No
 _KEEP = object()      # so `current=None` can mean "cleared", not "unchanged"
 
 
-def heartbeat(work_dir: str = ".shortforge", current: dict | None = _KEEP) -> None:
+def heartbeat(work_dir: str = ".shortforge", current: dict | None = _KEEP,
+             state_file: str = STATE_FILE) -> None:
     """Refresh 'last seen' and record which link is in flight, so a crash report
     can name it. Pass ``current=None`` to say no job is running."""
-    state = read_state(work_dir) or {"pid": os.getpid(), "mode": "queue",
-                                     "started": time.time()}
+    state = read_state(work_dir, state_file) or {"pid": os.getpid(), "mode": "queue",
+                                                  "started": time.time()}
     state["last_seen"] = time.time()
     if current is not _KEEP:
         state["current"] = current
-    _write_state(work_dir, state)
+    _write_state(work_dir, state, state_file)
 
 
 def clips_made_for(prefix: str, out_dir: str | None = None) -> int:
@@ -149,8 +159,17 @@ def interrupted_note(prev: dict | None, *, total_clips: int | None = None) -> st
 
 
 def announce_offline(work_dir: str = ".shortforge", reason: str = "closed",
-                     notify_fn=None) -> bool:
-    """Say we're going down, once. Returns True if this call did the announcing."""
+                     notify_fn=None, *, state_file: str = STATE_FILE,
+                     icon: str = "🔴", title: str = "ShortForge stopped",
+                     include_queue_detail: bool = True) -> bool:
+    """Say we're going down, once. Returns True if this call did the announcing.
+
+    ``include_queue_detail=False`` is for the dashboard's own channel (see
+    ``UI_STATE_FILE``): the UI closing says nothing about whether the queue
+    worker is still running, so attaching "N clip(s) produced" / "it was
+    working on X" to *that* message would misrepresent it as the whole
+    program stopping when only the window did.
+    """
     global _announced
     with _lock:
         if _announced:
@@ -158,37 +177,38 @@ def announce_offline(work_dir: str = ".shortforge", reason: str = "closed",
         _announced = True
 
     extra = ""
-    try:
-        from . import queue as Q
-        q = Q.load_queue(work_dir)
-        c = Q.counts(q)
-        n = c[Q.PENDING] + c[Q.RUNNING]
-        if n:
-            extra += (f"\n⏳ {n} link(s) still queued — they resume when ShortForge "
-                     f"starts again.")
-        total = Q.total_clips(q)
-        if total:
-            extra += f"\n📊 {total} clip(s) produced so far."
-    except Exception:  # noqa: BLE001 - a readable queue is a nicety here, not a must
-        pass
+    if include_queue_detail:
+        try:
+            from . import queue as Q
+            q = Q.load_queue(work_dir)
+            c = Q.counts(q)
+            n = c[Q.PENDING] + c[Q.RUNNING]
+            if n:
+                extra += (f"\n⏳ {n} link(s) still queued — they resume when ShortForge "
+                         f"starts again.")
+            total = Q.total_clips(q)
+            if total:
+                extra += f"\n📊 {total} clip(s) produced so far."
+        except Exception:  # noqa: BLE001 - a readable queue is a nicety here, not a must
+            pass
 
-    # Read state BEFORE clear_state() below wipes it — name what was in flight,
-    # so "it will also tell which video it was making when it got closed" holds
-    # even on a clean stop, not just a crash-recovery report on the next start.
-    try:
-        cur = (read_state(work_dir) or {}).get("current") or {}
-        if cur.get("url"):
-            extra += f"\n🎬 It was working on: {str(cur['url'])[:70]}"
-            if cur.get("detail"):
-                extra += f" ({cur['detail']})"
-            if cur.get("prefix"):
-                n_disk = clips_made_for(cur["prefix"])
-                if n_disk:
-                    extra += f" — {n_disk} clip(s) already rendered for it"
-    except Exception:  # noqa: BLE001
-        pass
+        # Read state BEFORE clear_state() below wipes it — name what was in flight,
+        # so "it will also tell which video it was making when it got closed" holds
+        # even on a clean stop, not just a crash-recovery report on the next start.
+        try:
+            cur = (read_state(work_dir, state_file) or {}).get("current") or {}
+            if cur.get("url"):
+                extra += f"\n🎬 It was working on: {str(cur['url'])[:70]}"
+                if cur.get("detail"):
+                    extra += f" ({cur['detail']})"
+                if cur.get("prefix"):
+                    n_disk = clips_made_for(cur["prefix"])
+                    if n_disk:
+                        extra += f" — {n_disk} clip(s) already rendered for it"
+        except Exception:  # noqa: BLE001
+            pass
 
-    text = f"🔴 <b>ShortForge stopped</b> ({reason}).{extra}"
+    text = f"{icon} <b>{title}</b> ({reason}).{extra}"
     try:
         if notify_fn is not None:
             notify_fn(text)
@@ -197,7 +217,7 @@ def announce_offline(work_dir: str = ".shortforge", reason: str = "closed",
             notify(text, timeout=GOODBYE_TIMEOUT)
     except Exception as e:  # noqa: BLE001
         log.debug("could not send the shutdown notice: %s", e)
-    clear_state(work_dir)
+    clear_state(work_dir, state_file)
     log.info("shutdown notice sent (%s)", reason)
     return True
 
@@ -207,12 +227,22 @@ def announce_offline(work_dir: str = ".shortforge", reason: str = "closed",
 _console_handler = None     # ctypes callback; must outlive the call or Windows crashes
 
 
-def install_exit_notice(work_dir: str = ".shortforge") -> None:
+def install_exit_notice(work_dir: str = ".shortforge", *, state_file: str = STATE_FILE,
+                        icon: str = "🔴", title: str = "ShortForge stopped",
+                        include_queue_detail: bool = True) -> None:
     """Register the shutdown announcement on every exit path we can catch.
 
     ``atexit`` covers a normal return and Ctrl+C (KeyboardInterrupt still unwinds
     normally). It does NOT cover ``SIGTERM``, and on Windows it does not cover
     closing the console window — so both get explicit handlers.
+
+    The ``state_file``/``icon``/``title``/``include_queue_detail`` kwargs let
+    the dashboard process (``cli.py ui``) arm its OWN independent shutdown
+    notice — separate state file (never touches the worker's ``runstate.json``),
+    different wording (closing the dashboard window says nothing about whether
+    the queue worker is still running). Each OS process only ever calls this
+    once for one channel, so the module-level ``_installed``/``_announced``
+    guards below don't need to be channel-aware themselves.
     """
     global _installed, _console_handler
     if _installed:
@@ -222,10 +252,14 @@ def install_exit_notice(work_dir: str = ".shortforge") -> None:
     import atexit
     import signal
 
-    atexit.register(lambda: announce_offline(work_dir, "closed"))
+    def _offline(reason: str) -> bool:
+        return announce_offline(work_dir, reason, state_file=state_file, icon=icon,
+                                title=title, include_queue_detail=include_queue_detail)
+
+    atexit.register(lambda: _offline("closed"))
 
     def _sig(signum, _frame):
-        announce_offline(work_dir, "stopped")
+        _offline("stopped")
         raise SystemExit(0)          # unwinds → atexit runs → guard makes it a no-op
 
     for name in ("SIGTERM", "SIGBREAK"):
@@ -248,7 +282,7 @@ def install_exit_notice(work_dir: str = ".shortforge") -> None:
         proto = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
 
         def _on_console_event(ctrl_type):
-            announce_offline(work_dir, reasons.get(int(ctrl_type), "closed"))
+            _offline(reasons.get(int(ctrl_type), "closed"))
             return False        # False = also run the default handler (i.e. exit)
 
         _console_handler = proto(_on_console_event)     # keep a strong reference

@@ -166,6 +166,41 @@ def test_start_word_does_not_hijack_a_real_link_message(tmp_path):
     assert len(Q.load_queue(work)["jobs"]) == 1
 
 
+# --- plain-English /cancel and /clear ----------------------------------------- #
+# The exact operator-reported bug: cancelled a job by texting "cancel" (no
+# slash, having learned "pause"/"start" work that way), then found it still
+# running in the Queue screen — because a bare "cancel" fell through to the
+# generic "Send me a video link" reply and never reached /cancel at all.
+
+def test_bare_cancel_word_drops_pending_jobs_without_a_slash(tmp_path):
+    work = str(tmp_path)
+    RC.handle_text("https://a/1", work)
+    RC.handle_text("https://a/2", work)
+    reply = RC.handle_text("cancel", work)
+    assert "Dropped 2" in reply
+    assert Q.counts(Q.load_queue(work))[Q.PENDING] == 0
+
+
+def test_bare_clear_word_removes_finished_jobs_without_a_slash(tmp_path):
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.add_job(q, "https://a/1")
+    Q.mark(q, q["jobs"][0]["id"], Q.DONE, clips=["a.mp4"])
+    Q.save_queue(q, work)
+    reply = RC.handle_text("clear", work)
+    assert "Removed 1" in reply
+    assert Q.load_queue(work)["jobs"] == []
+
+
+def test_cancel_word_does_not_hijack_a_real_link_message(tmp_path):
+    """Same guard as the start/pause words: a link message that happens to
+    contain the word 'cancel' must still be queued, not swallowed."""
+    work = str(tmp_path)
+    reply = RC.handle_text("https://youtu.be/cancel-policy-video clips=2", work)
+    assert "Queued" in reply
+    assert len(Q.load_queue(work)["jobs"]) == 1
+
+
 # --- shared chat log: ntfy and the dashboard Chat screen show one conversation - #
 
 def test_log_exchange_round_trips(tmp_path):

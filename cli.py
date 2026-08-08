@@ -332,13 +332,33 @@ def cmd_check_llm(args: argparse.Namespace) -> int:
 
 
 def cmd_ui(args: argparse.Namespace) -> int:
-    """Launch the Streamlit dashboard (job + settings screens)."""
+    """Launch the Streamlit dashboard (job + settings screens).
+
+    Arms its OWN shutdown notice, independent of `cli.py listen`'s
+    (`lifecycle.UI_STATE_FILE`, not the worker's `runstate.json` — see the
+    module docstring on why they must never share a file). `start_all.bat`
+    opens this in its own window alongside `listen`; an operator closing
+    JUST that window — thinking of it as "the program" — got no notification
+    at all before this, since only `listen`/`queue run` had exit handling.
+    Deliberately says nothing about the queue's state (`include_queue_detail
+    =False`): whether this window is open has no bearing on whether the
+    worker is still running and rendering.
+    """
     import subprocess
     import shutil
+    from shortforge import lifecycle
+
     app = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
     if shutil.which("streamlit") is None:
         log.error("Streamlit is not installed. Run: pip install streamlit")
         return 1
+
+    work_dir = Config.load(getattr(args, "config", None)).get("paths.work_dir", ".shortforge")
+    lifecycle.install_exit_notice(
+        work_dir, state_file=lifecycle.UI_STATE_FILE,
+        icon="🖥️", title="ShortForge dashboard closed",
+        include_queue_detail=False)
+
     log.info("launching ShortForge UI (Ctrl+C to stop) …")
     return subprocess.call(["streamlit", "run", app])
 

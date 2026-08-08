@@ -104,6 +104,27 @@ def test_chat_screen_renders_with_a_command_input():
     assert len(at.chat_input) == 1
 
 
+def test_chat_command_reply_is_also_pushed_over_ntfy(tmp_path, monkeypatch):
+    """Typing a command in the dashboard Chat used to only log locally — a
+    command sent from the phone gets a real ntfy push reply (ntfy_bot.poll_once
+    calls send_ntfy), but the exact same command typed here produced nothing
+    on the phone. Fixed: the dashboard now pushes the reply too."""
+    import os
+    from shortforge import notify as N
+
+    monkeypatch.chdir(tmp_path)
+    os.makedirs(".shortforge", exist_ok=True)
+    sent = []
+    monkeypatch.setattr(N, "notify", lambda text, **k: sent.append(text) or True)
+
+    at = _fresh()
+    at.sidebar.radio[0].set_value("Chat").run()
+    at.chat_input[0].set_value("https://youtu.be/from-dashboard-chat clips=2").run()
+
+    assert not at.exception
+    assert len(sent) == 1 and "Queued" in sent[0]
+
+
 def test_job_settings_detail_matches_queue_formatting():
     """The manual New-job path's notification uses the same wording as the
     Queue/ntfy path (shared formatter), not a second copy that can drift."""
@@ -293,3 +314,59 @@ def test_queue_screen_surfaces_warnings_and_elapsed_time_like_new_job_does(tmp_p
     warning_widgets = [w.value for w in body.warning] if hasattr(body, "warning") else []
     assert any("HTTP 400" in w for w in warning_widgets) or any(
         "HTTP 400" in w.value for w in at.warning)
+
+
+# --- removing a link from the queue must always notify ----------------------- #
+# Operator: added 10 links, and whenever one leaves the queue (however it
+# leaves) expects to hear about it on the phone — previously only /cancel and
+# /clear sent via ntfy itself did (via ntfy_bot's own send_ntfy reply); the
+# dashboard's own "Clear finished" and "Remove this link" buttons were silent.
+
+def test_clear_finished_button_notifies(tmp_path, monkeypatch):
+    import os
+    from shortforge import notify as N
+    from shortforge import queue as Q
+
+    monkeypatch.chdir(tmp_path)
+    work_dir = ".shortforge"
+    os.makedirs(work_dir, exist_ok=True)
+    q = Q.load_queue(work_dir)
+    Q.add_job(q, "https://youtu.be/finished-one")
+    Q.mark(q, q["jobs"][0]["id"], Q.DONE, clips=["a.mp4"])
+    Q.save_queue(q, work_dir)
+
+    sent = []
+    monkeypatch.setattr(N, "notify", lambda text, **k: sent.append(text) or True)
+
+    at = _fresh()
+    btn = next(b for b in at.button if "Clear finished" in b.label)
+    btn.click().run()
+
+    assert not at.exception
+    assert len(sent) == 1 and "Removed 1" in sent[0]
+    assert Q.load_queue(work_dir)["jobs"] == []
+
+
+def test_remove_this_link_button_notifies(tmp_path, monkeypatch):
+    import os
+    from shortforge import notify as N
+    from shortforge import queue as Q
+
+    monkeypatch.chdir(tmp_path)
+    work_dir = ".shortforge"
+    os.makedirs(work_dir, exist_ok=True)
+    q = Q.load_queue(work_dir)
+    Q.add_job(q, "https://youtu.be/remove-me-please")
+    Q.save_queue(q, work_dir)
+
+    sent = []
+    monkeypatch.setattr(N, "notify", lambda text, **k: sent.append(text) or True)
+
+    at = _fresh()
+    btn = next(b for b in at.button if "Remove this link" in b.label)
+    btn.click().run()
+
+    assert not at.exception
+    assert len(sent) == 1
+    assert "Removed a queued link" in sent[0] and "remove-me-please" in sent[0]
+    assert Q.load_queue(work_dir)["jobs"] == []

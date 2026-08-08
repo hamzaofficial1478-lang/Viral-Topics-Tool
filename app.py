@@ -423,11 +423,19 @@ def _start_worker() -> None:
         cwd=here)
 
 
-@st.fragment(run_every="3s")
+@st.fragment(run_every="5s")
 def _queue_status_fragment(work_dir: str) -> None:
     """Everything that changes while the queue runs — metrics, the
     working/paused banner, live progress for the running job, and the jobs
     table — auto-refreshing together on the browser's own timer.
+
+    5s, not 3s: this fragment grew from "just the progress bar" to metrics +
+    buttons + banner + warnings + log + table in the live-detail fix above,
+    so each tick now does noticeably more work (a queue read, a log-file
+    read, a dataframe rebuild) — worth trading a little responsiveness for
+    fewer ticks/hour, particularly on the CPU-constrained machine this runs
+    on (rendering itself already saturates it). Still fast enough that a
+    finished job never sits stale for more than a few seconds.
 
     The bug this fixes: an earlier version only put the progress bar/log
     inside a fragment and left the metrics + jobs table computed once per
@@ -484,8 +492,11 @@ def _queue_status_fragment(work_dir: str) -> None:
         Q.save_queue(q, work_dir)
         st.rerun()
     if r3.button("🧹 Clear finished", width="stretch"):
-        q["jobs"] = [j for j in q.get("jobs", []) if j["status"] in (Q.PENDING, Q.RUNNING)]
-        Q.save_queue(q, work_dir)
+        from shortforge import notify as N
+        from shortforge import remote_control as RC
+        # Shared with /clear and the bare "clear" chat word (CLAUDE.md rule 6)
+        # so all three doors report the exact same count, worded the same way.
+        N.notify(RC._clear(work_dir))
         st.rerun()
 
     running_job = next((j for j in q.get("jobs", []) if j["status"] == Q.RUNNING), None)
@@ -638,9 +649,17 @@ def _render_queue() -> None:
                 st.success("Saved for this link only.")
                 st.rerun()
             if b2.button("🗑 Remove this link", width="stretch"):
+                from shortforge import notify as N
                 fresh = Q.load_queue(work_dir)
                 fresh["jobs"] = [x for x in fresh["jobs"] if x["id"] != j["id"]]
                 Q.save_queue(fresh, work_dir)
+                # Operator asked explicitly: whenever a link leaves the queue —
+                # from here, /cancel, /clear, or the chat words — a phone
+                # notification should say so. Ten links queued, one quietly
+                # vanishing with no trace was the reported gap.
+                left = Q.counts(fresh)[Q.PENDING]
+                N.notify(f"🗑 <b>Removed a queued link</b>\n{j['url'][:80]}\n"
+                        f"{left} link(s) still pending.")
                 st.rerun()
             if done:
                 st.caption("This link is already running/finished — settings are locked.")
@@ -695,10 +714,17 @@ def _render_chat() -> None:
     ntfy — both go through the identical shared `remote_control.handle_text()`
     (CLAUDE.md rule 6: one command path, never a second one that can drift),
     and both log to the SAME file (`remote_control.log_exchange`/
-    `read_chat_log`), so whichever one you use, this screen shows all of it."""
+    `read_chat_log`), so whichever one you use, this screen shows all of it.
+
+    Typing here also pushes the reply out over ntfy, same as `ntfy_bot.poll_once`
+    does for a phone-sent command — otherwise a command typed here (e.g.
+    "cancel", "clear") changes the queue with nothing landing on the phone,
+    which is exactly the "ntfy is missing things" gap the operator reported.
+    """
+    from shortforge import lifecycle
+    from shortforge import notify as N
     from shortforge import remote_control as RC
     from shortforge.config import Config as _C
-    from shortforge import lifecycle
 
     top = st.columns([5, 1])
     top[0].header("💬 Chat")
@@ -725,6 +751,7 @@ def _render_chat() -> None:
     if msg:
         reply = RC.handle_text(msg, work_dir)
         RC.log_exchange(work_dir, "dashboard", msg, reply)
+        N.notify(reply)
         st.rerun()
 
     if RC.read_chat_log(work_dir, limit=1) and st.button(

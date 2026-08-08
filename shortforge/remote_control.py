@@ -138,6 +138,15 @@ _RES_RE = re.compile(r"\b(1080p|720p|480p|360p)\b", re.I)
 # message.
 _START_WORDS = {"start", "go", "begin", "yes", "yep", "yeah", "ok", "okay", "on"}
 _STAY_PAUSED_WORDS = {"pause", "stop", "off", "no", "nope", "wait", "not yet", "hold"}
+# Same idea for /cancel and /clear: an operator who already learned "pause"/
+# "start" work without a slash reasonably assumes "cancel"/"clear" do too. They
+# didn't — a bare "cancel" fell all the way through to "Send me a video link",
+# a confusing reply that gives no hint anything was misunderstood, while
+# silently doing nothing (a real report: cancelled a job from the phone, went
+# to the Queue screen, the job was still running — because "cancel" alone had
+# never actually reached the /cancel handler).
+_CANCEL_WORDS = {"cancel", "cancel all", "cancel pending", "drop pending"}
+_CLEAR_WORDS = {"clear", "clean", "clear finished", "clean up"}
 
 
 def _bounded(key: str, value) -> int | None:
@@ -306,6 +315,22 @@ def _resume(work_dir: str) -> str:
             if pending else "▶️ <b>Working again.</b> Nothing queued — send me a link.")
 
 
+def _clear(work_dir: str) -> str:
+    q = Q.load_queue(work_dir)
+    before = len(q.get("jobs", []))
+    q["jobs"] = [j for j in q.get("jobs", []) if j["status"] in (Q.PENDING, Q.RUNNING)]
+    Q.save_queue(q, work_dir)
+    return f"🧹 Removed {before - len(q['jobs'])} finished job(s)."
+
+
+def _cancel(work_dir: str) -> str:
+    q = Q.load_queue(work_dir)
+    before = len(q.get("jobs", []))
+    q["jobs"] = [j for j in q.get("jobs", []) if j["status"] != Q.PENDING]
+    Q.save_queue(q, work_dir)
+    return f"🛑 Dropped {before - len(q['jobs'])} pending job(s). Any running job finishes."
+
+
 def handle_text(text: str, work_dir: str) -> str:
     """Turn one owner message into a reply. Pure w.r.t. any transport (testable)."""
     text = (text or "").strip()
@@ -339,18 +364,10 @@ def handle_text(text: str, work_dir: str) -> str:
                  + (f" ({len(j['clips'])} clips)" if j["clips"] else "")
                  for i, j in enumerate(jobs[:30], 1)]
         return "<b>Queue</b>\n" + "\n".join(lines)
-    if low.startswith("/clear"):
-        q = Q.load_queue(work_dir)
-        before = len(q.get("jobs", []))
-        q["jobs"] = [j for j in q.get("jobs", []) if j["status"] in (Q.PENDING, Q.RUNNING)]
-        Q.save_queue(q, work_dir)
-        return f"🧹 Removed {before - len(q['jobs'])} finished job(s)."
-    if low.startswith("/cancel"):
-        q = Q.load_queue(work_dir)
-        before = len(q.get("jobs", []))
-        q["jobs"] = [j for j in q.get("jobs", []) if j["status"] != Q.PENDING]
-        Q.save_queue(q, work_dir)
-        return f"🛑 Dropped {before - len(q['jobs'])} pending job(s). Any running job finishes."
+    if low in _CLEAR_WORDS or low.startswith("/clear"):
+        return _clear(work_dir)
+    if low in _CANCEL_WORDS or low.startswith("/cancel"):
+        return _cancel(work_dir)
     if text.startswith("/"):
         return "Unknown command. Send /help for what I understand."
 

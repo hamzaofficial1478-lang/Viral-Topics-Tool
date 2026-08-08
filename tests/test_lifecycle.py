@@ -99,6 +99,67 @@ def test_install_exit_notice_is_idempotent(tmp_path):
     assert L._installed is True
 
 
+# --- the dashboard's own shutdown channel (cli.py ui) ------------------------- #
+# Separate from the worker's (cli.py listen / queue run): closing the UI window
+# reported by the operator as silent — cmd_ui never armed any exit handling at
+# all before this, only cmd_listen/cmd_queue did.
+
+def test_ui_channel_uses_a_separate_state_file_from_the_worker(tmp_path):
+    """The whole reason for a separate file: mark_online() overwrites
+    pid/mode/current unconditionally, so if the UI process shared the
+    worker's runstate.json, opening the dashboard while a job is in flight
+    would stomp the crash-recovery record of what that job was doing."""
+    work = str(tmp_path)
+    L.mark_online(work, "listen")
+    L.heartbeat(work, current={"url": "https://youtu.be/inflight", "detail": "2 clip(s)"})
+    worker_state_before = L.read_state(work)
+
+    L.mark_online(work, "ui", state_file=L.UI_STATE_FILE)
+
+    assert L.read_state(work) == worker_state_before          # worker's file untouched
+    assert L.read_state(work, L.UI_STATE_FILE)["mode"] == "ui"
+    assert os.path.exists(L.state_path(work, L.UI_STATE_FILE))
+    assert L.state_path(work, L.UI_STATE_FILE) != L.state_path(work)
+
+
+def test_ui_channel_offline_notice_omits_queue_detail(tmp_path):
+    """Closing the dashboard window says nothing about whether the worker is
+    still rendering — attaching '3 clip(s) produced' / 'it was working on X'
+    to THIS message would misrepresent the whole program as stopped."""
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.add_job(q, "https://a/1")
+    Q.save_queue(q, work)
+    L.mark_online(work, "listen")   # the worker IS still "online" in its own file
+    L.heartbeat(work, current={"url": "https://a/1", "detail": "2 clip(s)"})
+
+    sent = []
+    ok = L.announce_offline(work, "window closed", notify_fn=sent.append,
+                            state_file=L.UI_STATE_FILE, icon="🖥️",
+                            title="ShortForge dashboard closed",
+                            include_queue_detail=False)
+    assert ok is True
+    assert "dashboard closed" in sent[0].lower()
+    assert "still queued" not in sent[0] and "working on" not in sent[0]
+    # the worker's own state is untouched by the UI channel's announcement
+    assert L.read_state(work)["current"]["url"] == "https://a/1"
+
+
+def test_ui_channel_and_worker_channel_each_announce_independently(tmp_path):
+    """Each channel's once-only guard is per-PROCESS (module-global), which is
+    correct because cmd_ui and cmd_listen are always separate OS processes —
+    but within a single process/test, install_exit_notice's one-shot guard
+    must not block a distinctly-parameterised second announce_offline call."""
+    work = str(tmp_path)
+    sent = []
+    assert L.announce_offline(work, "closed", notify_fn=sent.append,
+                              state_file=L.UI_STATE_FILE, include_queue_detail=False) is True
+    # the SAME process announcing again (any channel) is correctly suppressed —
+    # the one-shot guard is process-wide by design (see install_exit_notice docstring)
+    assert L.announce_offline(work, "closed", notify_fn=sent.append) is False
+    assert len(sent) == 1
+
+
 # --- network outages -------------------------------------------------------- #
 
 def test_outage_is_announced_after_repeated_failures_not_one_blip():

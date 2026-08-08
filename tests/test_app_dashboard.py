@@ -104,6 +104,60 @@ def test_chat_screen_renders_with_a_command_input():
     assert len(at.chat_input) == 1
 
 
+def test_job_settings_detail_matches_queue_formatting():
+    """The manual New-job path's notification uses the same wording as the
+    Queue/ntfy path (shared formatter), not a second copy that can drift."""
+    import app
+    from shortforge.config import Config
+
+    cfg = Config.load()
+    cfg.override("select.num_clips", 4)
+    cfg.override("select.target_duration", 90)
+    cfg.override("reframe.aspect", "9:16")
+    cfg.override("reframe.resolution", "1080p")
+    detail = app._job_settings_detail(cfg)
+    assert "4 clip(s) of 1m30s" in detail and "9:16" in detail and "1080p" in detail
+
+
+def test_manual_job_sends_ntfy_start_and_done_notifications(monkeypatch):
+    """The exact bug the operator reported: starting a job from the New Job
+    form (not the Queue/ntfy path) sent no notification at all — neither on
+    start nor on finish."""
+    import app
+    import streamlit as st
+    from shortforge import notify as N
+
+    sent = []
+    monkeypatch.setattr(N, "notify", lambda text, **k: sent.append(text) or True)
+    monkeypatch.setattr(app, "run_pipeline",
+                        lambda *a, **k: {"clips": [{"file_path": "a.mp4"},
+                                                    {"file_path": "b.mp4"}]})
+    # _render_running() ends its "finished" branch with st.rerun(), which would
+    # otherwise re-execute this whole `run()` — including _start_job() again —
+    # in a loop under AppTest. We only care that the notify fired, not about
+    # actually completing a second render pass, so make rerun a no-op here.
+    monkeypatch.setattr(st, "rerun", lambda *a, **k: None)
+
+    def run():
+        import app
+        import streamlit as st
+        from shortforge.config import Config
+
+        cfg = Config.load()
+        cfg.override("select.num_clips", 2)
+        app._start_job("https://youtu.be/manual-test", cfg, None, "/tmp")
+        job = st.session_state.job
+        job["thread"].join(timeout=5)
+        app._render_running(job)          # finalizes state + fires the done/failed notice
+
+    from streamlit.testing.v1 import AppTest
+    at = AppTest.from_function(run, default_timeout=15).run()
+    assert not at.exception
+    assert len(sent) == 2
+    assert "Job started" in sent[0] and "manual-test" in sent[0]
+    assert "Job done" in sent[1] and "2 clip(s)" in sent[1]
+
+
 def test_stage_from_lines_tracks_furthest_progress():
     import app
     frac0, label0 = app._stage_from_lines(["ingesting source video"])

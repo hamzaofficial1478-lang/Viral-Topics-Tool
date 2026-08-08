@@ -157,7 +157,25 @@ def _plan_notes(whisper_model, language, dub_kind) -> list[str]:
 #  Job lifecycle (background thread + session-state so results survive reruns) #
 # --------------------------------------------------------------------------- #
 
+def _job_settings_detail(cfg) -> str:
+    """Plain-English 'what this run will produce', in the same words the
+    Queue/ntfy path already uses (shortforge.queue.describe_settings) — one
+    formatter, not a second copy that can drift."""
+    from shortforge import queue as Q
+    settings = {
+        "num_clips": int(cfg.get("select.num_clips", 0) or 0) or None,
+        "duration": int(cfg.get("select.target_duration", 0) or 0) or None,
+        "aspect": cfg.get("reframe.aspect"),
+        "resolution": cfg.get("reframe.resolution"),
+        "language": cfg.get("localize.language"),
+        "caption_template": cfg.get("captions.template"),
+    }
+    return Q.describe_settings({"settings": {k: v for k, v in settings.items() if v}})
+
+
 def _start_job(source, cfg, transcript_path, out_dir) -> None:
+    from shortforge import notify as N
+
     q: queue.Queue = queue.Queue()
     handler = _QueueHandler(q)
     logging.getLogger("shortforge").addHandler(handler)
@@ -177,7 +195,13 @@ def _start_job(source, cfg, transcript_path, out_dir) -> None:
     st.session_state.job = {
         "state": "running", "thread": t, "queue": q, "handler": handler, "box": box,
         "lines": [], "warnings": [], "out_dir": out_dir, "started": time.time(),
+        "source": source,
     }
+    # The Queue/ntfy path always announces a link starting; this manual "New job"
+    # form was the one way to run something with no notification at all —
+    # confirmed by the operator testing it directly. Same message shape, so a
+    # phone glance can't tell which door the job came in from.
+    N.notify(f"🎬 <b>Job started</b> — making {_job_settings_detail(cfg)}\n{str(source)[:80]}")
 
 
 def _drain_queue(job: dict) -> None:
@@ -217,12 +241,20 @@ def _render_running(job: dict) -> None:
         time.sleep(0.5)            # brief poll; the page reruns so it never looks frozen
         st.rerun()
     else:                          # finished — finalize and flip to the result view
+        from shortforge import notify as N
+
         _drain_queue(job)
         logging.getLogger("shortforge").removeHandler(job["handler"])
+        took = int(time.time() - job["started"])
         if "error" in job["box"]:
             job["state"], job["error"] = "error", job["box"]["error"]
+            N.notify(f"⚠️ <b>Job failed</b> after {took}s\n{job['error'][:300]}\n"
+                     f"{str(job.get('source', ''))[:80]}")
         else:
             job["state"], job["manifest"] = "done", job["box"].get("manifest")
+            n_clips = len((job["manifest"] or {}).get("clips", []))
+            N.notify(f"✅ <b>Job done</b> — {n_clips} clip(s) in {took}s\n"
+                     f"{str(job.get('source', ''))[:80]}")
         st.rerun()
 
 

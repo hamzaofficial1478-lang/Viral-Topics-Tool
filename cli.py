@@ -369,6 +369,38 @@ def _fmt_hms(seconds: float) -> str:
     return f"{h}h{m:02d}m" if h else f"{m}m{s:02d}s"
 
 
+def _queue_summary_message(s: dict, out_dir: str) -> str:
+    """The end-of-run notification, chosen from why the drain actually stopped.
+
+    The bug this closes: the summary used to be a single unconditional "🏁 All
+    links processed", sent no matter what `drain_queue` had done. A drain that
+    exited immediately — queue paused, or another worker holding the lock —
+    returned a dict that looked exactly like a completed run, so the operator
+    was told every link was processed while their link had never started. A
+    message that looks successful but isn't is the failure mode CLAUDE.md
+    rule 1 exists to prevent, so the reason is now load-bearing.
+    """
+    from shortforge.runner import fmt_hms
+
+    why = s.get("stopped_because", "empty")
+    pending = s.get("pending", 0)
+    if why == "locked":
+        return ("⏭️ <b>Already working</b> — another ShortForge worker is running this "
+                "queue, so this extra run exited without touching it. "
+                f"{pending} link(s) still pending.")
+    if why == "paused":
+        return ("⏸ <b>Queue is paused</b> — nothing was started. "
+                f"{pending} link(s) still pending; reply \"start\" (or press "
+                "▶ Start working) to begin.")
+    if why == "asked_to_stop":
+        return (f"🛑 <b>Stopped early</b> — {s.get('made', 0)} clip(s) made this run, "
+                f"{pending} link(s) still pending.")
+    return (f"🏁 <b>All links processed</b>\n"
+            f"{s.get('done', 0)} done, {s.get('failed', 0)} failed\n"
+            f"<b>{s.get('total_clips', 0)} clip(s)</b> total in "
+            f"{fmt_hms(s.get('elapsed', 0))}\nOutput: {out_dir}")
+
+
 def cmd_queue(args: argparse.Namespace) -> int:
     """Persistent link queue: add links with per-link settings, then work through
     them one at a time, surviving restarts and power cuts."""
@@ -444,7 +476,7 @@ def cmd_queue(args: argparse.Namespace) -> int:
                    + (f"\nResumed {resumed} interrupted job(s)." if resumed else ""))
     N.notify(started_msg)
 
-    from shortforge.runner import drain_queue, fmt_hms
+    from shortforge.runner import drain_queue
     try:
         with N.KeepAwake():                  # don't let Windows sleep mid-queue
             s = drain_queue(lambda: _cfg_for_queue(args), work_dir)
@@ -456,13 +488,17 @@ def cmd_queue(args: argparse.Namespace) -> int:
         lifecycle.announce_offline(work_dir, "stopped with Ctrl+C")
         return 130
 
-    summary = (f"🏁 <b>All links processed</b>\n"
-               f"{s['done']} done, {s['failed']} failed\n"
-               f"<b>{s['total_clips']} clip(s)</b> total in {fmt_hms(s['elapsed'])}\n"
-               f"Output: {os.path.abspath(cfg0.get('paths.output_dir', 'out'))}")
-    log.info("queue finished: %s", Q.describe(Q.load_queue(work_dir)))
+    why = s.get("stopped_because", "empty")
+    summary = _queue_summary_message(s, os.path.abspath(cfg0.get("paths.output_dir", "out")))
+    log.info("queue finished (%s): %s", why, Q.describe(Q.load_queue(work_dir)))
     N.notify(summary)
     print(Q.describe(Q.load_queue(work_dir)))
+    if why in ("locked", "paused"):
+        # Did nothing and is exiting within a second of starting. The summary
+        # above already said why; adding "🔴 ShortForge stopped" on top reads as
+        # the whole program going down while the dashboard/listener are in fact
+        # still running — that three-message burst is what the operator saw.
+        lifecycle.cancel_goodbye(work_dir)
     return 0 if s["failed"] == 0 else 1      # the atexit hook sends the goodbye
 
 

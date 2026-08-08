@@ -72,11 +72,46 @@ def _write_state(work_dir: str, state: dict, state_file: str = STATE_FILE) -> No
         log.debug("could not write run state: %s", e)
 
 
-def clear_state(work_dir: str = ".shortforge", state_file: str = STATE_FILE) -> None:
+def clear_state(work_dir: str = ".shortforge", state_file: str = STATE_FILE, *,
+                only_if_mine: bool = False) -> None:
+    """Remove the state file. With ``only_if_mine``, leave it alone unless it
+    still names THIS process.
+
+    Why that guard exists: `cli.py queue run` (which the dashboard can spawn as
+    a short helper) and `cli.py listen` share ``runstate.json``. The helper's
+    atexit used to delete it unconditionally — wiping the *listener's* live
+    state, including the record of whichever link was in flight. That silently
+    broke the dashboard's "is a worker running?" check, the duplicate-instance
+    guard, and crash recovery, all from a process that had merely finished its
+    own short run. A process may only retract its own claim.
+    """
+    path = state_path(work_dir, state_file)
+    if only_if_mine:
+        state = read_state(work_dir, state_file)
+        if state is not None and state.get("pid") != os.getpid():
+            log.debug("not clearing %s — it belongs to pid %s, not us (%s)",
+                      state_file, state.get("pid"), os.getpid())
+            return
     try:
-        os.remove(state_path(work_dir, state_file))
+        os.remove(path)
     except OSError:
         pass
+
+
+def cancel_goodbye(work_dir: str = ".shortforge", state_file: str = STATE_FILE) -> None:
+    """Retract this process's run-state without announcing a shutdown.
+
+    For a run that exited immediately having done nothing — the queue was
+    paused, or another worker already held the lock. It genuinely stopped, but
+    saying "🔴 ShortForge stopped" on top of "queue is paused, nothing started"
+    reads as the whole program going down (the operator had the dashboard open
+    and the listener running at the time). The state file is still cleared, so
+    the next start doesn't misread the leftover as a power cut.
+    """
+    global _announced
+    with _lock:
+        _announced = True          # makes the atexit/signal handlers a no-op
+    clear_state(work_dir, state_file, only_if_mine=True)
 
 
 def mark_online(work_dir: str = ".shortforge", mode: str = "queue",
@@ -217,7 +252,9 @@ def announce_offline(work_dir: str = ".shortforge", reason: str = "closed",
             notify(text, timeout=GOODBYE_TIMEOUT)
     except Exception as e:  # noqa: BLE001
         log.debug("could not send the shutdown notice: %s", e)
-    clear_state(work_dir, state_file)
+    # only_if_mine: a short-lived `queue run` helper exiting must never delete
+    # a still-running listener's state file (see clear_state's docstring).
+    clear_state(work_dir, state_file, only_if_mine=True)
     log.info("shutdown notice sent (%s)", reason)
     return True
 

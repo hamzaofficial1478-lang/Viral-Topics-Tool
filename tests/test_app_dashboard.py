@@ -316,6 +316,79 @@ def test_queue_screen_surfaces_warnings_and_elapsed_time_like_new_job_does(tmp_p
         "HTTP 400" in w.value for w in at.warning)
 
 
+# --- "▶ Start working" ------------------------------------------------------- #
+# The operator's report: pressing it produced three phone messages at once
+# ("ShortForge started" / "All links processed" / "ShortForge stopped") while
+# the queued link stayed pending and never began. Cause: the un-pause was
+# written to disk AFTER the worker process was spawned, so the child read
+# queue.json while it still said paused:true and bailed out instantly.
+
+def test_start_working_unpauses_on_disk_before_spawning_the_worker(tmp_path, monkeypatch):
+    """The ordering IS the bug. What the spawned process reads at the moment it
+    starts must already say the queue is running."""
+    import app
+    from shortforge import queue as Q
+
+    work_dir = str(tmp_path)
+    q = Q.load_queue(work_dir)
+    Q.add_job(q, "https://youtu.be/must-actually-start")
+    Q.set_paused(q, True)                       # the permission gate left it paused
+    Q.save_queue(q, work_dir)
+
+    seen_by_worker = {}
+
+    def _fake_spawn():
+        # Exactly what `cli.py queue run` does first: read queue.json off disk.
+        seen_by_worker["paused"] = Q.is_paused(Q.load_queue(work_dir))
+
+    monkeypatch.setattr(app, "_start_worker", _fake_spawn)
+    monkeypatch.setattr(app, "_worker_is_live", lambda *a, **k: False)
+
+    app._begin_working(work_dir)
+
+    assert seen_by_worker["paused"] is False    # was False BEFORE the spawn
+    assert Q.is_paused(Q.load_queue(work_dir)) is False
+
+
+def test_start_working_does_not_spawn_a_second_worker_when_one_is_live(tmp_path, monkeypatch):
+    """`start_all.bat` already runs `cli.py listen`, whose worker thread drains
+    the queue on its own. Spawning `cli.py queue run` on top of it produced a
+    redundant process that fought for the lock, overwrote the listener's
+    runstate.json, and sent its own start/finish/shutdown messages."""
+    import app
+    from shortforge import queue as Q
+
+    work_dir = str(tmp_path)
+    q = Q.load_queue(work_dir)
+    Q.add_job(q, "https://youtu.be/already-have-a-worker")
+    Q.set_paused(q, True)
+    Q.save_queue(q, work_dir)
+
+    spawned = []
+    monkeypatch.setattr(app, "_start_worker", lambda: spawned.append(1))
+    monkeypatch.setattr(app, "_worker_is_live", lambda *a, **k: True)
+
+    msg = app._begin_working(work_dir)
+
+    assert spawned == []                                  # no competing process
+    assert Q.is_paused(Q.load_queue(work_dir)) is False    # but it IS unpaused
+    assert "picks this up" in msg
+
+
+def test_worker_is_live_tracks_the_heartbeat(tmp_path):
+    import app
+    from shortforge import lifecycle
+
+    work_dir = str(tmp_path)
+    assert app._worker_is_live(work_dir) is False          # nothing running
+    lifecycle.mark_online(work_dir, "listen")
+    assert app._worker_is_live(work_dir) is True           # fresh heartbeat
+    state = lifecycle.read_state(work_dir)
+    state["last_seen"] = state["last_seen"] - 600          # gone quiet
+    lifecycle._write_state(work_dir, state)
+    assert app._worker_is_live(work_dir) is False
+
+
 # --- removing a link from the queue must always notify ----------------------- #
 # Operator: added 10 links, and whenever one leaves the queue (however it
 # leaves) expects to hear about it on the phone — previously only /cancel and

@@ -126,6 +126,42 @@ def test_drain_queue_refuses_to_double_run_while_locked(tmp_path):
     assert s["made"] == 0
     assert calls == []                          # never even started the job
     assert Q.counts(Q.load_queue(work))[Q.PENDING] == 1   # still there for the real worker
+    assert s["stopped_because"] == "locked"
+
+
+# --- a drain that did nothing must SAY it did nothing ------------------------- #
+# The operator pressed "Start working" and got three phone messages at once:
+# "ShortForge started", "All links processed", "ShortForge stopped" — while the
+# link they had added was still sitting pending, untouched. The drain had
+# exited instantly (the queue was paused) but returned a dict indistinguishable
+# from a completed run, so the caller announced success over work never done.
+
+def test_a_paused_drain_reports_why_it_did_nothing(tmp_path):
+    from shortforge import runner
+
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.add_job(q, "https://a/1")
+    Q.set_paused(q, True)
+    Q.save_queue(q, work)
+
+    said = []
+    s = runner.drain_queue(lambda: Config.load(), work, announce=said.append)
+
+    assert s["stopped_because"] == "paused"
+    assert s["made"] == 0 and s["pending"] == 1
+    assert said == []                                     # nothing was started
+    assert Q.counts(Q.load_queue(work))[Q.PENDING] == 1   # link untouched
+
+
+def test_an_empty_queue_is_a_genuine_completion_not_a_pause(tmp_path):
+    """The one case that legitimately earns "All links processed"."""
+    from shortforge import runner
+
+    work = str(tmp_path)
+    Q.save_queue(Q.load_queue(work), work)
+    s = runner.drain_queue(lambda: Config.load(), work, announce=lambda m: None)
+    assert s["stopped_because"] == "empty" and s["pending"] == 0
 
 
 def test_job_slug_tags_outputs_readably():

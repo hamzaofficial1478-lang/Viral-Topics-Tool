@@ -1,6 +1,8 @@
 """Remote-control command vocabulary: bounded parsing, queue commands, and the
 plain-English start/pause replies used by the ntfy permission gate."""
 
+import pytest
+
 from shortforge import queue as Q
 from shortforge import remote_control as RC
 
@@ -164,6 +166,63 @@ def test_start_word_does_not_hijack_a_real_link_message(tmp_path):
     reply = RC.handle_text("https://youtu.be/start-here go clips=2", work)
     assert "Queued" in reply
     assert len(Q.load_queue(work)["jobs"]) == 1
+
+
+# --- natural phrasing for start/pause ----------------------------------------- #
+# The operator sent a link from their phone, then tried to start it from their
+# phone, and nothing happened. Cause: only an EXACT bare "start"/"go"/"yes"
+# counted — even plain "resume" (the twin of /resume) was unrecognised, and
+# every natural phrasing fell through to a flat "Send me a video link", which
+# neither started anything nor hinted that the queue was sitting paused.
+
+@pytest.mark.parametrize("phrase", [
+    "resume", "start working", "start the process", "start it", "start now",
+    "go ahead", "yes please", "continue", "proceed", "begin the task",
+    "start.", "GO!", "  Start Working  ",
+])
+def test_natural_start_phrasings_all_resume(tmp_path, phrase):
+    work = str(tmp_path)
+    RC.handle_text("/pause", work)
+    assert Q.is_paused(Q.load_queue(work)) is True
+    RC.handle_text(phrase, work)
+    assert Q.is_paused(Q.load_queue(work)) is False, f"{phrase!r} did not resume"
+
+
+@pytest.mark.parametrize("phrase", ["hold on", "stop it", "not now", "wait a bit", "pause."])
+def test_natural_pause_phrasings_all_pause(tmp_path, phrase):
+    work = str(tmp_path)
+    RC.handle_text("/resume", work)
+    RC.handle_text(phrase, work)
+    assert Q.is_paused(Q.load_queue(work)) is True, f"{phrase!r} did not pause"
+
+
+@pytest.mark.parametrize("text", [
+    "https://youtu.be/start-working-guide 2 clips",
+    "https://youtu.be/go-ahead-and-watch",
+    "https://youtu.be/how-to-cancel-a-plan clips=3",
+])
+def test_loosened_matching_never_swallows_a_link_message(tmp_path, text):
+    """The safety property that lets the vocabulary above be generous: a
+    message containing a URL is never tested against the command words."""
+    work = str(tmp_path)
+    reply = RC.handle_text(text, work)
+    assert "Queued" in reply
+    assert len(Q.load_queue(work)["jobs"]) == 1
+
+
+def test_an_unrecognised_message_reports_the_queue_state_instead_of_a_dead_end(tmp_path):
+    """"Send me a video link" for "start working" gave the operator no way to
+    discover the word that would have worked. Any unrecognised message now
+    reports what the queue is actually doing and which words act on it."""
+    work = str(tmp_path)
+    RC.handle_text("https://a/1", work)
+    RC.handle_text("/pause", work)
+
+    reply = RC.handle_text("please make the videos now", work)
+
+    assert "didn't understand" in reply
+    assert "PAUSED" in reply and "1 pending" in reply
+    assert "start" in reply.lower()          # the word that would have worked
 
 
 # --- plain-English /cancel and /clear ----------------------------------------- #

@@ -413,14 +413,65 @@ def _render_results(manifest: dict, out_dir: str | None = None,
         _render_clip(c, f"{key_prefix}_{i}")
 
 
+def _worker_is_live(work_dir: str, *, freshness_s: float = 30.0) -> bool:
+    """Is a queue worker (``cli.py listen``) already running and checking in?
+
+    ``listen`` heartbeats every 5s even while idle, so a recent ``last_seen``
+    means its worker thread is alive and will pick up pending work on its own
+    within a few seconds of the queue being unpaused.
+    """
+    from shortforge import lifecycle
+    state = lifecycle.read_state(work_dir)
+    if not state:
+        return False
+    return (time.time() - float(state.get("last_seen") or 0)) < freshness_s
+
+
 def _start_worker() -> None:
     """Launch the queue runner as its own process so it survives UI reruns and
-    keeps going even if you close the browser tab."""
+    keeps going even if you close the browser tab.
+
+    Only for the standalone-dashboard case — see `_begin_working`, which never
+    calls this while `cli.py listen` is already running.
+    """
     import sys
     here = os.path.dirname(os.path.abspath(__file__))
     st.session_state.queue_proc = subprocess.Popen(
         [sys.executable, os.path.join(here, "cli.py"), "queue", "run", "--owner-confirmed"],
         cwd=here)
+
+
+def _begin_working(work_dir: str) -> str:
+    """Un-pause the queue and make sure something is working it. Returns the
+    message to show.
+
+    Two bugs live here, both reported by the operator as "the Start working
+    button is broken — it dropped three messages at once and my link never
+    started":
+
+    1. **Order.** The un-pause MUST be on disk before any worker process reads
+       it. An earlier version flipped `paused` in memory, spawned the worker,
+       and only then saved — so the child read `queue.json` while it still said
+       `paused: true`, `drain_queue` broke out instantly, and the run reported
+       "All links processed" over a link it had never touched.
+    2. **Don't spawn a second worker.** `start_all.bat` already runs
+       `cli.py listen`, whose worker thread drains the queue by itself. Also
+       spawning `cli.py queue run` produced a redundant process that fought for
+       the queue lock, overwrote the listener's `runstate.json`, and announced
+       its own start/finish/shutdown — three phone messages from a helper that
+       did no work. When a live worker exists, unpausing is the whole job.
+    """
+    from shortforge import queue as Q
+
+    fresh = Q.load_queue(work_dir)          # never a stale snapshot
+    Q.set_paused(fresh, False)
+    Q.save_queue(fresh, work_dir)           # ON DISK before anything reads it
+
+    if _worker_is_live(work_dir):
+        return ("Started — the running worker picks this up within a few seconds. "
+                "It keeps going even if you close this tab.")
+    _start_worker()
+    return "Started. It keeps running even if you close this tab."
 
 
 @st.fragment(run_every="5s")
@@ -481,15 +532,12 @@ def _queue_status_fragment(work_dir: str) -> None:
     r1, r2, r3 = st.columns(3)
     if r1.button("▶ Start working", type="primary", width="stretch",
                  disabled=running or counts[Q.PENDING] == 0):
-        if paused:
-            Q.set_paused(q, False)
-        _start_worker()
-        Q.save_queue(q, work_dir)
-        st.success("Started. It keeps running even if you close this tab.")
+        st.success(_begin_working(work_dir))
         st.rerun()
     if r2.button("⏸ Pause" if not paused else "▶ Resume", width="stretch"):
-        Q.set_paused(q, not paused)
-        Q.save_queue(q, work_dir)
+        fresh = Q.load_queue(work_dir)      # not the snapshot from the top of the tick
+        Q.set_paused(fresh, not paused)
+        Q.save_queue(fresh, work_dir)
         st.rerun()
     if r3.button("🧹 Clear finished", width="stretch"):
         from shortforge import notify as N

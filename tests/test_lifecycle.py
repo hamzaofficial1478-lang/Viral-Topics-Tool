@@ -99,6 +99,65 @@ def test_install_exit_notice_is_idempotent(tmp_path):
     assert L._installed is True
 
 
+# --- one process must never retract another's claim --------------------------- #
+# `cli.py queue run` (which the dashboard can spawn as a short helper) and
+# `cli.py listen` share runstate.json. The helper's atexit used to delete it
+# outright, wiping the LISTENER's live state — including the record of the link
+# in flight — which silently broke the dashboard's "is a worker running?"
+# check, the duplicate-instance guard, and crash recovery.
+
+def test_clear_state_does_not_delete_a_state_file_owned_by_another_process(tmp_path):
+    work = str(tmp_path)
+    L.mark_online(work, "listen")
+    L.heartbeat(work, current={"url": "https://youtu.be/in-flight", "detail": "3 clip(s)"})
+    state = L.read_state(work)
+    state["pid"] = os.getpid() + 10_000            # pretend another process owns it
+    L._write_state(work, state)
+
+    L.clear_state(work, only_if_mine=True)
+
+    survived = L.read_state(work)
+    assert survived is not None                    # not deleted
+    assert survived["current"]["url"] == "https://youtu.be/in-flight"
+
+
+def test_clear_state_still_removes_our_own_claim(tmp_path):
+    work = str(tmp_path)
+    L.mark_online(work, "queue")                   # written with OUR pid
+    L.clear_state(work, only_if_mine=True)
+    assert L.read_state(work) is None
+
+
+def test_announce_offline_leaves_another_processs_state_alone(tmp_path):
+    """End-to-end version of the above, through the real exit path."""
+    work = str(tmp_path)
+    L.mark_online(work, "listen")
+    L.heartbeat(work, current={"url": "https://youtu.be/in-flight"})
+    state = L.read_state(work)
+    state["pid"] = os.getpid() + 10_000
+    L._write_state(work, state)
+
+    L.announce_offline(work, "closed", notify_fn=lambda m: None)
+
+    assert L.read_state(work) is not None          # the listener keeps its state
+
+
+def test_cancel_goodbye_clears_our_state_without_announcing(tmp_path):
+    """A run that exited immediately having done nothing (paused / locked)
+    still has to retract its claim — otherwise the next start misreads the
+    leftover file as a power cut — but must not announce a shutdown on top of
+    the summary that already explained why nothing ran."""
+    work = str(tmp_path)
+    L.mark_online(work, "queue")
+    sent = []
+
+    L.cancel_goodbye(work)
+
+    assert L.read_state(work) is None                       # claim retracted
+    assert L.announce_offline(work, "closed", notify_fn=sent.append) is False
+    assert sent == []                                       # atexit stays quiet
+
+
 # --- the dashboard's own shutdown channel (cli.py ui) ------------------------- #
 # Separate from the worker's (cli.py listen / queue run): closing the UI window
 # reported by the operator as silent — cmd_ui never armed any exit handling at

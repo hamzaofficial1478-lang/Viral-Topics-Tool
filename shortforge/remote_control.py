@@ -136,8 +136,35 @@ _RES_RE = re.compile(r"\b(1080p|720p|480p|360p)\b", re.I)
 # type a slash for. Exact match on the whole (stripped, lowercased) message
 # only, so these never fire from a stray word inside a longer link+settings
 # message.
-_START_WORDS = {"start", "go", "begin", "yes", "yep", "yeah", "ok", "okay", "on"}
-_STAY_PAUSED_WORDS = {"pause", "stop", "off", "no", "nope", "wait", "not yet", "hold"}
+_START_WORDS = {
+    "start", "go", "begin", "yes", "yep", "yeah", "ok", "okay", "on",
+    # Natural phrasings the operator actually sent. "resume" (the plain-word
+    # twin of /resume) was missing entirely, so a perfectly reasonable reply
+    # to the permission prompt did nothing at all and answered "Send me a
+    # video link" — no hint that the queue was sitting paused.
+    "resume", "continue", "proceed", "run", "run it", "do it", "start it",
+    "start now", "start work", "start working", "start the process",
+    "start the task", "start processing", "go ahead", "yes please",
+    "carry on", "keep going", "begin the task",
+}
+_STAY_PAUSED_WORDS = {
+    "pause", "stop", "off", "no", "nope", "wait", "not yet", "hold",
+    "hold on", "pause it", "stop it", "stop working", "wait a bit",
+    "not now", "later",
+}
+
+# Trailing/leading punctuation people type without thinking ("start." / "go!").
+_EDGE_PUNCT = " \t\r\n.!?,;:'\"“”‘’()[]"
+
+
+def _normalize(text: str) -> str:
+    """Lowercase, collapse whitespace and shed edge punctuation.
+
+    Only ever used for whole-message command matching, and only for messages
+    that contain no link at all — so a loosened match here can never swallow
+    a real link+settings message.
+    """
+    return re.sub(r"\s+", " ", (text or "").strip().strip(_EDGE_PUNCT)).strip().lower()
 # Same idea for /cancel and /clear: an operator who already learned "pause"/
 # "start" work without a slash reasonably assumes "cancel"/"clear" do too. They
 # didn't — a bare "cancel" fell all the way through to "Send me a video link",
@@ -331,14 +358,49 @@ def _cancel(work_dir: str) -> str:
     return f"🛑 Dropped {before - len(q['jobs'])} pending job(s). Any running job finishes."
 
 
+def _unknown_reply(text: str, work_dir: str) -> str:
+    """A dead end is the worst possible answer to a control message.
+
+    The old reply to anything unrecognised was a flat "Send me a video link
+    (or /help)" — which is what the operator got back for "start working"
+    while a link sat pending in a paused queue. It neither did the thing nor
+    said why, so there was no way to discover the one word that would have
+    worked. Now an unrecognised message reports the real queue state and the
+    exact words that act on it, making any wrong guess self-correcting.
+    """
+    q = Q.load_queue(work_dir)
+    c = Q.counts(q)
+    state = "⏸ PAUSED" if Q.is_paused(q) else "▶ working"
+    hint = ('Reply <b>start</b> to begin.' if Q.is_paused(q)
+            else 'Reply <b>pause</b> to hold.')
+    return (f"🤔 I didn't understand “{text[:60]}”.\n"
+            f"📊 Queue: {state} — {c[Q.PENDING]} pending, {c[Q.RUNNING]} running, "
+            f"{c[Q.DONE]} done.\n{hint} Also: <b>cancel</b>, <b>clear</b>, "
+            f"/list, /status, /help.")
+
+
 def handle_text(text: str, work_dir: str) -> str:
     """Turn one owner message into a reply. Pure w.r.t. any transport (testable)."""
     text = (text or "").strip()
     low = text.lower()
 
-    if low in _START_WORDS or low.startswith(("/resume", "/on")):
+    # Bare-word commands are matched ONLY on link-free messages. Checking links
+    # first is what makes it safe to accept loose multi-word phrasings above:
+    # a message carrying a URL can never be mistaken for a control word.
+    if not _URL_RE.search(text):
+        norm = _normalize(text)
+        if norm in _START_WORDS:
+            return _resume(work_dir)
+        if norm in _STAY_PAUSED_WORDS:
+            return _pause(work_dir)
+        if norm in _CLEAR_WORDS:
+            return _clear(work_dir)
+        if norm in _CANCEL_WORDS:
+            return _cancel(work_dir)
+
+    if low.startswith(("/resume", "/on")):
         return _resume(work_dir)
-    if low in _STAY_PAUSED_WORDS or low.startswith(("/pause", "/stop", "/off")):
+    if low.startswith(("/pause", "/stop", "/off")):
         return _pause(work_dir)
     if low.startswith(("/start", "/help")):
         return HELP
@@ -364,16 +426,16 @@ def handle_text(text: str, work_dir: str) -> str:
                  + (f" ({len(j['clips'])} clips)" if j["clips"] else "")
                  for i, j in enumerate(jobs[:30], 1)]
         return "<b>Queue</b>\n" + "\n".join(lines)
-    if low in _CLEAR_WORDS or low.startswith("/clear"):
+    if low.startswith("/clear"):
         return _clear(work_dir)
-    if low in _CANCEL_WORDS or low.startswith("/cancel"):
+    if low.startswith("/cancel"):
         return _cancel(work_dir)
     if text.startswith("/"):
         return "Unknown command. Send /help for what I understand."
 
     links = parse_links(text)
     if not links:
-        return "Send me a video link (or /help)."
+        return _unknown_reply(text, work_dir)
 
     settings = parse_settings(text)
     label = settings.pop("_label", "")

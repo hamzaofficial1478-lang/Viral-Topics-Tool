@@ -149,23 +149,43 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
     picked up without a restart. Holds a whole-run lock (``queue.lock``) so a
     second drain_queue() — a hand-run `queue run` while `listen`'s worker is
     also draining, say — can't pick up and render the same job twice.
+
+    The returned dict carries ``stopped_because`` — one of ``"empty"`` (the
+    normal "worked through everything" finish), ``"paused"``, ``"locked"``
+    (another worker holds the lock) or ``"asked_to_stop"``. Callers MUST use
+    it before announcing anything: without it, a drain that did nothing at all
+    is indistinguishable from one that processed the whole queue, and the
+    caller cheerfully reports "All links processed" over a still-pending
+    link. That exact misreport is what the operator hit — three messages at
+    once ("started" / "all links processed" / "stopped") while their link had
+    never even begun. CLAUDE.md rule 1: never emit output that looks
+    successful but isn't.
     """
     announce = announce or N.notify
     t_all = time.time()
     made = 0
+
+    def _summary(reason: str, elapsed: float) -> dict:
+        q_now = Q.load_queue(work_dir)
+        c_now = Q.counts(q_now)
+        return {"made": made, "done": c_now[Q.DONE], "failed": c_now[Q.FAILED],
+                "pending": c_now[Q.PENDING], "total_clips": Q.total_clips(q_now),
+                "elapsed": elapsed, "stopped_because": reason}
+
     if not Q.acquire_lock(work_dir):
         log.warning("queue: another worker already holds the lock (queue.lock) — "
                    "skipping this drain to avoid double-rendering a job.")
-        q = Q.load_queue(work_dir)
-        c = Q.counts(q)
-        return {"made": 0, "done": c[Q.DONE], "failed": c[Q.FAILED],
-                "total_clips": Q.total_clips(q), "elapsed": 0.0}
+        return _summary("locked", 0.0)
+
+    reason = "empty"
     try:
         while True:
             if should_stop is not None and should_stop():
+                reason = "asked_to_stop"
                 break
             q = Q.load_queue(work_dir)
             if Q.is_paused(q):       # /pause (or the startup permission gate): stay alive
+                reason = "paused"
                 break
             job = Q.next_pending(q)
             if job is None:
@@ -199,7 +219,4 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
     finally:
         Q.release_lock(work_dir)
 
-    q = Q.load_queue(work_dir)
-    c = Q.counts(q)
-    return {"made": made, "done": c[Q.DONE], "failed": c[Q.FAILED],
-            "total_clips": Q.total_clips(q), "elapsed": time.time() - t_all}
+    return _summary(reason, time.time() - t_all)

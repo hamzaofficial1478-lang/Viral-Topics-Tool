@@ -14,6 +14,7 @@ import datetime as _dt
 import json
 import os
 import sys
+import time
 
 from shortforge.captions.templates import ANIMATIONS, list_templates
 from shortforge.config import Config
@@ -445,6 +446,26 @@ def cmd_queue(args: argparse.Namespace) -> int:
     return 0 if s["failed"] == 0 else 1      # the atexit hook sends the goodbye
 
 
+def _listener_already_running(existing: dict | None, own_pid: int,
+                              *, freshness_s: float = 15.0) -> bool:
+    """True only when ``existing`` (a `runstate.json` snapshot) describes a
+    DIFFERENT process that is both alive and has checked in recently.
+
+    Both conditions matter independently: a live PID with a stale
+    ``last_seen`` (e.g. a debugger paused it, or the clock jumped) must not
+    block a restart, and neither must a fresh timestamp belonging to a PID
+    that's actually dead (Windows can reuse PIDs). Pulled out as its own
+    function so the exact refuse/allow boundary is unit-testable without
+    driving `cmd_listen`'s threads.
+    """
+    from shortforge.utils import pid_alive
+
+    if not existing or existing.get("pid") == own_pid:
+        return False
+    age = time.time() - float(existing.get("last_seen") or 0)
+    return age < freshness_s and pid_alive(int(existing.get("pid") or 0))
+
+
 def cmd_listen(args: argparse.Namespace) -> int:
     """Open the dashboard, listen for ntfy commands, and work the queue — the
     phone-driven mode.
@@ -473,6 +494,21 @@ def cmd_listen(args: argparse.Namespace) -> int:
 
     cfg0 = Config.load(args.config)
     work_dir = cfg0.get("paths.work_dir", ".shortforge")
+
+    # Refuse to start a second listener on top of one that's already live: two
+    # ntfy pollers on the same command topic would each act on the same
+    # incoming message (double-queuing every link sent from the phone), and
+    # there's no dedup against that once handle_text() has run.
+    existing = lifecycle.read_state(work_dir)
+    if _listener_already_running(existing, os.getpid()):
+        log.error("ShortForge is already listening (pid %s). Not starting a second "
+                  "instance on this folder — close that one first if you meant to "
+                  "restart it.", existing.get("pid"))
+        N.notify("⚠️ <b>Already running</b> — a second ShortForge just tried to "
+                 "start but one is already listening. This new one is exiting; "
+                 "the original keeps working.")
+        return 2
+
     prev = lifecycle.mark_online(work_dir, mode="listen")
     lifecycle.install_exit_notice(work_dir)
     q = Q.load_queue(work_dir)
@@ -494,10 +530,17 @@ def cmd_listen(args: argparse.Namespace) -> int:
         sent from the phone only does any good if the machine is still awake
         to receive it; sleep must never kick in just because nothing HAPPENED
         to be rendering at that exact moment.
+
+        The idle branch also refreshes the heartbeat: `drain_queue` only ticks
+        `last_seen` while a job is actually running, so a long idle stretch
+        (normal for phone-driven use — most of the time is spent waiting) would
+        otherwise make the dashboard's "is a worker running?" check, and the
+        duplicate-instance guard above, go stale and wrongly say no.
         """
         while not stop.is_set():
             _q = Q.load_queue(work_dir)
             if Q.is_paused(_q) or Q.next_pending(_q) is None:
+                lifecycle.heartbeat(work_dir)
                 stop.wait(5)
                 continue
             s = drain_queue(lambda: _cfg_for_queue(args), work_dir,

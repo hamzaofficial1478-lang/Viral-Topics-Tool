@@ -38,35 +38,13 @@ def lock_path(work_dir: str = ".shortforge") -> str:
     return os.path.join(work_dir, LOCK_FILE)
 
 
-def _pid_alive(pid: int) -> bool:
-    """Best-effort liveness check. On any doubt, say alive — stealing a lock
-    that's still legitimately held is the dangerous direction to be wrong in."""
-    if os.name == "nt":
-        try:
-            import ctypes
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            handle = ctypes.windll.kernel32.OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-            if not handle:
-                return False
-            ctypes.windll.kernel32.CloseHandle(handle)
-            return True
-        except Exception:  # noqa: BLE001
-            return True
-    try:
-        os.kill(pid, 0)          # POSIX: signal 0 checks, never actually signals
-        return True
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True
-
-
 def acquire_lock(work_dir: str = ".shortforge") -> bool:
     """Exclusive create; True if acquired. A lock left by a PID that's no
     longer running (crash, kill -9) is reclaimed automatically — the queue
     file's own crash recovery (`requeue_interrupted`) already handles the job
     state, this only clears the stale lock so a restart isn't refused forever."""
+    from .utils import pid_alive
+
     path = lock_path(work_dir)
     os.makedirs(work_dir, exist_ok=True)
     try:
@@ -80,7 +58,7 @@ def acquire_lock(work_dir: str = ".shortforge") -> bool:
                 held_by = int(f.read().strip())
         except (OSError, ValueError):
             return False           # unreadable lock: don't guess, just refuse
-        if _pid_alive(held_by):
+        if pid_alive(held_by):
             return False           # a live holder — including ourselves — wins
         try:
             os.remove(path)

@@ -64,6 +64,37 @@ class ShortForgeError(RuntimeError):
     """Raised for expected, user-facing failures (bad input, missing tool)."""
 
 
+def pid_alive(pid: int) -> bool:
+    """Best-effort liveness check, Windows- and POSIX-safe. On any doubt, say
+    alive — stealing a lock/slot that's still legitimately held is the
+    dangerous direction to be wrong in.
+
+    Not ``os.kill(pid, 0)`` on Windows: unlike POSIX, Windows gives signal 0
+    no special "just check" meaning in Python's os.kill, so it is NOT a safe
+    liveness probe there — this uses ``OpenProcess`` instead, which only
+    queries.
+    """
+    if os.name == "nt":
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return False
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        except Exception:  # noqa: BLE001
+            return True
+    try:
+        os.kill(pid, 0)          # POSIX: signal 0 checks, never actually signals
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+
+
 def require_binary(name: str) -> str:
     """Return the path to a required system binary or raise a clear error."""
     path = shutil.which(name)

@@ -183,6 +183,49 @@ def test_base_opts_carries_extractor_args():
     assert opts["extractor_args"] == I._extractor_args(cfg)
 
 
+# --- download speed: concurrent fragment downloads --------------------------- #
+# yt-dlp's own default is 1 (serial) — the biggest lever for "the download
+# itself is slow" once auth/format are working, since anything above ~360p is
+# fragmented (DASH/HLS).
+
+def test_concurrent_fragments_default_is_four():
+    assert I._resolve_concurrent_fragments(Config.load()) == 4
+
+
+def test_concurrent_fragments_config_override_wins():
+    cfg = Config.load()
+    cfg.override("ingest.concurrent_fragments", 8)
+    assert I._resolve_concurrent_fragments(cfg) == 8
+
+
+def test_concurrent_fragments_falls_back_to_the_store(tmp_path, monkeypatch):
+    """Same fallback pattern as _resolve_auth: cfg wins, else whatever was
+    saved from Settings -> YouTube authentication."""
+    monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(tmp_path / "p.json"))
+    from shortforge.providers import store as S
+    S.save_store({"providers": [], "credentials": [],
+                  "youtube_auth": {"concurrent_fragments": 6}})
+    assert I._resolve_concurrent_fragments(Config.load()) == 6
+
+
+def test_concurrent_fragments_is_bounded_both_ways():
+    """A typo (0, or an absurdly high number) never reaches yt-dlp verbatim —
+    clamped to a sane [1, 16] range instead of silently doing nothing or
+    hammering YouTube's edge servers."""
+    cfg = Config.load()
+    cfg.override("ingest.concurrent_fragments", 0)
+    assert I._resolve_concurrent_fragments(cfg) == 4          # 0 is falsy -> default
+    cfg.override("ingest.concurrent_fragments", 999)
+    assert I._resolve_concurrent_fragments(cfg) == 16
+
+
+def test_base_opts_carries_concurrent_fragments():
+    cfg = Config.load()
+    cfg.override("ingest.concurrent_fragments", 5)
+    opts = I._base_opts(cfg, "/tmp/dl")
+    assert opts["concurrent_fragment_downloads"] == 5
+
+
 def test_with_format_fallback_loosens_then_succeeds():
     cfg = Config.load()
     tried: list[str] = []

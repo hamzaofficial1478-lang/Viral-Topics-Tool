@@ -29,6 +29,16 @@ DEFAULTS: dict[str, Any] = {
         "player_client": "default,tv",
         "socket_timeout": 120,           # per-read timeout (s); 20 was too short on slow links
         "retries": 4,                    # network retries per auth strategy (exponential backoff)
+        # yt-dlp's default is 1 — every DASH/HLS fragment (i.e. any format above
+        # ~360p, which is always fetched as separate video+audio streams) downloads
+        # strictly one piece at a time. Raising this is the single biggest lever
+        # for "the download itself is slow" on a fast connection; kept modest
+        # (not maxed out) so it doesn't look like abuse to YouTube's edge servers.
+        # None here (not a baked-in 4) on purpose — same convention as
+        # cookies/cookies_from_browser above: it lets _resolve_concurrent_fragments
+        # fall back to the Settings UI's persisted value when cfg doesn't set one,
+        # instead of the cfg default always winning and hiding that value.
+        "concurrent_fragments": None,
     },
     "transcribe": {
         "model": "small",           # tiny|base|small|medium|large-v3 ('base' garbles; 'small' is the sane CPU default)

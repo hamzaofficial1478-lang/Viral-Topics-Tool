@@ -21,6 +21,13 @@ from .utils import log
 
 JOB_LOG_FILE = "current_job.log"
 
+# The queue-driven path writes "LEVELNAME\tmessage" per line (see
+# _attach_job_log) so a reader can tell warnings/errors apart from ordinary
+# progress lines — the manual New Job form gets this for free from the log
+# record's own levelno; the file has to carry it explicitly instead.
+_LEVEL_NAMES = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING,
+                "ERROR": logging.ERROR, "CRITICAL": logging.CRITICAL}
+
 
 def job_log_path(work_dir: str) -> str:
     return os.path.join(work_dir, JOB_LOG_FILE)
@@ -40,7 +47,7 @@ def _attach_job_log(work_dir: str) -> logging.Handler:
     path = job_log_path(work_dir)
     os.makedirs(work_dir, exist_ok=True)
     handler = logging.FileHandler(path, mode="w", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.setFormatter(logging.Formatter("%(levelname)s\t%(message)s"))
     logging.getLogger("shortforge").addHandler(handler)
     return handler
 
@@ -48,6 +55,26 @@ def _attach_job_log(work_dir: str) -> logging.Handler:
 def _detach_job_log(handler: logging.Handler) -> None:
     logging.getLogger("shortforge").removeHandler(handler)
     handler.close()
+
+
+def read_job_log(work_dir: str) -> list[tuple[int, str]]:
+    """The current job's log lines as (levelno, message) pairs, oldest first.
+
+    A line without a recognised "LEVELNAME\\t" prefix (e.g. one written before
+    this format existed, or by anything else that touches the file) is kept
+    as-is at INFO — never dropped, never mis-attributed to a warning.
+    """
+    try:
+        with open(job_log_path(work_dir), "r", encoding="utf-8", errors="replace") as f:
+            raw_lines = f.read().splitlines()
+    except OSError:
+        return []
+    out: list[tuple[int, str]] = []
+    for ln in raw_lines:
+        level_str, sep, msg = ln.partition("\t")
+        levelno = _LEVEL_NAMES.get(level_str) if sep else None
+        out.append((levelno, msg) if levelno is not None else (logging.INFO, ln))
+    return out
 
 
 def fmt_hms(seconds: float) -> str:
@@ -156,7 +183,8 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
             detail = Q.describe_settings(job)
             lifecycle.heartbeat(work_dir, current={"url": job["url"], "detail": detail,
                                                    "index": idx, "total": total,
-                                                   "prefix": Q.job_slug(job, idx)})
+                                                   "prefix": Q.job_slug(job, idx),
+                                                   "started": time.time()})
             # Announce the start too — "it's alive and this is what it understood".
             announce(f"🎬 <b>Link {idx}/{total} started</b> — making {detail}\n{job['url'][:80]}")
 

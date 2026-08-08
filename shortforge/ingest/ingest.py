@@ -25,6 +25,7 @@ Link ingestion reliability (the operator only ever uses links):
 from __future__ import annotations
 
 import os
+import time
 
 from ..config import Config
 from ..models import SourceMeta
@@ -148,6 +149,31 @@ def _resolve_auth(cfg: Config) -> tuple[str | None, str | None]:
     return _materialise_cookies(cookies_file), (browser or None)
 
 
+def _resolve_concurrent_fragments(cfg: Config) -> int:
+    """How many DASH/HLS fragments yt-dlp fetches in parallel per download.
+
+    yt-dlp's own default is 1 — fully sequential — which is the biggest single
+    lever for "the download itself is slow" once auth/format selection are
+    working: any format above ~360p is fragmented, and fetching those one at a
+    time leaves a fast connection mostly idle. Same fallback pattern as
+    ``_resolve_auth``: cfg (CLI/form) wins, else the persisted Settings UI
+    value, else a modest built-in default — never unbounded, since driving
+    this too high just looks like abuse to YouTube's edge servers.
+    """
+    val = cfg.get("ingest.concurrent_fragments")
+    if not val:
+        try:
+            from ..providers import store as store_mod
+            val = (store_mod.load_store().get("youtube_auth", {}) or {}).get("concurrent_fragments")
+        except Exception:  # noqa: BLE001 - store optional; never block ingest on it
+            pass
+    try:
+        n = int(val) if val else 4
+    except (TypeError, ValueError):
+        n = 4
+    return max(1, min(n, 16))
+
+
 def _auth_strategies(cfg: Config) -> list[tuple[str, dict]]:
     """Ordered (label, ydl-opts-overlay): configured cookies → browser → none."""
     cookies_file, browser = _resolve_auth(cfg)
@@ -224,6 +250,8 @@ def _base_opts(cfg: Config, dl_dir: str) -> dict:
         "fragment_retries": 10,
         # configurable read timeout (20s default was too short on slow links).
         "socket_timeout": int(cfg.get("ingest.socket_timeout", 120) or 120),
+        # yt-dlp default is 1 (serial) — see _resolve_concurrent_fragments.
+        "concurrent_fragment_downloads": _resolve_concurrent_fragments(cfg),
     }
 
 
@@ -289,8 +317,6 @@ def _require_ytdlp():
 def _download_with_retries(url: str, opts: dict, cfg: Config):
     """One auth strategy: download ``url`` with ``opts``, retrying *transient*
     failures with exponential backoff. Raises a classified exception."""
-    import time
-
     yt_dlp = _require_ytdlp()
     attempts = max(1, int(cfg.get("ingest.retries", 4)))
     for attempt in range(1, attempts + 1):
@@ -324,6 +350,7 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
     saw_bot = False
     last_err: Exception | None = None
     for label, overlay in strategies:
+        t0 = time.time()
         try:
             log.info("download: trying auth strategy '%s'", label)
             (info, file_path), fmt, fell_back = _with_format_fallback(
@@ -332,12 +359,13 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
             if fell_back:
                 log.info("download: format '%s' worked (the preferred one wasn't "
                          "offered for this video)", fmt)
-            log.info("download succeeded via '%s'", label)
+            log.info("download succeeded via '%s' in %.1fs", label, time.time() - t0)
             break
         except _BotWall as e:
             saw_bot = True
             last_err = e
-            log.warning("auth strategy '%s' hit YouTube's bot wall; trying next", label)
+            log.warning("auth strategy '%s' hit YouTube's bot wall after %.1fs; trying next",
+                        label, time.time() - t0)
             continue
         except _Unavailable as e:
             raise ShortForgeError(
@@ -347,15 +375,17 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
         except _NoFormat as e:
             last_err = e
             log.warning("auth strategy '%s': signed in fine, but YouTube offered no usable "
-                        "video format for this link", label)
+                        "video format for this link (%.1fs)", label, time.time() - t0)
             continue
         except _Transient as e:
             last_err = e
-            log.warning("auth strategy '%s' failed on a network error; trying next", label)
+            log.warning("auth strategy '%s' failed on a network error after %.1fs; trying next",
+                        label, time.time() - t0)
             continue
         except Exception as e:  # noqa: BLE001 - unknown extractor error; try next strategy
             last_err = e
-            log.warning("auth strategy '%s' unavailable (%s); trying next", label, _clean_err(e))
+            log.warning("auth strategy '%s' unavailable after %.1fs (%s); trying next",
+                        label, time.time() - t0, _clean_err(e))
             continue
 
     if info is None or file_path is None:

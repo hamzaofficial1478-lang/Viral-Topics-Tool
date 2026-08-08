@@ -235,6 +235,14 @@ def _render_youtube_auth(store: dict) -> None:
     cookies_file = st.text_input(
         "…or a cookies.txt file (optional)", value=ya.get("cookies_file", "") or "",
         help="A Netscape-format cookies.txt exported from your browser. Tried before browser cookies.")
+    concurrent_fragments = st.number_input(
+        "Concurrent fragment downloads", min_value=1, max_value=16, step=1,
+        value=int(ya.get("concurrent_fragments") or 4),
+        help="How many pieces of the video yt-dlp fetches at once. Above ~360p, YouTube "
+             "always serves video in separate fragments — yt-dlp's own default is 1 (fully "
+             "one-at-a-time), which leaves a fast connection mostly idle. Raising this is "
+             "usually the biggest lever for a slow download; going far above ~8-10 rarely "
+             "helps further and can look like abuse to YouTube's servers.")
     test_url = st.text_input("Test URL (paste one of your video links)", key="yt_test_url",
                              placeholder="https://www.youtube.com/watch?v=…")
 
@@ -243,6 +251,7 @@ def _render_youtube_auth(store: dict) -> None:
         store["youtube_auth"] = {
             "cookies_from_browser": None if browser == "none" else browser,
             "cookies_file": cookies_file.strip() or None,
+            "concurrent_fragments": int(concurrent_fragments),
         }
         _persist(store)
         st.success("Saved — applied to every download.")

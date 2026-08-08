@@ -253,3 +253,43 @@ def test_queue_screen_shows_live_progress_for_a_running_job(tmp_path, monkeypatc
     assert any("running-now" in c.value for c in at.caption)
     log_text = "\n".join(c.value for c in at.code)
     assert "transcribing audio" in log_text
+
+
+def test_queue_screen_surfaces_warnings_and_elapsed_time_like_new_job_does(tmp_path, monkeypatch):
+    """The operator asked for the queue-driven running view to show the same
+    level of detail the manual New Job form always has — live log, warnings
+    called out separately, elapsed time — not just a bare progress bar, so a
+    real problem (not just slowness) can actually be spotted from this screen."""
+    import os
+    from shortforge import lifecycle, queue as Q
+    from shortforge.runner import job_log_path
+
+    monkeypatch.chdir(tmp_path)
+    work_dir = ".shortforge"
+    os.makedirs(work_dir, exist_ok=True)
+    q = Q.load_queue(work_dir)
+    Q.add_job(q, "https://youtu.be/warn-case", {"num_clips": 2})
+    Q.mark(q, q["jobs"][0]["id"], Q.RUNNING)
+    Q.save_queue(q, work_dir)
+    with open(job_log_path(work_dir), "w", encoding="utf-8") as f:
+        f.write("INFO\tingesting source video\n"
+                "WARNING\tvision scoring returned HTTP 400, skipping frame fusion\n"
+                "INFO\ttranscribing audio\n")
+    lifecycle.mark_online(work_dir)
+    lifecycle.heartbeat(work_dir, current={"url": "https://youtu.be/warn-case",
+                                           "detail": "2 clip(s)", "index": 1, "total": 1,
+                                           "started": __import__("time").time() - 42})
+
+    at = _fresh()
+
+    assert not at.exception
+    # elapsed time is now part of the progress bar's own text, not a separate widget
+    progress_texts = " ".join(str(getattr(p, "text", "") or "") for p in at.get("progress"))
+    assert "elapsed" in progress_texts
+    assert any("Link 1/1" in c.value for c in at.caption)
+    warn_headers = [e.label for e in at.expander if "warning" in (e.label or "").lower()]
+    assert len(warn_headers) == 1 and "1 warning" in warn_headers[0]
+    body = at.expander[0]
+    warning_widgets = [w.value for w in body.warning] if hasattr(body, "warning") else []
+    assert any("HTTP 400" in w for w in warning_widgets) or any(
+        "HTTP 400" in w.value for w in at.warning)

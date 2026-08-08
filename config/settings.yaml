@@ -17,6 +17,13 @@ ingest:
   # formats into the same request, so this is usually the fix for "signed in
   # OK but no usable high-res format" without touching cookies at all.
   player_client: "default,tv"
+  # Not set here on purpose (null = "unset", not "1") -- yt-dlp downloads
+  # fragments (DASH/HLS -- any format above ~360p) strictly one at a time by
+  # default. Raising it is the biggest lever for download speed on a fast
+  # connection; set it from Settings -> YouTube authentication instead (it
+  # persists to config/providers.local.json, which this operator CAN reach
+  # without hand-editing a file). Falls back to 4 if never set anywhere.
+  concurrent_fragments: null
 
 transcribe:
   # 'base' garbles hard sources; 'small' is the sane CPU default. 'medium'/'large-v3'

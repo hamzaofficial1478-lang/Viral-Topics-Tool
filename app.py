@@ -455,8 +455,9 @@ def _queue_status_fragment(work_dir: str) -> None:
     doesn't hang headless/AppTest execution, which has no real browser timer
     to drive a blocking loop.
     """
+    from shortforge import lifecycle
     from shortforge import queue as Q
-    from shortforge.runner import job_log_path
+    from shortforge import runner
 
     q = Q.load_queue(work_dir)
     counts = Q.counts(q)
@@ -489,15 +490,34 @@ def _queue_status_fragment(work_dir: str) -> None:
 
     running_job = next((j for j in q.get("jobs", []) if j["status"] == Q.RUNNING), None)
     if running_job:
-        st.info("⏳ Working… this updates on its own.")
-        try:
-            with open(job_log_path(work_dir), "r", encoding="utf-8", errors="replace") as f:
-                lines = f.read().splitlines()
-        except OSError:
-            lines = []
+        # Same level of detail the manual New Job form has always had (live log,
+        # warnings surfaced separately, elapsed time) — the operator asked for
+        # this explicitly after the metrics-staleness fix above still left this
+        # view thinner than New Job's, with no way to tell "it's fine, just
+        # working" from "something's actually wrong" without digging in logs
+        # elsewhere. The queue-driven path runs in its own PROCESS though, so
+        # there's no in-memory (levelno, message) queue like New Job's thread
+        # has — `runner.read_job_log` parses them back out of the per-job log
+        # file instead (written with a "LEVELNAME\tmessage" prefix for exactly
+        # this reason), same shared file `_stage_from_lines` already read here.
+        parsed = runner.read_job_log(work_dir)
+        lines = [msg for _, msg in parsed]
+        warnings = [(lvl, msg) for lvl, msg in parsed if lvl >= logging.WARNING]
         frac, label = _stage_from_lines(lines)
-        st.progress(frac, text=label)
-        st.caption(f"Now: {running_job['url'][:70]}")
+
+        cur = (lifecycle.read_state(work_dir) or {}).get("current") or {}
+        started = cur.get("started")
+        elapsed_text = f"  ·  {int(time.time() - started)}s elapsed" if started else ""
+        idx, total = cur.get("index"), cur.get("total")
+        loc = f"Link {idx}/{total} — " if idx and total else ""
+
+        st.info("⏳ Working… this updates on its own.")
+        st.progress(frac, text=f"{label}{elapsed_text}")
+        st.caption(f"Now: {loc}{running_job['url'][:70]}")
+        if warnings:
+            with st.expander(f"⚠️ {len(warnings)} warning(s) so far", expanded=False):
+                _render_warnings(warnings, limit=8)
+        st.caption("Live log")
         st.code("\n".join(lines[-18:]) or "Starting…")
     elif paused:
         st.warning("⏸ Paused — new links are still accepted, nothing new starts.")

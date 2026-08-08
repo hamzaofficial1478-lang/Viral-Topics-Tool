@@ -424,38 +424,101 @@ def _start_worker() -> None:
 
 
 @st.fragment(run_every="3s")
-def _queue_progress_fragment(work_dir: str) -> None:
-    """Live progress bar + log tail for whichever queued job is currently
-    running — the same view the manual New Job form has, for the queue path.
+def _queue_status_fragment(work_dir: str) -> None:
+    """Everything that changes while the queue runs — metrics, the
+    working/paused banner, live progress for the running job, and the jobs
+    table — auto-refreshing together on the browser's own timer.
+
+    The bug this fixes: an earlier version only put the progress bar/log
+    inside a fragment and left the metrics + jobs table computed once per
+    full page load, from a `Q.load_queue()` snapshot taken at that moment.
+    A job started from ntfy/Chat runs in a separate process, so it can
+    finish (or a lot can otherwise change) with nobody clicking anything in
+    the browser to trigger a fresh read — the operator watched a job
+    silently finish (3 clips made, status flipped to done) while this
+    screen kept showing "Running / 0 clips made" indefinitely, because nothing
+    outside the small progress fragment ever re-read the queue file. Now the
+    whole status section shares one fresh `Q.load_queue()` per tick, so the
+    metrics, banner, progress and table can never disagree with each other or
+    go stale relative to one another.
 
     The queue-driven path runs in its own PROCESS (`cli.py listen`'s worker
     thread, or a spawned `queue run` subprocess) — separate from the
     dashboard, unlike the New Job form's own background THREAD, which shares
     this process and so can push log lines into an in-memory queue directly.
-    There's no equivalent in-memory channel across processes, so this tails
-    the shared per-job log file instead (`runner.job_log_path`, written by
-    `runner._attach_job_log`) — works the same regardless of which process is
-    actually doing the work. A fragment, not a page-wide sleep+rerun: refreshes
-    only itself on the browser's own timer, doesn't block the page, and (found
-    the hard way, twice, on the Chat screen) doesn't hang headless/AppTest
-    execution, which has no real browser timer to drive a blocking loop.
+    There's no equivalent in-memory channel across processes, so progress is
+    read from the shared per-job log file instead (`runner.job_log_path`,
+    written by `runner._attach_job_log`) — works the same regardless of which
+    process is actually doing the work. A fragment, not a page-wide
+    sleep+rerun: refreshes only itself on the browser's own timer, doesn't
+    block the page, and (found the hard way, twice, on the Chat screen)
+    doesn't hang headless/AppTest execution, which has no real browser timer
+    to drive a blocking loop.
     """
     from shortforge import queue as Q
     from shortforge.runner import job_log_path
 
     q = Q.load_queue(work_dir)
+    counts = Q.counts(q)
+    paused = Q.is_paused(q)
+    running = counts[Q.RUNNING] > 0
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Pending", counts[Q.PENDING])
+    m2.metric("Running", counts[Q.RUNNING])
+    m3.metric("Done", counts[Q.DONE])
+    m4.metric("Clips made", Q.total_clips(q))
+
+    r1, r2, r3 = st.columns(3)
+    if r1.button("▶ Start working", type="primary", width="stretch",
+                 disabled=running or counts[Q.PENDING] == 0):
+        if paused:
+            Q.set_paused(q, False)
+        _start_worker()
+        Q.save_queue(q, work_dir)
+        st.success("Started. It keeps running even if you close this tab.")
+        st.rerun()
+    if r2.button("⏸ Pause" if not paused else "▶ Resume", width="stretch"):
+        Q.set_paused(q, not paused)
+        Q.save_queue(q, work_dir)
+        st.rerun()
+    if r3.button("🧹 Clear finished", width="stretch"):
+        q["jobs"] = [j for j in q.get("jobs", []) if j["status"] in (Q.PENDING, Q.RUNNING)]
+        Q.save_queue(q, work_dir)
+        st.rerun()
+
     running_job = next((j for j in q.get("jobs", []) if j["status"] == Q.RUNNING), None)
-    if not running_job:
-        return
-    try:
-        with open(job_log_path(work_dir), "r", encoding="utf-8", errors="replace") as f:
-            lines = f.read().splitlines()
-    except OSError:
-        lines = []
-    frac, label = _stage_from_lines(lines)
-    st.progress(frac, text=label)
-    st.caption(f"Now: {running_job['url'][:70]}")
-    st.code("\n".join(lines[-18:]) or "Starting…")
+    if running_job:
+        st.info("⏳ Working… this updates on its own.")
+        try:
+            with open(job_log_path(work_dir), "r", encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            lines = []
+        frac, label = _stage_from_lines(lines)
+        st.progress(frac, text=label)
+        st.caption(f"Now: {running_job['url'][:70]}")
+        st.code("\n".join(lines[-18:]) or "Starting…")
+    elif paused:
+        st.warning("⏸ Paused — new links are still accepted, nothing new starts.")
+
+    jobs = q.get("jobs", [])
+    if jobs:
+        st.divider()
+        marks = {Q.PENDING: "⏳", Q.RUNNING: "▶", Q.DONE: "✅", Q.FAILED: "✗"}
+        rows = [{
+            "#": i,
+            "": marks.get(j["status"], "?"),
+            "link": j["url"][:60],
+            "clips": j["settings"].get("num_clips", "auto"),
+            "seconds": j["settings"].get("duration", "-"),
+            "shape": j["settings"].get("aspect", "-"),
+            "made": len(j.get("clips") or []),
+            "note": (j.get("error") or "")[:60],
+        } for i, j in enumerate(jobs, 1)]
+        st.dataframe(rows, width="stretch", hide_index=True)
+    else:
+        st.caption("The queue is empty.")
 
 
 def _render_queue() -> None:
@@ -515,65 +578,17 @@ def _render_queue() -> None:
     elif not owner:
         st.info("☑️ Tick the ownership confirmation to add them.")
 
-    # ---- run controls ------------------------------------------------------ #
+    # ---- run controls + live status (metrics, progress, jobs table) -------- #
     st.divider()
     st.subheader("2. Work through the queue")
-    counts = Q.counts(q)
-    paused = Q.is_paused(q)
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Pending", counts[Q.PENDING])
-    m2.metric("Running", counts[Q.RUNNING])
-    m3.metric("Done", counts[Q.DONE])
-    m4.metric("Clips made", Q.total_clips(q))
+    _queue_status_fragment(work_dir)
 
-    # Whether ANYTHING is running — not just a worker this dashboard session
-    # itself spawned. A job started from ntfy/Chat runs in a separate process
-    # (`cli.py listen`) this browser never launched, so checking only "did I
-    # start a subprocess" would show idle/stale here for exactly the case the
-    # operator asked about (ntfy-triggered jobs never showing progress).
-    running = counts[Q.RUNNING] > 0
-
-    r1, r2, r3 = st.columns(3)
-    if r1.button("▶ Start working", type="primary", width="stretch",
-                 disabled=running or counts[Q.PENDING] == 0):
-        if paused:
-            Q.set_paused(q, False)
-            Q.save_queue(q, work_dir)
-        _start_worker()
-        st.success("Started. It keeps running even if you close this tab.")
-        st.rerun()
-    if r2.button("⏸ Pause" if not paused else "▶ Resume", width="stretch"):
-        Q.set_paused(q, not paused)
-        Q.save_queue(q, work_dir)
-        st.rerun()
-    if r3.button("🧹 Clear finished", width="stretch"):
-        q["jobs"] = [j for j in q.get("jobs", []) if j["status"] in (Q.PENDING, Q.RUNNING)]
-        Q.save_queue(q, work_dir)
-        st.rerun()
-
-    if running:
-        st.info("⏳ Working… progress below updates on its own.")
-        _queue_progress_fragment(work_dir)
-    elif paused:
-        st.warning("⏸ Paused — new links are still accepted, nothing new starts.")
-
-    # ---- the queue itself --------------------------------------------------- #
-    jobs = q.get("jobs", [])
+    # A fresh read here, deliberately OUTSIDE the auto-refreshing fragment
+    # above: this is an editing tool, not a status display, and re-reading a
+    # jobs list mid-edit every 3s is a needless (if probably harmless) risk
+    # to the operator's in-progress selection — no reason to take it.
+    jobs = Q.load_queue(work_dir).get("jobs", [])
     if jobs:
-        st.divider()
-        marks = {Q.PENDING: "⏳", Q.RUNNING: "▶", Q.DONE: "✅", Q.FAILED: "✗"}
-        rows = [{
-            "#": i,
-            "": marks.get(j["status"], "?"),
-            "link": j["url"][:60],
-            "clips": j["settings"].get("num_clips", "auto"),
-            "seconds": j["settings"].get("duration", "-"),
-            "shape": j["settings"].get("aspect", "-"),
-            "made": len(j.get("clips") or []),
-            "note": (j.get("error") or "")[:60],
-        } for i, j in enumerate(jobs, 1)]
-        st.dataframe(rows, width="stretch", hide_index=True)
-
         with st.expander("✏️ Change one link's settings (or remove it)", expanded=False):
             opts = [f"{i}. {j['url'][:55]}" for i, j in enumerate(jobs, 1)]
             pick = st.selectbox("Which link?", opts, key="q_edit_pick")
@@ -594,25 +609,21 @@ def _render_queue() -> None:
                               index=resl.index(cur_res) if cur_res in resl else 0)
             b1, b2 = st.columns(2)
             if b1.button("💾 Save this link's settings", width="stretch", disabled=done):
-                j["settings"].update({"num_clips": int(ec) or None, "duration": int(ed),
-                                      "aspect": es, "resolution": er})
-                j["settings"] = {k: v for k, v in j["settings"].items() if v is not None}
-                Q.save_queue(q, work_dir)
+                fresh = Q.load_queue(work_dir)
+                fj = Q.get_job(fresh, j["id"])
+                fj["settings"].update({"num_clips": int(ec) or None, "duration": int(ed),
+                                       "aspect": es, "resolution": er})
+                fj["settings"] = {k: v for k, v in fj["settings"].items() if v is not None}
+                Q.save_queue(fresh, work_dir)
                 st.success("Saved for this link only.")
                 st.rerun()
             if b2.button("🗑 Remove this link", width="stretch"):
-                q["jobs"] = [x for x in jobs if x["id"] != j["id"]]
-                Q.save_queue(q, work_dir)
+                fresh = Q.load_queue(work_dir)
+                fresh["jobs"] = [x for x in fresh["jobs"] if x["id"] != j["id"]]
+                Q.save_queue(fresh, work_dir)
                 st.rerun()
             if done:
                 st.caption("This link is already running/finished — settings are locked.")
-    else:
-        st.caption("The queue is empty.")
-    # No page-wide sleep+rerun here: `_queue_progress_fragment` above already
-    # keeps the live parts current on its own timer without blocking the rest
-    # of this page (or hanging headless/AppTest execution, which has no real
-    # browser timer to end a blocking sleep-then-rerun cycle — the same
-    # lesson learned twice already on the Chat screen).
 
 
 @st.fragment(run_every="60s")

@@ -18,7 +18,7 @@ import json
 import time
 import urllib.request
 
-from .remote_control import handle_text
+from .remote_control import handle_text, log_exchange
 from .utils import log
 
 
@@ -82,12 +82,13 @@ def poll_once(topic: str, server: str, since: str | int, token: str | None = Non
         if not text:
             continue
         try:
-            reply = handle_text(text, work_dir)      # shared with the Telegram bot
+            reply = handle_text(text, work_dir)      # shared with the dashboard's Chat screen
         except Exception as e:  # noqa: BLE001
             log.error("ntfy handler error: %s", e)
             reply = "Something went wrong handling that. Send /help."
         handled += 1
         send_ntfy(reply)                             # answer on the notification topic
+        log_exchange(work_dir, "ntfy", text, reply)   # so the dashboard shows this exchange too
     return newest, handled
 
 

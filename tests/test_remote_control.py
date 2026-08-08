@@ -164,3 +164,82 @@ def test_start_word_does_not_hijack_a_real_link_message(tmp_path):
     reply = RC.handle_text("https://youtu.be/start-here go clips=2", work)
     assert "Queued" in reply
     assert len(Q.load_queue(work)["jobs"]) == 1
+
+
+# --- shared chat log: ntfy and the dashboard Chat screen show one conversation - #
+
+def test_log_exchange_round_trips(tmp_path):
+    work = str(tmp_path)
+    RC.log_exchange(work, "ntfy", "hello from phone", "hi back")
+    RC.log_exchange(work, "dashboard", "hello from browser", "hi there too")
+    log = RC.read_chat_log(work)
+    assert len(log) == 2
+    assert log[0]["source"] == "ntfy" and log[0]["text"] == "hello from phone"
+    assert log[1]["source"] == "dashboard" and log[1]["reply"] == "hi there too"
+
+
+def test_read_chat_log_missing_file_is_empty(tmp_path):
+    assert RC.read_chat_log(str(tmp_path)) == []
+
+
+def test_read_chat_log_respects_limit(tmp_path):
+    work = str(tmp_path)
+    for i in range(10):
+        RC.log_exchange(work, "ntfy", f"msg{i}", f"reply{i}")
+    log = RC.read_chat_log(work, limit=3)
+    assert len(log) == 3
+    assert [e["text"] for e in log] == ["msg7", "msg8", "msg9"]   # the most recent
+
+
+def test_chat_log_is_trimmed_once_it_grows_large(tmp_path):
+    """Trimming is lazy (only pays for a rewrite once the file is meaningfully
+    oversized), so the guarantee is "never grows unbounded", not "always
+    exactly at the cap" — bounded by 2x keep, never trimmed away entirely."""
+    work = str(tmp_path)
+    total = RC._CHAT_LOG_MAX * 2 + 5
+    for i in range(total):
+        RC.log_exchange(work, "ntfy", f"m{i}", "r")
+    with open(RC.chat_log_path(work), encoding="utf-8") as f:
+        n_lines = sum(1 for _ in f)
+    assert n_lines <= RC._CHAT_LOG_MAX * 2
+    assert n_lines < total                                # it really did trim at some point
+    log = RC.read_chat_log(work, limit=1000)
+    assert log[-1]["text"] == f"m{total - 1}"              # newest survives
+
+
+def test_ntfy_exchange_is_logged_and_readable_from_the_shared_log(tmp_path, monkeypatch):
+    """The exact bug this fixes: a command sent from the phone must show up
+    somewhere the dashboard can read it, not just be silently actioned."""
+    from shortforge import netdiag, notify, ntfy_bot as NB
+
+    work = str(tmp_path)
+
+    class _FakeResp:
+        def __init__(self, body):
+            self._body = body
+        def read(self):
+            return self._body
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    import json as _json
+    payload = _json.dumps({"event": "message", "time": 1,
+                           "message": "https://youtu.be/phone 4 clips"}).encode()
+
+    class _FakeOpener:
+        def open(self, req, timeout=None):
+            return _FakeResp(payload)
+
+    # poll_once imports both of these LOCALLY (`from .netdiag import build_opener`,
+    # `from .notify import send_ntfy`) — patch the source modules, not ntfy_bot.
+    monkeypatch.setattr(netdiag, "build_opener", lambda: _FakeOpener())
+    monkeypatch.setattr(notify, "send_ntfy", lambda *a, **k: (True, "ok"))
+    NB.poll_once("cmdtopic", "https://ntfy.sh", 0, work_dir=work)
+
+    log = RC.read_chat_log(work)
+    assert len(log) == 1
+    assert log[0]["source"] == "ntfy"
+    assert "phone" in log[0]["text"]
+    assert "Queued" in log[0]["reply"]

@@ -546,17 +546,24 @@ def _render_queue() -> None:
 
 
 def _render_chat() -> None:
-    """Command the queue by typing, in the browser — the exact same parser and
-    vocabulary `ntfy_bot.py` uses, so a link or command typed here behaves
-    identically to one sent from your phone (CLAUDE.md rule 6: one shared
-    command path, never a second one that can drift)."""
+    """One conversation, two doors in: type here, or send from your phone over
+    ntfy — both go through the identical shared `remote_control.handle_text()`
+    (CLAUDE.md rule 6: one command path, never a second one that can drift),
+    and both log to the SAME file (`remote_control.log_exchange`/
+    `read_chat_log`), so whichever one you use, this screen shows all of it."""
     from shortforge import remote_control as RC
     from shortforge.config import Config as _C
     from shortforge import lifecycle
 
-    st.header("💬 Chat")
-    st.caption("Type a link, settings, or a command — `/help` lists everything. This "
-               "reads and writes the SAME queue as the Queue screen and ntfy.")
+    top = st.columns([5, 1])
+    top[0].header("💬 Chat")
+    if top[1].button("🔄 Refresh", help="Pull in anything sent from your phone since you "
+                     "opened this tab."):
+        st.rerun()
+    st.caption("Type a link, settings, or a command — `/help` lists everything. Anything "
+               "sent from your phone over ntfy shows up here too (and vice versa) — it's "
+               "the same conversation either way. Press 🔄 Refresh to pull in a phone "
+               "message sent while you had this tab open (it also refreshes on any click).")
 
     work_dir = _C.load().get("paths.work_dir", ".shortforge")
     state = lifecycle.read_state(work_dir)
@@ -567,20 +574,25 @@ def _render_chat() -> None:
                   "`start_all.bat` is running (or you press ▶ Start working on the Queue "
                   "screen).")
 
-    history = st.session_state.setdefault("chat_history", [])
-    for role, text in history:
-        with st.chat_message(role):
-            st.markdown(text, unsafe_allow_html=True)
+    for entry in RC.read_chat_log(work_dir):
+        tag = "📱 *via ntfy*  \n" if entry.get("source") == "ntfy" else ""
+        with st.chat_message("user"):
+            st.markdown(tag + entry.get("text", ""), unsafe_allow_html=True)
+        with st.chat_message("assistant"):
+            st.markdown(entry.get("reply", ""), unsafe_allow_html=True)
 
     msg = st.chat_input("https://youtu.be/... 5 clips of 2 min landscape  —  or /status, start, pause…")
     if msg:
-        history.append(("user", msg))
         reply = RC.handle_text(msg, work_dir)
-        history.append(("assistant", reply))
+        RC.log_exchange(work_dir, "dashboard", msg, reply)
         st.rerun()
 
-    if history and st.button("🧹 Clear chat (queue itself is untouched)"):
-        st.session_state["chat_history"] = []
+    if RC.read_chat_log(work_dir, limit=1) and st.button(
+            "🧹 Clear chat history (the queue itself is untouched)"):
+        try:
+            os.remove(RC.chat_log_path(work_dir))
+        except OSError:
+            pass
         st.rerun()
 
 

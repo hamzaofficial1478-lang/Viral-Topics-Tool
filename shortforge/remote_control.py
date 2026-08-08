@@ -21,12 +21,80 @@ so it is deliberately narrow:
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import time
 
 from . import queue as Q
 
 MAX_LINKS_PER_MESSAGE = 20
 MAX_QUEUE = 200
+
+# --- shared chat log ---------------------------------------------------------- #
+# ntfy and the dashboard's Chat screen are two windows onto the SAME
+# conversation: a command sent from your phone must show up in the dashboard,
+# and one typed in the dashboard must be something you could have sent from
+# your phone. Both call log_exchange() after handle_text() so either surface
+# can render the full merged history via read_chat_log().
+
+CHAT_LOG_FILE = "chat_log.jsonl"
+_CHAT_LOG_MAX = 300          # trimmed once the file grows past ~2x this
+
+
+def chat_log_path(work_dir: str = ".shortforge") -> str:
+    return os.path.join(work_dir, CHAT_LOG_FILE)
+
+
+def log_exchange(work_dir: str, source: str, text: str, reply: str) -> None:
+    """Append one (incoming, reply) exchange. Best-effort — logging the
+    conversation must never be the reason a real command fails."""
+    entry = {"ts": time.time(), "source": source, "text": text, "reply": reply}
+    path = chat_log_path(work_dir)
+    try:
+        os.makedirs(work_dir, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        return
+    _trim_chat_log(path)
+
+
+def _trim_chat_log(path: str, keep: int = _CHAT_LOG_MAX) -> None:
+    """Keep the log bounded. Only pays for a rewrite once it's meaningfully
+    oversized, not on every single append."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return
+    if len(lines) <= keep * 2:
+        return
+    tail = lines[-keep:]
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(tail)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def read_chat_log(work_dir: str = ".shortforge", limit: int = 100) -> list[dict]:
+    """The last ``limit`` exchanges, oldest first. Never raises — a missing or
+    corrupt log just reads as empty."""
+    try:
+        with open(chat_log_path(work_dir), "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return []
+    out: list[dict] = []
+    for line in lines[-limit:]:
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
 
 _URL_RE = re.compile(r"https?://\S+")
 _KV_RE = re.compile(r"\b(\w+)\s*=\s*([^\s]+)")

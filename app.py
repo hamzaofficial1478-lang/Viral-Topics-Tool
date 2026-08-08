@@ -413,11 +413,6 @@ def _render_results(manifest: dict, out_dir: str | None = None,
         _render_clip(c, f"{key_prefix}_{i}")
 
 
-def _worker_running() -> bool:
-    p = st.session_state.get("queue_proc")
-    return bool(p and p.poll() is None)
-
-
 def _start_worker() -> None:
     """Launch the queue runner as its own process so it survives UI reruns and
     keeps going even if you close the browser tab."""
@@ -426,6 +421,41 @@ def _start_worker() -> None:
     st.session_state.queue_proc = subprocess.Popen(
         [sys.executable, os.path.join(here, "cli.py"), "queue", "run", "--owner-confirmed"],
         cwd=here)
+
+
+@st.fragment(run_every="3s")
+def _queue_progress_fragment(work_dir: str) -> None:
+    """Live progress bar + log tail for whichever queued job is currently
+    running — the same view the manual New Job form has, for the queue path.
+
+    The queue-driven path runs in its own PROCESS (`cli.py listen`'s worker
+    thread, or a spawned `queue run` subprocess) — separate from the
+    dashboard, unlike the New Job form's own background THREAD, which shares
+    this process and so can push log lines into an in-memory queue directly.
+    There's no equivalent in-memory channel across processes, so this tails
+    the shared per-job log file instead (`runner.job_log_path`, written by
+    `runner._attach_job_log`) — works the same regardless of which process is
+    actually doing the work. A fragment, not a page-wide sleep+rerun: refreshes
+    only itself on the browser's own timer, doesn't block the page, and (found
+    the hard way, twice, on the Chat screen) doesn't hang headless/AppTest
+    execution, which has no real browser timer to drive a blocking loop.
+    """
+    from shortforge import queue as Q
+    from shortforge.runner import job_log_path
+
+    q = Q.load_queue(work_dir)
+    running_job = next((j for j in q.get("jobs", []) if j["status"] == Q.RUNNING), None)
+    if not running_job:
+        return
+    try:
+        with open(job_log_path(work_dir), "r", encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = []
+    frac, label = _stage_from_lines(lines)
+    st.progress(frac, text=label)
+    st.caption(f"Now: {running_job['url'][:70]}")
+    st.code("\n".join(lines[-18:]) or "Starting…")
 
 
 def _render_queue() -> None:
@@ -496,8 +526,14 @@ def _render_queue() -> None:
     m3.metric("Done", counts[Q.DONE])
     m4.metric("Clips made", Q.total_clips(q))
 
+    # Whether ANYTHING is running — not just a worker this dashboard session
+    # itself spawned. A job started from ntfy/Chat runs in a separate process
+    # (`cli.py listen`) this browser never launched, so checking only "did I
+    # start a subprocess" would show idle/stale here for exactly the case the
+    # operator asked about (ntfy-triggered jobs never showing progress).
+    running = counts[Q.RUNNING] > 0
+
     r1, r2, r3 = st.columns(3)
-    running = _worker_running()
     if r1.button("▶ Start working", type="primary", width="stretch",
                  disabled=running or counts[Q.PENDING] == 0):
         if paused:
@@ -516,7 +552,8 @@ def _render_queue() -> None:
         st.rerun()
 
     if running:
-        st.info("⏳ Working… this page refreshes as links complete.")
+        st.info("⏳ Working… progress below updates on its own.")
+        _queue_progress_fragment(work_dir)
     elif paused:
         st.warning("⏸ Paused — new links are still accepted, nothing new starts.")
 
@@ -571,10 +608,11 @@ def _render_queue() -> None:
                 st.caption("This link is already running/finished — settings are locked.")
     else:
         st.caption("The queue is empty.")
-
-    if running:
-        time.sleep(3)
-        st.rerun()
+    # No page-wide sleep+rerun here: `_queue_progress_fragment` above already
+    # keeps the live parts current on its own timer without blocking the rest
+    # of this page (or hanging headless/AppTest execution, which has no real
+    # browser timer to end a blocking sleep-then-rerun cycle — the same
+    # lesson learned twice already on the Chat screen).
 
 
 @st.fragment(run_every="60s")

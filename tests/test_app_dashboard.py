@@ -225,3 +225,31 @@ def test_queue_add_is_gated_on_links_and_ownership():
     at = _fresh()
     add = next(b for b in at.button if "Add" in b.label)
     assert add.disabled is True
+
+
+def test_queue_screen_shows_live_progress_for_a_running_job(tmp_path, monkeypatch):
+    """The bug the operator reported: a job started from ntfy (running in a
+    separate process, cli.py listen) showed no progress on the Queue screen
+    at all — unlike the manual New Job form. This is the fix: the Queue
+    screen now tails the same per-job log file that process writes."""
+    import os
+    from shortforge import queue as Q
+    from shortforge.runner import job_log_path
+
+    monkeypatch.chdir(tmp_path)
+    work_dir = ".shortforge"
+    os.makedirs(work_dir, exist_ok=True)
+    q = Q.load_queue(work_dir)
+    Q.add_job(q, "https://youtu.be/running-now", {"num_clips": 2})
+    Q.mark(q, q["jobs"][0]["id"], Q.RUNNING)
+    Q.save_queue(q, work_dir)
+    with open(job_log_path(work_dir), "w", encoding="utf-8") as f:
+        f.write("ingesting source video\ntranscribing audio\n")
+
+    at = _fresh()
+
+    assert not at.exception
+    assert len(at.get("progress")) == 1     # not a typed AppTest element, just present
+    assert any("running-now" in c.value for c in at.caption)
+    log_text = "\n".join(c.value for c in at.code)
+    assert "transcribing audio" in log_text

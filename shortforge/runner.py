@@ -7,6 +7,8 @@ tag outputs, apply per-link settings or report progress.
 
 from __future__ import annotations
 
+import logging
+import os
 import time
 from typing import Callable
 
@@ -16,6 +18,36 @@ from . import queue as Q
 from .config import Config
 from .pipeline import run_pipeline
 from .utils import log
+
+JOB_LOG_FILE = "current_job.log"
+
+
+def job_log_path(work_dir: str) -> str:
+    return os.path.join(work_dir, JOB_LOG_FILE)
+
+
+def _attach_job_log(work_dir: str) -> logging.Handler:
+    """Start capturing this job's log lines to a file the dashboard can tail.
+
+    The queue-driven path (`cli.py listen`'s worker thread, or a spawned
+    `queue run` subprocess) runs in its own PROCESS, separate from the
+    dashboard — unlike the manual "New job" form, which captures its own
+    background THREAD's log lines into an in-memory queue within the same
+    Streamlit process. There's no equivalent in-memory channel available
+    across processes, so this uses a file instead: truncated fresh for each
+    job (mode "w"), so a tail of it only ever shows THIS job's lines.
+    """
+    path = job_log_path(work_dir)
+    os.makedirs(work_dir, exist_ok=True)
+    handler = logging.FileHandler(path, mode="w", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logging.getLogger("shortforge").addHandler(handler)
+    return handler
+
+
+def _detach_job_log(handler: logging.Handler) -> None:
+    logging.getLogger("shortforge").removeHandler(handler)
+    handler.close()
 
 
 def fmt_hms(seconds: float) -> str:
@@ -128,7 +160,11 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
             # Announce the start too — "it's alive and this is what it understood".
             announce(f"🎬 <b>Link {idx}/{total} started</b> — making {detail}\n{job['url'][:80]}")
 
-            ok, n, msg = run_one(job, idx, total, make_cfg, work_dir)
+            log_handler = _attach_job_log(work_dir)
+            try:
+                ok, n, msg = run_one(job, idx, total, make_cfg, work_dir)
+            finally:
+                _detach_job_log(log_handler)
             made += n
             lifecycle.heartbeat(work_dir, current=None)
             announce(msg)

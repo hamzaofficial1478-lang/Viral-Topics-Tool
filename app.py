@@ -545,6 +545,31 @@ def _render_queue() -> None:
         st.rerun()
 
 
+@st.fragment(run_every="60s")
+def _chat_log_fragment(work_dir: str) -> None:
+    """Just the message list, auto-refreshing on its own timer.
+
+    A fragment reruns ONLY itself, driven by the browser's own clock — it does
+    not block or reload the rest of the page, and it does not touch
+    `st.chat_input`'s state (that widget lives outside the fragment), so
+    nothing you're mid-typing gets disturbed when the 60s tick fires.
+
+    This is NOT the same as a page-wide ``time.sleep(N); st.rerun()``, which
+    was tried first and rejected: that blocks the ENTIRE UI for N seconds on
+    every single render (real, perceptible freezing, not just a test
+    artifact), and it hangs headless/AppTest test execution outright, which
+    has no real browser timer to ever end the sleep-then-rerun cycle.
+    """
+    from shortforge import remote_control as RC
+
+    for entry in RC.read_chat_log(work_dir):
+        tag = "📱 *via ntfy*  \n" if entry.get("source") == "ntfy" else ""
+        with st.chat_message("user"):
+            st.markdown(tag + entry.get("text", ""), unsafe_allow_html=True)
+        with st.chat_message("assistant"):
+            st.markdown(entry.get("reply", ""), unsafe_allow_html=True)
+
+
 def _render_chat() -> None:
     """One conversation, two doors in: type here, or send from your phone over
     ntfy — both go through the identical shared `remote_control.handle_text()`
@@ -557,13 +582,13 @@ def _render_chat() -> None:
 
     top = st.columns([5, 1])
     top[0].header("💬 Chat")
-    if top[1].button("🔄 Refresh", help="Pull in anything sent from your phone since you "
-                     "opened this tab."):
+    if top[1].button("🔄 Refresh now", help="Pull in anything sent from your phone "
+                     "immediately, instead of waiting for the next auto-refresh."):
         st.rerun()
     st.caption("Type a link, settings, or a command — `/help` lists everything. Anything "
                "sent from your phone over ntfy shows up here too (and vice versa) — it's "
-               "the same conversation either way. Press 🔄 Refresh to pull in a phone "
-               "message sent while you had this tab open (it also refreshes on any click).")
+               "the same conversation either way. This auto-refreshes about every 60s; "
+               "press 🔄 Refresh now for sooner.")
 
     work_dir = _C.load().get("paths.work_dir", ".shortforge")
     state = lifecycle.read_state(work_dir)
@@ -574,12 +599,7 @@ def _render_chat() -> None:
                   "`start_all.bat` is running (or you press ▶ Start working on the Queue "
                   "screen).")
 
-    for entry in RC.read_chat_log(work_dir):
-        tag = "📱 *via ntfy*  \n" if entry.get("source") == "ntfy" else ""
-        with st.chat_message("user"):
-            st.markdown(tag + entry.get("text", ""), unsafe_allow_html=True)
-        with st.chat_message("assistant"):
-            st.markdown(entry.get("reply", ""), unsafe_allow_html=True)
+    _chat_log_fragment(work_dir)
 
     msg = st.chat_input("https://youtu.be/... 5 clips of 2 min landscape  —  or /status, start, pause…")
     if msg:

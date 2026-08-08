@@ -579,7 +579,8 @@ def _render_queue() -> None:
 
 @st.fragment(run_every="60s")
 def _chat_log_fragment(work_dir: str) -> None:
-    """Just the message list, auto-refreshing on its own timer.
+    """The message list AND the ntfy connectivity line, auto-refreshing
+    together on their own timer.
 
     A fragment reruns ONLY itself, driven by the browser's own clock — it does
     not block or reload the rest of the page, and it does not touch
@@ -591,8 +592,26 @@ def _chat_log_fragment(work_dir: str) -> None:
     every single render (real, perceptible freezing, not just a test
     artifact), and it hangs headless/AppTest test execution outright, which
     has no real browser timer to ever end the sleep-then-rerun cycle.
+
+    The connectivity line itself can only ever report the LAST known state
+    (`lifecycle.note_ntfy_status`, written by `ntfy_bot.listen`'s poll loop) —
+    a page load can't ask ntfy "are you there" on its own, and if ntfy is
+    genuinely down this fragment refreshing more or less often changes
+    nothing about when the real listener process next finds out.
     """
-    from shortforge import remote_control as RC
+    from shortforge import lifecycle, remote_control as RC
+
+    state = lifecycle.read_state(work_dir)
+    if state and state.get("ntfy_ok") is False:
+        since = state.get("ntfy_down_since")
+        since_txt = ""
+        if since:
+            mins = int(max(0, time.time() - float(since)) // 60)
+            since_txt = f" (about {mins} min)" if mins else " (just now)"
+        st.error(f"🔌 ntfy connection lost{since_txt} — commands and push notifications "
+                f"won't arrive until it reconnects. Rendering is unaffected.")
+    elif state and state.get("ntfy_ok"):
+        st.caption("🟢 ntfy connected")
 
     for entry in RC.read_chat_log(work_dir):
         tag = "📱 *via ntfy*  \n" if entry.get("source") == "ntfy" else ""

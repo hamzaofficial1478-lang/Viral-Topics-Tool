@@ -266,18 +266,21 @@ def install_exit_notice(work_dir: str = ".shortforge") -> None:
 # to disk so the dashboard can show it live even while nothing can be pushed.
 
 def note_ntfy_status(work_dir: str = ".shortforge", ok: bool = True, detail: str = "") -> None:
-    """Record ntfy reachability. Only writes on a state change (or while still
-    down) so a healthy connection doesn't churn the state file every 5s."""
+    """Record ntfy reachability. Writes on the first-ever poll (so there's
+    something to show before any failure has happened), on a state change,
+    and on every poll while still down (keeps "last checked" fresh during a
+    real outage) — but not on every single healthy poll once steady, so a
+    good connection doesn't churn the state file every 5s forever."""
     state = read_state(work_dir)
     if state is None:
         return                      # no run in progress; nothing to annotate
-    prev_ok = state.get("ntfy_ok", True)
-    if ok and prev_ok:
+    prev_ok = state.get("ntfy_ok")  # None = never recorded yet (fresh state)
+    if ok and prev_ok is True:
         return                      # steady-state healthy: nothing changed
     now = time.time()
     state["ntfy_ok"] = bool(ok)
     state["ntfy_checked"] = now
-    if not ok and prev_ok:
+    if not ok and prev_ok is not False:
         state["ntfy_down_since"] = now
     if ok:
         state["ntfy_down_since"] = None

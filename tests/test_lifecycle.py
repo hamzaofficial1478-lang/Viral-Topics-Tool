@@ -129,3 +129,52 @@ def test_a_healthy_connection_says_nothing():
     for _ in range(10):
         assert w.record(True) is None
     assert sent == []
+
+
+# --- ntfy connectivity recorded locally (dashboard-readable) ---------------- #
+
+def test_first_ever_healthy_poll_is_recorded(tmp_path):
+    """A fresh state file has no ntfy_ok yet — the very first successful poll
+    must still be written, or the dashboard has nothing to show as 'connected'
+    until something first goes wrong."""
+    work = str(tmp_path)
+    L.mark_online(work)
+    L.note_ntfy_status(work, ok=True)
+    assert L.read_state(work)["ntfy_ok"] is True
+
+
+def test_sustained_healthy_polls_do_not_churn_the_state_file(tmp_path):
+    work = str(tmp_path)
+    L.mark_online(work)
+    L.note_ntfy_status(work, ok=True)
+    checked_at = L.read_state(work)["ntfy_checked"]
+    for _ in range(5):
+        L.note_ntfy_status(work, ok=True)
+    assert L.read_state(work)["ntfy_checked"] == checked_at    # never rewritten
+
+
+def test_a_failure_is_recorded_with_a_down_since_timestamp(tmp_path):
+    work = str(tmp_path)
+    L.mark_online(work)
+    L.note_ntfy_status(work, ok=True)
+    L.note_ntfy_status(work, ok=False, detail="timed out")
+    state = L.read_state(work)
+    assert state["ntfy_ok"] is False
+    assert state["ntfy_down_since"] is not None
+    assert "timed out" in state["ntfy_detail"]
+
+
+def test_recovery_clears_down_since(tmp_path):
+    work = str(tmp_path)
+    L.mark_online(work)
+    L.note_ntfy_status(work, ok=False)
+    L.note_ntfy_status(work, ok=True)
+    state = L.read_state(work)
+    assert state["ntfy_ok"] is True
+    assert state["ntfy_down_since"] is None
+
+
+def test_no_run_in_progress_is_a_no_op(tmp_path):
+    work = str(tmp_path)
+    L.note_ntfy_status(work, ok=True)      # no mark_online() first — nothing to annotate
+    assert L.read_state(work) is None

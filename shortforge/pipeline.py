@@ -43,6 +43,25 @@ def _slug(text: str, fallback: str = "clip") -> str:
     return s[:40] or fallback
 
 
+def _clip_is_reusable(out_path: str, resume: bool) -> bool:
+    """Whether a previously-rendered clip file can be trusted and reused
+    instead of re-rendered.
+
+    Existence + non-zero size alone isn't enough: ffmpeg writes straight to
+    ``out_path`` with no temp-file+rename, so a crash mid-encode (power cut,
+    kill) leaves a real, non-empty, CORRUPT file sitting at exactly the path
+    a resumed run looks for — a bare existence check would trust it as "done"
+    and silently ship a broken clip. Probe it instead: a truncated file
+    either fails to probe at all or reports a near-zero duration.
+    """
+    if not (resume and os.path.isfile(out_path) and os.path.getsize(out_path) > 0):
+        return False
+    try:
+        return ffprobe_info(out_path).duration > 1.0
+    except Exception:  # noqa: BLE001 - unreadable/corrupt: treat as not reusable
+        return False
+
+
 def _find_fontsdir() -> str | None:
     for d in ("/usr/share/fonts", "/Library/Fonts", "/System/Library/Fonts"):
         if os.path.isdir(d):
@@ -397,8 +416,12 @@ def run_pipeline(
         # Deterministic naming: {slug}_{lang}_{clipid}_{yyyymmdd}.mp4  (M13)
         out_path = os.path.join(out_dir, f"{slug}_{lang}_{clip.clip_id}_{date}.mp4")
 
-        # Resume: skip the expensive render if this exact output already exists.
-        reuse = resume and os.path.isfile(out_path) and os.path.getsize(out_path) > 0
+        # Resume: skip the expensive render if this exact output already exists
+        # and passes a real validity check (see _clip_is_reusable).
+        reuse = _clip_is_reusable(out_path, resume)
+        if resume and not reuse and os.path.isfile(out_path):
+            log.warning("resume: %s exists but looks incomplete (interrupted mid-render?) "
+                       "— re-rendering instead of reusing it", os.path.basename(out_path))
 
         keep_ranges = None
         dub_method = "none"

@@ -94,6 +94,7 @@ def call_model_chat(model: dict, messages: list, *, json_mode: bool = False,
     import time
     from ..llm import openai_chat_raw
     from ..utils import ShortForgeError, log
+    from .base import redact
     from .store import masked, store_path
 
     timeout = int(model.get("timeout") or timeout)          # per-credential override
@@ -132,16 +133,19 @@ def call_model_chat(model: dict, messages: list, *, json_mode: bool = False,
             f"{model.get('name') or model.get('model')}: timed out after {timeout}s "
             f"({retries + 1} attempt(s)) — raise the timeout (per-credential 'Request timeout' "
             f"in Settings, or the task default) [{where}]")
+    key = model.get("api_key")
     if _is_retryable_net(r):
         # No HTTP status: the socket died, the provider never answered. Saying
         # "HTTP None" reads like a bug — name the real cause and the real fix.
         raise ShortForgeError(
             f"{model.get('name') or model.get('model')}: the connection was dropped by the "
-            f"provider after {retries + 1} attempt(s) ({(r.get('error') or '')[:120]}). This is "
+            f"provider after {retries + 1} attempt(s) "
+            f"({redact((r.get('error') or '')[:120], key)}). This is "
             f"usually transient network trouble or rate-limiting under concurrent load — lower "
             f"detect.hook_concurrency (try 2) if it repeats. [{where}]")
+    body_or_err = redact((r["body"] or r["error"] or "")[:200], key)
     raise ShortForgeError(f"{model.get('name') or model.get('model')}: HTTP "
-                          f"{r['status']} [{where}] {(r['body'] or r['error'] or '')[:200]}")
+                          f"{r['status']} [{where}] {body_or_err}")
 
 
 def call_task_chat(store: dict, task_key: str, messages: list, *, json_mode: bool = False,

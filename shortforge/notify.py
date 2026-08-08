@@ -1,41 +1,23 @@
-"""Telegram notifications + keeping Windows awake during long runs.
+"""ntfy.sh notifications + keeping Windows awake during long runs.
 
-Credentials live in the same gitignored provider store as the API keys (set them
-in Settings → Telegram), never in the repo. Every send is best-effort: a failed
+ntfy is the ONLY remote-control/notification channel (Telegram was removed —
+ntfy needs no account/bot setup, is a plain HTTPS POST to an ordinary host, and
+has free phone apps, so keeping both bought nothing). Credentials live in the
+same gitignored provider store as the API keys (set them in Settings →
+Notifications), never in the repo. Every send is best-effort: a failed
 notification must never take down a render that is otherwise fine.
 """
 
 from __future__ import annotations
 
-import json
-import urllib.parse
 import urllib.request
 
 from .utils import log
 
-_API = "https://api.telegram.org/bot{token}/{method}"
-
-
-def _creds() -> tuple[str | None, str | None]:
-    """(bot_token, chat_id) from the provider store."""
-    try:
-        from .providers.store import load_store
-        tg = load_store().get("telegram", {}) or {}
-        return (tg.get("bot_token") or None), (str(tg.get("chat_id")) if tg.get("chat_id") else None)
-    except Exception:  # noqa: BLE001
-        return None, None
-
 
 def configured() -> bool:
-    token, chat = _creds()
-    return bool(token and chat) or bool(_ntfy_topic())
+    return bool(_ntfy_topic())
 
-
-# --- ntfy.sh fallback ------------------------------------------------------- #
-# Telegram is IP-blocked by some ISPs/countries: DNS resolves but packets to its
-# IPs are dropped, so no amount of retrying helps. ntfy.sh is a plain HTTPS POST
-# to an ordinary host, needs no account or token, and has free phone apps — so it
-# still delivers where Telegram cannot.
 
 def _ntfy_topic() -> str | None:
     try:
@@ -85,51 +67,18 @@ def test_ntfy(topic: str, server: str = "https://ntfy.sh") -> tuple[bool, str]:
             if ok else f"Failed: {detail}")
 
 
-def send(text: str, *, silent: bool = False, timeout: int = 20) -> tuple[bool, str]:
-    """Send a Telegram message. Returns (ok, detail); never raises."""
-    token, chat = _creds()
-    if not token or not chat:
-        return False, "Telegram not configured (Settings → Telegram)"
-    try:
-        data = urllib.parse.urlencode({
-            "chat_id": chat, "text": text[:4000],
-            "parse_mode": "HTML", "disable_notification": "true" if silent else "false",
-        }).encode()
-        req = urllib.request.Request(_API.format(token=token, method="sendMessage"), data=data)
-        from .netdiag import build_opener
-        with build_opener().open(req, timeout=timeout) as r:
-            body = json.loads(r.read().decode("utf-8", "replace"))
-        if body.get("ok"):
-            return True, "sent"
-        return False, str(body.get("description") or body)[:200]
-    except Exception as e:  # noqa: BLE001 - a failed notify must never break a run
-        return False, str(e)[:200]
-
-
 def notify(text: str, *, timeout: int = 20) -> bool:
-    """Fire-and-forget notification over every configured channel.
-
-    Telegram first (richer), ntfy as a fallback that still works where Telegram
-    is IP-blocked. A failure on either never interrupts a render. Returns whether
-    at least one channel took it — callers that care (the shutdown notice) can
-    log the difference, but none of them may raise.
+    """Fire-and-forget notification over ntfy. Never raises.
 
     ``timeout`` is short on the shutdown path: Windows gives a closing console
     about five seconds before it kills the process.
     """
-    token, chat = _creds()
-    delivered = False
-    if token and chat:
-        ok, detail = send(text, timeout=timeout)
-        delivered = delivered or ok
-        if not ok:
-            log.warning("telegram notify failed: %s", detail)
-    if _ntfy_topic():
-        ok, detail = send_ntfy(text, timeout=timeout)
-        delivered = delivered or ok
-        if not ok:
-            log.warning("ntfy notify failed: %s", detail)
-    return delivered
+    if not _ntfy_topic():
+        return False
+    ok, detail = send_ntfy(text, timeout=timeout)
+    if not ok:
+        log.warning("ntfy notify failed: %s", detail)
+    return ok
 
 
 # --- network outages -------------------------------------------------------- #
@@ -137,11 +86,13 @@ def notify(text: str, *, timeout: int = 20) -> bool:
 class OutageWatch:
     """Notice when the machine loses its connection, and say so when it returns.
 
-    Deliberate honesty about what is possible: while the network is down, an
-    alert cannot be delivered — that is the definition of the problem. So the
-    outage is *attempted* immediately (if only Telegram is blocked, ntfy still
-    gets through, which is the common case here) and *reported for certain* on
-    recovery, with how long the gap was.
+    Deliberate honesty about what is possible: ntfy is the only channel, so
+    while it is unreachable an alert genuinely cannot be delivered — that is
+    the definition of the problem. The outage is *attempted* immediately
+    anyway (harmless if it fails) and *reported for certain* on recovery, with
+    how long the gap was. ``ntfy_bot.listen`` also records the down state
+    locally (``lifecycle.note_ntfy_status``) so the dashboard can show it even
+    while no push can get through.
 
     A single dropped poll is normal on any connection, so an outage is only
     declared after ``threshold`` consecutive failures.
@@ -185,52 +136,6 @@ class OutageWatch:
         self._notify(msg)          # may itself fail — that is exactly the situation
         log.warning("network: %s unreachable after %d attempts", self.what, self._fails)
         return msg
-
-
-def reachable() -> tuple[bool, str]:
-    """Can this machine reach Telegram at all? Distinguishes a network block from
-    a bad token — they produce very different fixes."""
-    try:
-        urllib.request.urlopen("https://api.telegram.org", timeout=12)
-        return True, "api.telegram.org is reachable"
-    except Exception as e:  # noqa: BLE001
-        return False, str(e)[:200]
-
-
-NETWORK_HELP = (
-    "This PC cannot reach api.telegram.org — the request timed out before Telegram "
-    "answered, so the token was never even checked.\n\n"
-    "This is a network block, not a settings problem. Common causes:\n"
-    "• Your ISP or country blocks Telegram (very common) — connect a VPN and test again.\n"
-    "• A firewall/antivirus is blocking Python's outbound HTTPS.\n"
-    "• You're behind a proxy that Python isn't configured to use.\n\n"
-    "Quick check: open https://api.telegram.org in your browser. If that also fails "
-    "or needs a VPN, Telegram is blocked on this connection — everything else in "
-    "ShortForge keeps working, you just won't get phone notifications until it's reachable."
-)
-
-
-def test_telegram(token: str, chat_id: str) -> tuple[bool, str]:
-    """Validate credentials from the Settings screen without saving them first."""
-    try:
-        data = urllib.parse.urlencode({
-            "chat_id": chat_id,
-            "text": "✅ ShortForge is connected. You'll get progress updates here.",
-        }).encode()
-        req = urllib.request.Request(_API.format(token=token, method="sendMessage"), data=data)
-        from .netdiag import build_opener
-        with build_opener().open(req, timeout=20) as r:
-            body = json.loads(r.read().decode("utf-8", "replace"))
-        if body.get("ok"):
-            return True, "Message sent — check your Telegram."
-        return False, f"Telegram rejected it: {str(body.get('description') or body)[:200]}"
-    except Exception as e:  # noqa: BLE001
-        text = str(e).lower()
-        if "timed out" in text or "timeout" in text or "urlopen error" in text:
-            ok, _ = reachable()
-            if not ok:
-                return False, NETWORK_HELP
-        return False, f"{type(e).__name__}: {str(e)[:250]}"
 
 
 # --- keep the machine working while the screen sleeps ----------------------- #

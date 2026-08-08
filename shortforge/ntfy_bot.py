@@ -1,7 +1,6 @@
-"""Control ShortForge from your phone over ntfy.sh (works where Telegram is blocked).
-
-Same command vocabulary as the Telegram bot — ``handle_text`` is shared, so the
-two can never drift.
+"""Control ShortForge from your phone over ntfy.sh — the only remote-control
+surface (Telegram was removed; ntfy needs no account/bot setup and has a free
+phone app, so there was no reason to keep two).
 
 SECURITY — read this before using it:
   ntfy topics are public by default: anyone who guesses the topic name can PUBLISH
@@ -19,7 +18,7 @@ import json
 import time
 import urllib.request
 
-from .telegram_bot import handle_text
+from .remote_control import handle_text
 from .utils import log
 
 
@@ -94,6 +93,7 @@ def poll_once(topic: str, server: str, since: str | int, token: str | None = Non
 
 def listen(work_dir: str = ".shortforge", stop=None, interval: int = 5) -> None:
     """Poll the command topic until ``stop()`` returns True."""
+    from . import lifecycle
     from .notify import OutageWatch
 
     topic, server, token = _creds()
@@ -102,12 +102,20 @@ def listen(work_dir: str = ".shortforge", stop=None, interval: int = 5) -> None:
         return
     since = int(time.time())          # ignore anything sent before we started
     # A dropped connection here is the operator's own internet: worth reporting,
-    # but only after a few consecutive misses (one blip is normal).
+    # but only after a few consecutive misses (one blip is normal). The alert
+    # itself goes over ntfy too, so it can only land for certain on recovery —
+    # `lifecycle.note_ntfy_status` also records it locally (runstate.json) so
+    # the dashboard can show "disconnected" even while no push can get through.
     watch = OutageWatch("ntfy", threshold=4)
+
+    def _on_result(ok: bool, detail: str) -> None:
+        watch.record(ok, detail)
+        lifecycle.note_ntfy_status(work_dir, ok, detail)
+
     log.info("ntfy: listening for commands on '%s'", topic[:6] + "…")
     while not (stop and stop()):
         since, n = poll_once(topic, server, since, token, work_dir,
-                             on_result=watch.record)
+                             on_result=_on_result)
         if n:
             log.info("ntfy: handled %d command(s)", n)
         time.sleep(interval)

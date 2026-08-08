@@ -98,9 +98,36 @@ def heartbeat(work_dir: str = ".shortforge", current: dict | None = _KEEP) -> No
     _write_state(work_dir, state)
 
 
-def interrupted_note(prev: dict | None) -> str:
+def clips_made_for(prefix: str, out_dir: str | None = None) -> int:
+    """Best-effort count of clip files already on disk for a job prefix.
+
+    The queue only records a job's clip list on a CLEAN finish, so a crash
+    mid-job leaves nothing in queue.json — but the already-rendered .mp4 files
+    are real and sitting in the output folder, tagged with the job's prefix
+    (``job_slug``). Counting them is the only honest way to answer "how many
+    had it made" for a run that ended mid-job."""
+    if not prefix:
+        return 0
+    if out_dir is None:
+        try:
+            from .config import Config
+            out_dir = Config.load().get("paths.output_dir", "out")
+        except Exception:  # noqa: BLE001 - a nicety, never a blocker
+            out_dir = "out"
+    try:
+        import glob
+        return len(glob.glob(os.path.join(out_dir, f"{prefix}_*.mp4")))
+    except OSError:
+        return 0
+
+
+def interrupted_note(prev: dict | None, *, total_clips: int | None = None) -> str:
     """Plain-English description of a run that ended without a goodbye, or ""
-    when the last shutdown was clean."""
+    when the last shutdown was clean.
+
+    ``total_clips`` (optional) is the queue-wide tally at the moment of asking
+    — "how many videos it had made" overall, not just the interrupted one.
+    """
     if not prev:
         return ""
     gap = max(0.0, time.time() - float(prev.get("last_seen") or 0))
@@ -110,8 +137,13 @@ def interrupted_note(prev: dict | None) -> str:
     what = f"\nIt was working on: {str(cur.get('url', ''))[:70]}" if cur.get("url") else ""
     if cur.get("detail"):
         what += f" ({cur['detail']})"
+    if cur.get("prefix"):
+        n = clips_made_for(cur["prefix"])
+        if n:
+            what += f" — {n} clip(s) already rendered for this link before it stopped"
+    made = f"\n📊 {total_clips} clip(s) produced overall before it stopped." if total_clips else ""
     return (f"⚡ The last session ended without shutting down — power cut, forced close "
-            f"or a reboot (last seen {when}).{what}\n"
+            f"or a reboot (last seen {when}).{what}{made}\n"
             f"Nothing was lost: unfinished links go back in the queue and clips that "
             f"already rendered are kept.")
 
@@ -125,19 +157,38 @@ def announce_offline(work_dir: str = ".shortforge", reason: str = "closed",
             return False
         _announced = True
 
-    pending = ""
+    extra = ""
     try:
         from . import queue as Q
         q = Q.load_queue(work_dir)
         c = Q.counts(q)
         n = c[Q.PENDING] + c[Q.RUNNING]
         if n:
-            pending = (f"\n⏳ {n} link(s) still queued — they resume when ShortForge "
-                       f"starts again.")
+            extra += (f"\n⏳ {n} link(s) still queued — they resume when ShortForge "
+                     f"starts again.")
+        total = Q.total_clips(q)
+        if total:
+            extra += f"\n📊 {total} clip(s) produced so far."
     except Exception:  # noqa: BLE001 - a readable queue is a nicety here, not a must
         pass
 
-    text = f"🔴 <b>ShortForge stopped</b> ({reason}).{pending}"
+    # Read state BEFORE clear_state() below wipes it — name what was in flight,
+    # so "it will also tell which video it was making when it got closed" holds
+    # even on a clean stop, not just a crash-recovery report on the next start.
+    try:
+        cur = (read_state(work_dir) or {}).get("current") or {}
+        if cur.get("url"):
+            extra += f"\n🎬 It was working on: {str(cur['url'])[:70]}"
+            if cur.get("detail"):
+                extra += f" ({cur['detail']})"
+            if cur.get("prefix"):
+                n_disk = clips_made_for(cur["prefix"])
+                if n_disk:
+                    extra += f" — {n_disk} clip(s) already rendered for it"
+    except Exception:  # noqa: BLE001
+        pass
+
+    text = f"🔴 <b>ShortForge stopped</b> ({reason}).{extra}"
     try:
         if notify_fn is not None:
             notify_fn(text)
@@ -205,3 +256,30 @@ def install_exit_notice(work_dir: str = ".shortforge") -> None:
         log.debug("shutdown notice armed (including the console X button)")
     except Exception as e:  # noqa: BLE001 - never block startup over a notification
         log.debug("console shutdown handler unavailable: %s", e)
+
+
+# --- ntfy connectivity, surfaced locally -------------------------------------- #
+# A "connection lost" push notification is a contradiction while the connection
+# really is lost — it can't be delivered through the channel that's down. The
+# honest version: OutageWatch (notify.py) still *attempts* it immediately and
+# *guarantees* a "back online" message on recovery, and this records the state
+# to disk so the dashboard can show it live even while nothing can be pushed.
+
+def note_ntfy_status(work_dir: str = ".shortforge", ok: bool = True, detail: str = "") -> None:
+    """Record ntfy reachability. Only writes on a state change (or while still
+    down) so a healthy connection doesn't churn the state file every 5s."""
+    state = read_state(work_dir)
+    if state is None:
+        return                      # no run in progress; nothing to annotate
+    prev_ok = state.get("ntfy_ok", True)
+    if ok and prev_ok:
+        return                      # steady-state healthy: nothing changed
+    now = time.time()
+    state["ntfy_ok"] = bool(ok)
+    state["ntfy_checked"] = now
+    if not ok and prev_ok:
+        state["ntfy_down_since"] = now
+    if ok:
+        state["ntfy_down_since"] = None
+    state["ntfy_detail"] = (detail or "")[:200]
+    _write_state(work_dir, state)

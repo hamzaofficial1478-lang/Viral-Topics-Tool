@@ -28,8 +28,6 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from ..utils import log
-
 
 # --- shared OpenAI-compatible client (used by BOTH production calls and the
 #     capability probe, so URL/model handling can never drift) --------------- #
@@ -334,9 +332,9 @@ def _openai_json(c: LLMConfig, prompt: str, schema: dict,
     r = openai_chat_raw(c.base_url, c.api_key, c.model, messages,
                         max_tokens=max_tokens, extra={"response_format": {"type": "json_object"}})
     if r["error"]:
-        raise LLMError(r["error"])
+        raise LLMError(_redact(r["error"], c.api_key))
     if r["status"] != 200:
-        raise LLMError(f"HTTP {r['status']}: {r['body'][:200]}")
+        raise LLMError(f"HTTP {r['status']}: {_redact(r['body'][:200], c.api_key)}")
     data = json.loads(r["body"])
     return data["choices"][0]["message"]["content"]
 

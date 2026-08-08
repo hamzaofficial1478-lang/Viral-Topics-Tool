@@ -1,4 +1,4 @@
-"""Network diagnosis for outbound HTTPS (why Telegram won't connect).
+"""Network diagnosis for outbound HTTPS (why ntfy won't connect).
 
 "urlopen error timed out" is the least useful message in Python: it covers DNS
 failure, a blocked TCP port, a stalled TLS handshake and a dropped HTTP request.
@@ -11,10 +11,22 @@ from __future__ import annotations
 
 import socket
 import ssl
+import urllib.parse
 import urllib.request
 
-HOST = "api.telegram.org"
 PORT = 443
+DEFAULT_HOST = "ntfy.sh"
+
+
+def _configured_host() -> str:
+    """The operator's own ntfy server if they set one (self-hosted), else ntfy.sh."""
+    try:
+        from .providers.store import load_store
+        server = (load_store().get("ntfy", {}) or {}).get("server") or ""
+        host = urllib.parse.urlparse(server).hostname
+        return host or DEFAULT_HOST
+    except Exception:  # noqa: BLE001
+        return DEFAULT_HOST
 
 
 def windows_proxy() -> str | None:
@@ -53,13 +65,16 @@ def build_opener(proxy: str | None = None):
         urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
 
 
-def check(timeout: int = 10, proxy: str | None = None) -> list[tuple[str, bool, str]]:
-    """Walk DNS → TCP → TLS → HTTP. Returns [(layer, ok, detail)]."""
+def check(host: str | None = None, timeout: int = 10,
+          proxy: str | None = None) -> list[tuple[str, bool, str]]:
+    """Walk DNS → TCP → TLS → HTTP against ``host`` (default: the configured ntfy
+    server, else ntfy.sh). Returns [(layer, ok, detail)]."""
+    host = host or _configured_host()
     out: list[tuple[str, bool, str]] = []
 
     # 1. DNS
     try:
-        infos = socket.getaddrinfo(HOST, PORT, proto=socket.IPPROTO_TCP)
+        infos = socket.getaddrinfo(host, PORT, proto=socket.IPPROTO_TCP)
         ips = sorted({i[4][0] for i in infos})
         out.append(("DNS lookup", True, ", ".join(ips[:3])))
     except Exception as e:  # noqa: BLE001
@@ -68,7 +83,7 @@ def check(timeout: int = 10, proxy: str | None = None) -> list[tuple[str, bool, 
 
     # 2. TCP
     try:
-        with socket.create_connection((HOST, PORT), timeout=timeout):
+        with socket.create_connection((host, PORT), timeout=timeout):
             pass
         out.append(("TCP connect :443", True, "open"))
     except Exception as e:  # noqa: BLE001
@@ -77,30 +92,32 @@ def check(timeout: int = 10, proxy: str | None = None) -> list[tuple[str, bool, 
     # 3. TLS
     try:
         ctx = ssl.create_default_context()
-        with socket.create_connection((HOST, PORT), timeout=timeout) as sock:
-            with ctx.wrap_socket(sock, server_hostname=HOST) as tls:
+        with socket.create_connection((host, PORT), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as tls:
                 out.append(("TLS handshake", True, tls.version() or "ok"))
     except Exception as e:  # noqa: BLE001
         out.append(("TLS handshake", False, f"{type(e).__name__}: {e}"))
 
-    # 4. HTTP (this is what the bot actually does)
+    # 4. HTTP (this is what ntfy actually does)
     try:
         opener = build_opener(proxy)
-        with opener.open(f"https://{HOST}", timeout=timeout) as r:
+        with opener.open(f"https://{host}", timeout=timeout) as r:
             out.append(("HTTPS request", True, f"HTTP {r.status}"))
     except Exception as e:  # noqa: BLE001
         out.append(("HTTPS request", False, f"{type(e).__name__}: {e}"))
     return out
 
 
-def advise(results: list[tuple[str, bool, str]], proxy: str | None = None) -> str:
+def advise(results: list[tuple[str, bool, str]], host: str | None = None,
+           proxy: str | None = None) -> str:
     """Turn the layer results into the one thing to try next."""
+    host = host or _configured_host()
     ok = {name: good for name, good, _ in results}
     win_proxy = windows_proxy()
     env_p = env_proxy()
 
     if not ok.get("DNS lookup", False):
-        return ("DNS can't resolve api.telegram.org. Your ISP's DNS is blocking it.\n"
+        return (f"DNS can't resolve {host}. Your ISP's DNS is blocking it.\n"
                 "FIX: switch this PC's DNS to Cloudflare (1.1.1.1) or Google (8.8.8.8) — "
                 "Settings → Network → Change adapter options → IPv4 properties.")
     if not ok.get("TCP connect :443", False):
@@ -114,9 +131,9 @@ def advise(results: list[tuple[str, bool, str]], proxy: str | None = None) -> st
                         for n, ok_, d in results if n == "TCP connect :443")
         if timed_out:
             return (
-                "DNS resolves but the connection to port 443 TIMES OUT (it is not refused).\n"
+                f"DNS resolves but the connection to {host}:443 TIMES OUT (it is not refused).\n"
                 "A local firewall/antivirus REFUSES instantly; a silent timeout means your "
-                "packets are being dropped upstream — i.e. your ISP/country blocks Telegram "
+                f"packets are being dropped upstream — i.e. your ISP/country blocks {host} "
                 "by IP. Retrying will never help.\n\n"
                 "FIX, in order of what actually works:\n"
                 "1. Use a SYSTEM-WIDE VPN, not a browser extension. Browser add-on VPNs only "
@@ -125,10 +142,9 @@ def advise(results: list[tuple[str, bool, str]], proxy: str | None = None) -> st
                 "Proton VPN, Windscribe. Install, connect, then re-run this check.\n"
                 "2. If you have a working proxy, point Python at it:\n"
                 '   setx HTTPS_PROXY "http://host:port"   (then restart ShortForge)\n'
-                "3. Or skip Telegram entirely: set up ntfy.sh in Settings → Notifications. "
-                "It is a normal HTTPS host that is not blocked, needs no account, and has a "
-                "free phone app — you still get every progress message.")
-        return ("Port 443 to Telegram is refused. That is a local block: antivirus or firewall "
+                "3. Or self-host ntfy / use a different ntfy server (Settings → Notifications) "
+                f"if only {host} specifically is blocked.")
+        return (f"Port 443 to {host} is refused. That is a local block: antivirus or firewall "
                 "is stopping python.exe specifically (your browser is allowed, Python isn't).\n"
                 "FIX: add an outbound rule for python.exe, or turn off the AV web/HTTPS shield "
                 "and test again.")
@@ -142,14 +158,14 @@ def advise(results: list[tuple[str, bool, str]], proxy: str | None = None) -> st
                 "needs credentials.\n"
                 'FIX: set HTTPS_PROXY with your user/password:\n'
                 '    setx HTTPS_PROXY "http://user:pass@host:port"')
-    return ("All four layers pass — Telegram is reachable from this PC. If the Test button "
-            "still fails, the bot token or chat id is wrong: re-copy the token from "
-            "@BotFather, and make sure you've sent your bot a message at least once.")
+    return (f"All four layers pass — {host} is reachable from this PC. If the ntfy Test "
+            "button still fails, double-check the topic name was saved correctly.")
 
 
-def report(timeout: int = 10, proxy: str | None = None) -> str:
-    results = check(timeout=timeout, proxy=proxy)
-    lines = ["Telegram connectivity check", "=" * 44]
+def report(host: str | None = None, timeout: int = 10, proxy: str | None = None) -> str:
+    host = host or _configured_host()
+    results = check(host, timeout=timeout, proxy=proxy)
+    lines = [f"Connectivity check — {host}", "=" * 44]
     for name, good, detail in results:
         lines.append(f" [{'✓' if good else '✗'}] {name:18s} {detail}")
     wp, ep = windows_proxy(), env_proxy()
@@ -157,5 +173,5 @@ def report(timeout: int = 10, proxy: str | None = None) -> str:
     lines.append(f" Windows system proxy : {wp or '(none)'}")
     lines.append(f" Python HTTPS_PROXY   : {ep or '(none)'}")
     lines.append("")
-    lines.append(advise(results, proxy))
+    lines.append(advise(results, host, proxy))
     return "\n".join(lines)

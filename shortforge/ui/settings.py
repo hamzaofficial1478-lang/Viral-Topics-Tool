@@ -85,46 +85,15 @@ def _render_autodetect_import(store: dict) -> None:
         st.rerun()
 
 
-def _render_telegram(store: dict) -> None:
-    """Telegram progress messages: one per finished link, one when the queue ends."""
-    from ..notify import test_telegram
-
+def _render_notifications(store: dict) -> None:
+    """ntfy.sh progress messages + remote control — the only channel (Telegram
+    was removed: ntfy needs no bot/account setup and has a free phone app, so
+    running two channels bought nothing)."""
     st.divider()
-    st.subheader("📨 Notifications")
-    st.caption("Get a message when each link finishes and when the whole queue is done — "
-               "so you can leave it running and walk away.")
-    with st.expander("How to get these two values", expanded=False):
-        st.markdown(
-            "1. In Telegram, message **@BotFather** → `/newbot` → follow the prompts. "
-            "It gives you a **bot token** like `123456:ABC-DEF...`.\n"
-            "2. Send any message to your new bot (this is required — bots can't "
-            "message you first).\n"
-            "3. Message **@userinfobot** → it replies with your **chat id** (a number).\n"
-            "4. Paste both below, Save, then press Test.")
-
-    tg = store.get("telegram", {}) or {}
-    token = st.text_input("Bot token", value=tg.get("bot_token", "") or "", type="password")
-    chat_id = st.text_input("Chat id", value=str(tg.get("chat_id", "") or ""))
-
-    if st.button("🩺 Diagnose connection (run this if Test times out)", width="stretch"):
-        from ..netdiag import report
-        with st.spinner("Checking DNS → TCP → TLS → HTTPS…"):
-            st.code(report(timeout=10))
-
-    c1, c2 = st.columns(2)
-    if c1.button("💾 Save Telegram", width="stretch"):
-        store["telegram"] = {"bot_token": token.strip() or None,
-                             "chat_id": chat_id.strip() or None}
-        _persist(store)
-        st.success("Saved.")
-    if c2.button("🔔 Send test message", width="stretch",
-                 disabled=not (token.strip() and chat_id.strip())):
-        ok, detail = test_telegram(token.strip(), chat_id.strip())
-        (st.success if ok else st.error)(detail)
-
-    # --- ntfy.sh: works where Telegram is IP-blocked ------------------------ #
-    st.markdown("**Alternative: ntfy.sh** — use this if Telegram is blocked on your "
-                "connection. No account, no token.")
+    st.subheader("📨 Notifications & remote control (ntfy)")
+    st.caption("Get a message when the UI opens, when each link finishes, when the whole "
+               "queue is done, and when it stops — and control it back from your phone. "
+               "No account, no token required.")
     with st.expander("How to set up ntfy (2 minutes)", expanded=False):
         st.markdown(
             "1. Install the free **ntfy** app (Android/iOS) — or just open ntfy.sh in a browser.\n"
@@ -138,23 +107,36 @@ def _render_telegram(store: dict) -> None:
     topic = st.text_input("ntfy topic", value=nt.get("topic", "") or "",
                           placeholder="shortforge-yourname-7f3k9")
     server = st.text_input("ntfy server", value=nt.get("server", "") or "https://ntfy.sh")
-    st.caption("**Send commands from your phone too** (optional). Use a DIFFERENT, longer "
-               "topic for commands — anyone who knows a topic name can publish to it, and "
-               "publishing is how commands arrive.")
-    cmd_topic = st.text_input("ntfy command topic (optional)",
+    st.caption("**Send commands from your phone too.** Use a DIFFERENT, longer topic for "
+               "commands — anyone who knows a topic name can publish to it, and publishing "
+               "is how commands arrive. This is also what `cli.py listen` / `start_all.bat` "
+               "listens on to open the UI, ask permission before starting, and take links.")
+    cmd_topic = st.text_input("ntfy command topic",
                               value=nt.get("command_topic", "") or "",
                               placeholder="shortforge-cmd-9x2v7q4b1m")
     token_v = st.text_input("ntfy access token (optional, recommended)",
                             value=nt.get("token", "") or "", type="password",
                             help="From a paid/self-hosted ntfy account. With a token the "
                                  "topic is private; without one, treat the name as the secret.")
+
+    if st.button("🩺 Diagnose connection (run this if Test times out)", width="stretch"):
+        from ..netdiag import report
+        host = None
+        try:
+            import urllib.parse as _up
+            host = _up.urlparse(server.strip() or "https://ntfy.sh").hostname
+        except Exception:  # noqa: BLE001
+            pass
+        with st.spinner(f"Checking DNS → TCP → TLS → HTTPS to {host or 'ntfy.sh'}…"):
+            st.code(report(host=host, timeout=10))
+
     n1, n2 = st.columns(2)
     if n1.button("💾 Save ntfy", width="stretch"):
         store["ntfy"] = {"topic": topic.strip() or None, "server": server.strip() or None,
                          "command_topic": cmd_topic.strip() or None,
                          "token": token_v.strip() or None}
         _persist(store)
-        st.success("Saved — notifications will also go to ntfy.")
+        st.success("Saved.")
     if n2.button("🔔 Test ntfy", width="stretch", disabled=not topic.strip()):
         ok, detail = test_ntfy(topic.strip(), server.strip() or "https://ntfy.sh")
         (st.success if ok else st.error)(detail)
@@ -172,16 +154,24 @@ def _render_notification_reference() -> None:
     with st.expander("What you'll be messaged, and what you can send back", expanded=False):
         st.markdown(
             "**You get a message when:**\n"
-            "- 🟢 ShortForge starts (says how many links are queued and which is next)\n"
-            "- ⚡ it restarts after a power cut (names the link it was interrupted on)\n"
+            "- 🖥️ the UI opens (says what's queued, and asks permission before starting — "
+            "see below)\n"
+            "- ⚡ it restarts after a power cut (names the link it was interrupted on, how "
+            "many clips it had already made for that link, and how many overall)\n"
             "- 🎬 each link **starts** — with the numbers it understood "
             "(*“making 6 clip(s) of 1m00s, 16:9”*)\n"
             "- ✅ each link **finishes** — clip count and how long it took\n"
             "- ⚠️ a link **fails** — plain-language cause, and whether it self-healed\n"
-            "- 🌐 the **connection drops** and again when it comes back\n"
+            "- 🌐 the **connection drops** and again when it comes back (best-effort: an "
+            "alert genuinely can't be pushed through a channel that's down, but recovery is "
+            "always reported, and the dashboard below shows it live either way)\n"
             "- 🏁 the whole batch is **done**\n"
-            "- 🔴 ShortForge **stops** — Ctrl+C, closing the window, or PC shutdown\n\n"
-            "**You can send** (to the *command* topic, or to the Telegram bot):\n"
+            "- 🔴 ShortForge **stops** — Ctrl+C, closing the window, or PC shutdown — and "
+            "names what it was working on and how many clips it had made\n\n"
+            "**On every start, permission is asked before anything runs.** ShortForge never "
+            "auto-resumes — reply **“start”** (or `/resume`) to begin, or **“pause”** (or "
+            "`/stop`) to leave it stopped. Same wording either way — no slash needed.\n\n"
+            "**You can send** (to the *command* topic):\n"
             "```\n"
             "https://youtu.be/AAA 5 clips of 2 min landscape\n"
             "https://youtu.be/BBB clips=6 duration=90s aspect=9:16 label=podcast\n"
@@ -204,9 +194,18 @@ def _render_notification_reference() -> None:
             st.warning(f"⚠️ A worker registered {ago // 60} min ago and hasn't checked in. "
                        f"If you didn't close it, it was killed — starting it again resumes "
                        f"the queue.")
+        if state.get("ntfy_ok") is False:
+            since = state.get("ntfy_down_since")
+            since_txt = ""
+            if since:
+                mins = int(max(0, _t.time() - float(since)) // 60)
+                since_txt = f" (about {mins} min)" if mins else " (just now)"
+            st.error(f"🔌 ntfy connection lost{since_txt} — commands and push notifications "
+                    f"won't arrive until it reconnects. Rendering is unaffected; the queue "
+                    f"keeps its place. {state.get('ntfy_detail', '')}".strip())
     else:
         st.info("⚪ No worker is running. Start one with `start_all.bat` "
-                "(or `python cli.py queue run --owner-confirmed`).")
+                "(or `python cli.py listen --owner-confirmed`).")
 
 
 def _render_youtube_auth(store: dict) -> None:
@@ -249,8 +248,8 @@ def _render_youtube_auth(store: dict) -> None:
         st.success("Saved — applied to every download.")
     if c2.button("🔎 Test authentication", width="stretch", disabled=not test_url.strip()):
         cfg = Config.load()
-        cfg.override("ingest.cookies_from_browser", None if browser == "none" else browser)
-        cfg.override("ingest.cookies", cookies_file.strip() or None)
+        cfg.set("ingest.cookies_from_browser", None if browser == "none" else browser)
+        cfg.set("ingest.cookies", cookies_file.strip() or None)
         with st.spinner("Fetching metadata (no download) — trying every strategy…"):
             ok, detail = test_youtube_auth(test_url.strip(), cfg)
         # The Test walks the same format fallback chain the download does, so a ✓
@@ -261,8 +260,8 @@ def _render_youtube_auth(store: dict) -> None:
 
     if st.button("🧾 List available formats (diagnostic)", disabled=not test_url.strip()):
         cfg = Config.load()
-        cfg.override("ingest.cookies_from_browser", None if browser == "none" else browser)
-        cfg.override("ingest.cookies", cookies_file.strip() or None)
+        cfg.set("ingest.cookies_from_browser", None if browser == "none" else browser)
+        cfg.set("ingest.cookies", cookies_file.strip() or None)
         with st.spinner("Asking YouTube what it will serve…"):
             ok, detail = list_formats(test_url.strip(), cfg)
         st.code(detail or "(no result)")
@@ -366,8 +365,8 @@ def render() -> None:
     st.divider()
     _render_task_routing(store)
 
-    # --- Telegram progress notifications ---
-    _render_telegram(store)
+    # --- ntfy notifications + remote control ---
+    _render_notifications(store)
 
     # --- YouTube authentication (fix the bot wall on downloads) ---
     _render_youtube_auth(store)

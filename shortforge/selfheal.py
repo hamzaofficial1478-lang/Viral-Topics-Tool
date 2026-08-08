@@ -1,4 +1,4 @@
-"""Error triage: explain failures on Telegram, and auto-fix the safe ones.
+"""Error triage: explain failures over ntfy, and auto-fix the safe ones.
 
 Two deliberately separate things:
 
@@ -7,7 +7,7 @@ Two deliberately separate things:
   cache space). These change the machine's state, never the source code, and
   each is idempotent so a retry loop can't do damage.
 * **AI diagnosis** — anything not on the whitelist is described in plain
-  language by the configured LLM and sent to Telegram for the operator to act
+  language by the configured LLM and sent over ntfy for the operator to act
   on. The model never edits files: an unreviewed code change on a production
   machine can silently break a working pipeline, and nobody is awake to catch it.
 """
@@ -139,7 +139,7 @@ def diagnose(error: str, context: str = "") -> str:
 
 
 def report(error: str, context: str = "", *, try_fix: bool = True) -> tuple[bool, str]:
-    """Triage a failure: attempt a safe repair, then build a Telegram message.
+    """Triage a failure: attempt a safe repair, then build an ntfy message.
 
     Returns (fixed, message). ``fixed=True`` means a remedy ran successfully and
     the caller may retry.

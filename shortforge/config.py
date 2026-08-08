@@ -137,7 +137,7 @@ DEFAULTS: dict[str, Any] = {
         # A3 burned-in source-caption handling:
         "burned_in": "none",        # none | cover | blur | crop
         "burned_in_samples": 16,
-        "burned_in_threshold": 0.10,
+        "burned_in_threshold": 0.025,
         # Line-grouping (behaviour, not look):
         "max_line_chars": 30,
         "max_line_duration": 2.5,
@@ -281,9 +281,17 @@ class Config:
         return node
 
     def override(self, dotted: str, value: Any) -> None:
-        """Set a value by dotted path (used by CLI flags). None is ignored."""
+        """Set a value by dotted path (used by CLI flags). None is ignored —
+        an unset flag must not clobber a configured default."""
         if value is None:
             return
+        self.set(dotted, value)
+
+    def set(self, dotted: str, value: Any) -> None:
+        """Set a value by dotted path unconditionally — unlike ``override``,
+        ``None`` IS applied. Use this when the caller means to explicitly
+        clear a setting (e.g. a Settings-screen "none" choice), not "unset,
+        leave the current value alone"."""
         parts = dotted.split(".")
         node = self._data
         for part in parts[:-1]:

@@ -44,15 +44,20 @@ def load_store() -> dict:
 
 
 def save_store(store: dict) -> None:
+    """Write atomically (tmp + os.replace) — every credential lives here, so a
+    power cut mid-write must never truncate/corrupt it (same discipline as
+    queue.py and lifecycle.py's state file)."""
     path = store_path()
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(store, f, ensure_ascii=False, indent=2)
     # Keys live here — make sure it never becomes world-readable on POSIX.
     try:
-        os.chmod(path, 0o600)
+        os.chmod(tmp, 0o600)
     except OSError:
         pass
+    os.replace(tmp, path)
 
 
 def masked(key: str | None) -> str:

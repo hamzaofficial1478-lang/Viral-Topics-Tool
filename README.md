@@ -46,10 +46,10 @@ Three steps — no command line needed after cloning:
    plaintext — keep it private; it's gitignored so it can't be committed.
 
 **Start automatically at logon:** double-click **`install_autostart.bat`** and pick
-Telegram mode or Queue mode (option 3 turns it off again). It needs no admin
-rights and works out its own paths — it drops a small launcher into your Startup
-folder. Don't use `schtasks` for this: many machines refuse it with
-"Access is denied".
+Everything mode (UI + ntfy remote control) or Queue mode (option 3 turns it off
+again). It needs no admin rights and works out its own paths — it drops a small
+launcher into your Startup folder. Don't use `schtasks` for this: many machines
+refuse it with "Access is denied".
 
 **Desktop shortcut / taskbar:** right-click `start_ui.vbs` → **Send to → Desktop
 (create shortcut)** and rename it "ShortForge". To pin it to the taskbar, make a

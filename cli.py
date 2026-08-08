@@ -445,46 +445,53 @@ def cmd_queue(args: argparse.Namespace) -> int:
     return 0 if s["failed"] == 0 else 1      # the atexit hook sends the goodbye
 
 
-def cmd_telegram(args: argparse.Namespace) -> int:
-    """Listen for links on Telegram and work the queue — the phone-driven mode.
+def cmd_listen(args: argparse.Namespace) -> int:
+    """Open the dashboard, listen for ntfy commands, and work the queue — the
+    phone-driven mode.
 
-    Two threads: a long-poll listener that only ever accepts YOUR chat id, and a
-    worker that drains the queue. Both talk through the queue file, so either can
-    restart without losing anything.
+    Two threads: the ntfy command listener, and a worker that drains the queue.
+    Both talk through the queue file, so either can restart without losing
+    anything. Nothing is ever auto-started: every session comes up PAUSED
+    whenever there's pending or interrupted work, and stays that way until the
+    operator explicitly replies "start" (or /resume) on the command topic — a
+    silent auto-resume after a crash/reboot is exactly the surprise this is
+    designed not to spring.
     """
     import threading
     setup_logging(args.verbose)
     load_env_file(getattr(args, "env_file", None) or ".env")
-    from shortforge import notify as N, queue as Q, telegram_bot as TB
-    from shortforge.runner import drain_queue
-    from shortforge.providers.store import load_store
-
+    from shortforge import notify as N, queue as Q
     from shortforge import ntfy_bot as NB
-    tg = load_store().get("telegram", {}) or {}
-    token, chat = tg.get("bot_token"), str(tg.get("chat_id") or "")
-    if not (token and chat) and not NB.configured():
-        log.error("No remote control configured. Open Settings → Notifications and set up "
-                  "either Telegram (bot token + chat id) or an ntfy COMMAND topic.")
+    from shortforge.runner import drain_queue
+
+    if not NB.configured():
+        log.error("No remote control configured. Open Settings → Notifications and set "
+                  "an ntfy COMMAND topic.")
         return 2
 
     from shortforge import lifecycle
 
     cfg0 = Config.load(args.config)
     work_dir = cfg0.get("paths.work_dir", ".shortforge")
-    prev = lifecycle.mark_online(work_dir, mode="telegram")
+    prev = lifecycle.mark_online(work_dir, mode="listen")
     lifecycle.install_exit_notice(work_dir)
     q = Q.load_queue(work_dir)
     resumed = Q.requeue_interrupted(q)
+    has_work = Q.next_pending(q) is not None
+    if has_work:
+        Q.set_paused(q, True)        # always ask first — see the permission gate below
     Q.save_queue(q, work_dir)
 
     stop = threading.Event()
 
     def _worker():
-        """Drain the queue whenever something is pending; idle quietly otherwise."""
+        """Drain the queue whenever unpaused and something is pending; idle quietly
+        otherwise (this is also how the startup permission gate holds: paused
+        stays paused until an explicit reply flips it)."""
         while not stop.is_set():
             _q = Q.load_queue(work_dir)
             if Q.is_paused(_q) or Q.next_pending(_q) is None:
-                stop.wait(5)                 # paused or idle: stay alive, keep listening
+                stop.wait(5)
                 continue
             with N.KeepAwake():
                 s = drain_queue(lambda: _cfg_for_queue(args), work_dir,
@@ -493,42 +500,44 @@ def cmd_telegram(args: argparse.Namespace) -> int:
                 N.notify(f"🏁 <b>Queue empty</b>\n{s['done']} done, {s['failed']} failed\n"
                          f"<b>{s['total_clips']} clip(s)</b> total")
 
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
+    threading.Thread(target=_worker, daemon=True).start()
+    threading.Thread(target=NB.listen, args=(work_dir,),
+                     kwargs={"stop": stop.is_set}, daemon=True).start()
 
-    # ntfy command listener (works where Telegram is blocked).
-    if NB.configured():
-        threading.Thread(target=NB.listen, args=(work_dir,),
-                         kwargs={"stop": stop.is_set}, daemon=True).start()
-
-    # What the operator wants to read at 8am after a reboot: that it woke up, and
-    # exactly which link it is on with which numbers.
+    # What the operator wants to read after a reboot: that the UI is open, what
+    # state things were left in, and — the point of the permission gate — that
+    # nothing runs until they say so.
     q = Q.load_queue(work_dir)
     pending = Q.counts(q)[Q.PENDING]
+    total_clips = Q.total_clips(q)
     nxt = Q.next_pending(q)
-    hard_stop = lifecycle.interrupted_note(prev)
-    N.notify("🟢 <b>ShortForge is awake</b> and listening.\n"
-             + (hard_stop + "\n" if hard_stop else "")
-             + (f"Resumed {resumed} interrupted link(s).\n" if resumed else "")
-             + (f"⏳ {pending} link(s) queued.\n"
-                f"▶️ Next: {nxt['url'][:70]} — {Q.describe_settings(nxt)}"
-                if nxt else "Nothing queued — send me a link, or /help."))
-    log.info("listening for commands. Ctrl+C to stop.")
+    hard_stop = lifecycle.interrupted_note(prev, total_clips=total_clips)
+    lines = ["🖥️ <b>ShortForge UI is open</b> — http://localhost:8501"]
+    if hard_stop:
+        lines.append(hard_stop)
+    elif total_clips:
+        lines.append(f"📊 {total_clips} clip(s) produced so far.")
+    if resumed:
+        lines.append(f"↩️ {resumed} interrupted link(s) back in the queue.")
+    if has_work:
+        lines.append(f"⏳ {pending} link(s) queued — next: {nxt['url'][:70]} "
+                     f"({Q.describe_settings(nxt)}).")
+        lines.append('▶️ Reply "start" (or /resume) to begin, or "pause" to leave it '
+                     "stopped. Nothing runs until you say so.")
+    else:
+        lines.append("Nothing queued yet — send me a link, or /help.")
+    N.notify("\n".join(lines))
+    log.info("listening for commands (paused=%s). Ctrl+C to stop.", has_work)
 
-    watch = N.OutageWatch("Telegram", threshold=4)
-    offset = 0
     try:
-        while True:
-            if token and chat:
-                offset = TB.poll_once(token, chat, offset, work_dir,
-                                      on_result=watch.record)
-            else:
-                stop.wait(5)          # ntfy-only mode: its own thread does the polling
+        while not stop.is_set():
+            stop.wait(5)
     except KeyboardInterrupt:
-        log.info("telegram: stopping…")
+        log.info("listen: stopping…")
         stop.set()
         lifecycle.announce_offline(work_dir, "stopped with Ctrl+C")
         return 0
+    return 0
 
 
 def _cfg_for_queue(args) -> Config:
@@ -538,11 +547,12 @@ def _cfg_for_queue(args) -> Config:
     return cfg
 
 
-def cmd_telegram_doctor(args: argparse.Namespace) -> int:
-    """Pinpoint WHICH network layer is blocking Telegram (DNS/TCP/TLS/HTTP)."""
+def cmd_netdiag(args: argparse.Namespace) -> int:
+    """Pinpoint WHICH network layer is blocking ntfy (DNS/TCP/TLS/HTTP)."""
     setup_logging(args.verbose)
     from shortforge.netdiag import report
-    print(report(timeout=int(getattr(args, "timeout", 10) or 10),
+    print(report(host=getattr(args, "host", None),
+                 timeout=int(getattr(args, "timeout", 10) or 10),
                  proxy=getattr(args, "proxy", None)))
     return 0
 
@@ -556,7 +566,6 @@ def cmd_encode_sample(args: argparse.Namespace) -> int:
     from shortforge.ingest import ingest
     from shortforge.reframe import apply_resolution, parse_aspect, build_filtergraph
     from shortforge.render import available_hw_encoders, video_encode_args
-    from shortforge.models import Clip
     from shortforge.utils import ffprobe_info, require_binary, run, format_timestamp
 
     cfg = Config.load(args.config)
@@ -569,7 +578,6 @@ def cmd_encode_sample(args: argparse.Namespace) -> int:
                                 int(cfg.get("reframe.height", 1920)))
     probe = ffprobe_info(meta.file_path)
     start, dur = float(args.start), float(args.duration)
-    clip = Clip(clip_id="sample", source_hash=meta.hash, start=start, end=start + dur, score=1.0)
     fg = build_filtergraph(probe.width, probe.height, out_w, out_h, fill="crop")
     out_dir = cfg.get("paths.output_dir", "out")
     os.makedirs(out_dir, exist_ok=True)
@@ -1090,17 +1098,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Keep pending/running jobs, drop finished ones")
     qp.set_defaults(func=cmd_queue)
 
-    tg = sub.add_parser("telegram",
-                        help="Listen for links on Telegram (owner-only) and work the queue")
-    tg.add_argument("--owner-confirmed", action="store_true",
+    ls = sub.add_parser("listen",
+                        help="Open the UI and listen for ntfy commands (owner-only), "
+                             "working the queue with permission asked before each start")
+    ls.add_argument("--owner-confirmed", action="store_true",
                     help="Confirm every link you send is your own / licensed content")
-    tg.set_defaults(func=cmd_telegram)
+    ls.set_defaults(func=cmd_listen)
 
-    td = sub.add_parser("telegram-doctor",
-                        help="Diagnose why Telegram won't connect (DNS/TCP/TLS/proxy)")
-    td.add_argument("--timeout", type=int, default=10)
-    td.add_argument("--proxy", help="Test through this proxy, e.g. http://127.0.0.1:8080")
-    td.set_defaults(func=cmd_telegram_doctor)
+    nd = sub.add_parser("netdiag",
+                        help="Diagnose why ntfy won't connect (DNS/TCP/TLS/proxy)")
+    nd.add_argument("--host", help="Host to test (default: your configured ntfy server)")
+    nd.add_argument("--timeout", type=int, default=10)
+    nd.add_argument("--proxy", help="Test through this proxy, e.g. http://127.0.0.1:8080")
+    nd.set_defaults(func=cmd_netdiag)
 
     es = sub.add_parser("encode-sample",
                         help="Render one slice with x264 vs hardware encoders to compare quality")

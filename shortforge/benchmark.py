@@ -109,7 +109,9 @@ def _call(entry: LLMEntry, prompt: str, *, max_tokens: int = 400,
             text = next((b.get("text", "") for b in blocks if b.get("type") == "text"), "")
             return {"text": text, "latency_ms": (time.time()-t0)*1000, "status": 200, "error": None}
         except Exception as e:  # noqa: BLE001
-            return {"text": "", "latency_ms": (time.time()-t0)*1000, "status": None, "error": str(e)}
+            from .providers.base import redact
+            return {"text": "", "latency_ms": (time.time()-t0)*1000, "status": None,
+                    "error": redact(str(e), entry.api_key)}
     extra = {"response_format": {"type": "json_object"}} if json_mode else None
     r = openai_chat_raw(entry.base_url, entry.api_key, entry.model, messages,
                         max_tokens=max_tokens, timeout=90, extra=extra)
@@ -119,8 +121,10 @@ def _call(entry: LLMEntry, prompt: str, *, max_tokens: int = 400,
             text = json.loads(r["body"])["choices"][0]["message"]["content"]
         except Exception:  # noqa: BLE001
             text = r["body"][:500]
+    from .providers.base import redact
+    err = r["error"] or (None if r["status"] == 200 else r["body"][:200])
     return {"text": text, "latency_ms": (time.time()-t0)*1000,
-            "status": r["status"], "error": r["error"] or (None if r["status"] == 200 else r["body"][:200])}
+            "status": r["status"], "error": redact(err, entry.api_key) if err else err}
 
 
 def pick_segments(transcript: Transcript, n: int) -> list:

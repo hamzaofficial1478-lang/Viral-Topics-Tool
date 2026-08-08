@@ -12,8 +12,13 @@ title ShortForge autostart
 cd /d "%~dp0"
 
 set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
-set "TG=%STARTUP%\ShortForge Telegram.bat"
+set "EV=%STARTUP%\ShortForge Everything.bat"
 set "QU=%STARTUP%\ShortForge Queue.bat"
+REM Older versions named this "ShortForge Telegram.bat" - migrate it silently
+REM so upgrading doesn't leave a stale, wrongly-named autostart entry behind.
+set "OLD_TG=%STARTUP%\ShortForge Telegram.bat"
+if exist "%OLD_TG%" if not exist "%EV%" ren "%OLD_TG%" "ShortForge Everything.bat" >nul 2>&1
+if exist "%OLD_TG%" del "%OLD_TG%" >nul 2>&1
 
 echo ============================================================
 echo   ShortForge - start automatically at logon
@@ -21,34 +26,34 @@ echo   Program folder: "%CD%"
 echo   Startup folder: "%STARTUP%"
 echo ============================================================
 echo.
-if exist "%TG%" echo   [currently ON]  Telegram mode
+if exist "%EV%" echo   [currently ON]  Everything mode
 if exist "%QU%" echo   [currently ON]  Queue mode
-if not exist "%TG%" if not exist "%QU%" echo   [currently OFF] nothing starts automatically
+if not exist "%EV%" if not exist "%QU%" echo   [currently OFF] nothing starts automatically
 echo.
-echo   1  Everything      - dashboard UI + Telegram listener + queue worker
-echo   2  Queue only      - work through queued links, no UI, no Telegram
+echo   1  Everything      - dashboard UI + ntfy remote control + queue worker
+echo   2  Queue only      - work through queued links, no UI, no ntfy
 echo   3  Turn autostart OFF
 echo   4  Cancel
 echo.
 set "CHOICE="
 set /p CHOICE=Type 1, 2, 3 or 4 then press Enter:
 
-if "%CHOICE%"=="1" goto :telegram
+if "%CHOICE%"=="1" goto :everything
 if "%CHOICE%"=="2" goto :queue
 if "%CHOICE%"=="3" goto :remove
 goto :cancel
 
-:telegram
+:everything
 set "TARGET=%~dp0start_all.bat"
-set "LINK=%TG%"
+set "LINK=%EV%"
 set "OTHER=%QU%"
-set "NAME=Everything (UI + Telegram + queue)"
+set "NAME=Everything (UI + ntfy + queue)"
 goto :install
 
 :queue
 set "TARGET=%~dp0run_queue.bat"
 set "LINK=%QU%"
-set "OTHER=%TG%"
+set "OTHER=%EV%"
 set "NAME=Queue mode"
 goto :install
 
@@ -65,7 +70,7 @@ if not exist "%STARTUP%" (
   echo        "%STARTUP%"
   goto :done
 )
-REM Only one mode at a time - Telegram mode already drains the queue.
+REM Only one mode at a time - Everything mode already drains the queue.
 if exist "%OTHER%" del "%OTHER%" >nul 2>&1
 
 REM Write a tiny launcher into Startup that calls the real script in place.
@@ -97,8 +102,9 @@ if /i "%STARTNOW%"=="Y" (
   echo   Launching "%TARGET%" in a new window...
   start "ShortForge" cmd /c "%TARGET%"
   echo.
-  echo   A new window opened. If notifications are set up you should get a
-  echo   "ShortForge is awake" message on your phone within a few seconds.
+  echo   A new window opened. If ntfy is set up you should get a
+  echo   "ShortForge UI is open" message on your phone within a few seconds -
+  echo   it will ask permission before starting anything queued.
   echo   You should also get a "ShortForge stopped" message when you close it -
   echo   that is how you can always tell whether it is really running.
 )
@@ -106,7 +112,7 @@ goto :done
 
 :remove
 set "GONE=0"
-if exist "%TG%" (del "%TG%" >nul 2>&1 & set "GONE=1")
+if exist "%EV%" (del "%EV%" >nul 2>&1 & set "GONE=1")
 if exist "%QU%" (del "%QU%" >nul 2>&1 & set "GONE=1")
 REM Clean up any scheduled tasks from the older instructions, if they exist.
 schtasks /delete /tn "ShortForgeTelegram" /f >nul 2>&1

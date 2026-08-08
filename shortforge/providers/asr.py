@@ -23,7 +23,7 @@ import uuid
 from ..config import Config
 from ..models import Segment, Transcript, Word
 from ..utils import log
-from .base import ASRProvider, _env
+from .base import ASRProvider
 
 
 def _confidence(avg_logprob, no_speech_prob) -> float | None:

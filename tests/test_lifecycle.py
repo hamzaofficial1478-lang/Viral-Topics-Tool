@@ -65,11 +65,11 @@ def test_goodbye_says_how_many_links_survive(tmp_path):
 def test_a_leftover_state_file_is_reported_as_a_hard_stop(tmp_path):
     """Power cut: no goodbye was possible, so the NEXT start must say so."""
     work = str(tmp_path)
-    L.mark_online(work, "telegram")
+    L.mark_online(work, "listen")
     L.heartbeat(work, current={"url": "https://youtu.be/abc", "detail": "6 clip(s) of 1m00s"})
     L._announced = False
 
-    prev = L.mark_online(work, "telegram")            # restart without a clean exit
+    prev = L.mark_online(work, "listen")              # restart without a clean exit
     note = L.interrupted_note(prev)
     assert "without shutting down" in note
     assert "https://youtu.be/abc" in note and "6 clip(s)" in note
@@ -103,12 +103,12 @@ def test_install_exit_notice_is_idempotent(tmp_path):
 
 def test_outage_is_announced_after_repeated_failures_not_one_blip():
     sent = []
-    w = N.OutageWatch("Telegram", threshold=3, notify_fn=sent.append)
+    w = N.OutageWatch("ntfy", threshold=3, notify_fn=sent.append)
     assert w.record(False) is None and w.record(False) is None   # blips stay quiet
     assert sent == []
     assert w.record(False) is not None                           # third strike
     assert w.down is True
-    assert "Network problem" in sent[0] and "Telegram" in sent[0]
+    assert "Network problem" in sent[0] and "ntfy" in sent[0]
     assert len(sent) == 1
     w.record(False)                                              # no repeat spam
     assert len(sent) == 1

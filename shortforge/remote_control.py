@@ -1,33 +1,29 @@
-"""Telegram control: send links + settings from your phone, the PC does the work.
+"""Command vocabulary shared by every remote-control surface (ntfy today).
 
-SECURITY MODEL — this is a remote-control surface on the operator's machine, so
-it is deliberately narrow:
+One command parser, so a phone message means the same thing everywhere it's
+read from — a message either a recognised ``/command`` (or its plain-English
+equivalent — nobody types slash commands precisely on a phone) or a list of
+http(s) links with ``key=value`` settings.
 
-* **Owner-only.** Every update is checked against the ``chat_id`` saved in
-  Settings *before* the text is parsed. Anything else is counted and dropped —
-  a stranger who finds the bot cannot queue jobs, read status, or learn
-  anything about the machine.
-* **Fixed vocabulary.** A message is either a recognised ``/command`` or a list
-  of http(s) links with ``key=value`` settings. There is no passthrough to a
-  shell, the filesystem, or arbitrary config — only the whitelisted keys in
-  ``queue.JOB_SETTINGS`` are accepted, and each is type-checked and bounded.
+SECURITY MODEL — this is a remote-control surface on the operator's machine,
+so it is deliberately narrow:
+
+* **Fixed vocabulary.** There is no passthrough to a shell, the filesystem, or
+  arbitrary config — only the whitelisted keys in ``queue.JOB_SETTINGS`` are
+  accepted, and each is type-checked and bounded.
 * **No secrets out.** Replies never include tokens, keys, or absolute paths.
 * **Bounded.** Caps on links per message and total queue size stop a runaway
   or malicious flood from filling the disk.
+* Who is even allowed to publish a command is enforced by the transport (the
+  ntfy *command* topic must be a long, unguessable, ideally token-protected
+  secret — see ``ntfy_bot.py``), not by this module.
 """
 
 from __future__ import annotations
 
-import json
 import re
-import time
-import urllib.parse
-import urllib.request
 
 from . import queue as Q
-from .utils import log
-
-_API = "https://api.telegram.org/bot{token}/{method}"
 
 MAX_LINKS_PER_MESSAGE = 20
 MAX_QUEUE = 200
@@ -66,6 +62,14 @@ _CLIPS_RE = re.compile(r"\b(\d{1,3})\s*(?:x\s*)?(?:clips?|shorts?|videos?)\b", r
 _ASPECT_RE = re.compile(r"\b(9:16|16:9|1:1|4:5|portrait|landscape|square|vertical|horizontal)\b",
                         re.I)
 _RES_RE = re.compile(r"\b(1080p|720p|480p|360p)\b", re.I)
+
+# Plain-English equivalents of /resume and /pause — a reply to the "should I
+# start?" permission prompt is exactly the kind of message nobody wants to
+# type a slash for. Exact match on the whole (stripped, lowercased) message
+# only, so these never fire from a stray word inside a longer link+settings
+# message.
+_START_WORDS = {"start", "go", "begin", "yes", "yep", "yeah", "ok", "okay", "on"}
+_STAY_PAUSED_WORDS = {"pause", "stop", "off", "no", "nope", "wait", "not yet", "hold"}
 
 
 def _bounded(key: str, value) -> int | None:
@@ -109,30 +113,13 @@ HELP = (
     "<b>Commands:</b>\n"
     "/status — how the queue is doing\n"
     "/list — the queued links\n"
-    "/pause — stop starting new links (the current one finishes)\n"
-    "/resume — start working again\n"
+    "/pause (or just \"pause\"/\"stop\"/\"no\") — stop starting new links "
+    "(the current one finishes)\n"
+    "/resume (or just \"start\"/\"go\"/\"yes\") — start working again\n"
     "/clear — remove finished jobs\n"
     "/cancel — drop everything still pending\n"
     "/help — this message"
 )
-
-
-# --- transport -------------------------------------------------------------- #
-
-def _call(token: str, method: str, params: dict, timeout: int = 40) -> dict:
-    data = urllib.parse.urlencode(params).encode()
-    req = urllib.request.Request(_API.format(token=token, method=method), data=data)
-    from .netdiag import build_opener   # honours HTTPS_PROXY / the Windows proxy
-    with build_opener().open(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
-
-
-def _reply(token: str, chat_id: str, text: str) -> None:
-    try:
-        _call(token, "sendMessage",
-              {"chat_id": chat_id, "text": text[:4000], "parse_mode": "HTML"}, timeout=20)
-    except Exception as e:  # noqa: BLE001
-        log.warning("telegram reply failed: %s", e)
 
 
 # --- parsing (pure, unit-tested) -------------------------------------------- #
@@ -233,11 +220,33 @@ def parse_links(text: str) -> list[str]:
     return links
 
 
+def _pause(work_dir: str) -> str:
+    q = Q.load_queue(work_dir)
+    Q.set_paused(q, True)
+    Q.save_queue(q, work_dir)
+    return ("⏸ <b>Paused.</b> The link being worked on will finish, then I'll stop "
+            "starting new ones. Links you send are still queued. Reply \"start\" "
+            "(or /resume) to continue.")
+
+
+def _resume(work_dir: str) -> str:
+    q = Q.load_queue(work_dir)
+    Q.set_paused(q, False)
+    Q.save_queue(q, work_dir)
+    pending = Q.counts(q)[Q.PENDING]
+    return (f"▶️ <b>Working again.</b> {pending} link(s) pending."
+            if pending else "▶️ <b>Working again.</b> Nothing queued — send me a link.")
+
+
 def handle_text(text: str, work_dir: str) -> str:
-    """Turn one owner message into a reply. Pure w.r.t. Telegram (testable)."""
+    """Turn one owner message into a reply. Pure w.r.t. any transport (testable)."""
     text = (text or "").strip()
     low = text.lower()
 
+    if low in _START_WORDS or low.startswith(("/resume", "/on")):
+        return _resume(work_dir)
+    if low in _STAY_PAUSED_WORDS or low.startswith(("/pause", "/stop", "/off")):
+        return _pause(work_dir)
     if low.startswith(("/start", "/help")):
         return HELP
     if low.startswith("/status"):
@@ -252,19 +261,6 @@ def handle_text(text: str, work_dir: str) -> str:
         if running:
             msg += f"\n\nNow: {running['url'][:70]}"
         return msg
-    if low.startswith(("/pause", "/stop", "/off")):
-        q = Q.load_queue(work_dir)
-        Q.set_paused(q, True)
-        Q.save_queue(q, work_dir)
-        return ("⏸ <b>Paused.</b> The link being worked on will finish, then I'll stop "
-                "starting new ones. Links you send are still queued. /resume to continue.")
-    if low.startswith(("/resume", "/on")):   # /start stays Telegram's "introduce yourself"
-        q = Q.load_queue(work_dir)
-        Q.set_paused(q, False)
-        Q.save_queue(q, work_dir)
-        pending = Q.counts(q)[Q.PENDING]
-        return (f"▶️ <b>Working again.</b> {pending} link(s) pending."
-                if pending else "▶️ <b>Working again.</b> Nothing queued — send me a link.")
     if low.startswith("/list"):
         q = Q.load_queue(work_dir)
         jobs = q.get("jobs", [])
@@ -309,45 +305,3 @@ def handle_text(text: str, work_dir: str) -> str:
     return (f"➕ Queued <b>{len(links)}</b> link(s): {detail}.\n"
             f"⏳ {Q.counts(q)[Q.PENDING]} pending — I'll message you when each one "
             f"starts and finishes.")
-
-
-# --- polling loop ----------------------------------------------------------- #
-
-def poll_once(token: str, owner_chat: str, offset: int, work_dir: str,
-              timeout: int = 30, on_result=None) -> int:
-    """One long-poll. Returns the next offset. Non-owner updates are dropped.
-
-    ``on_result(ok, detail)`` (optional) is told whether the poll reached Telegram
-    at all, so the caller can notice an outage — the poll itself swallows network
-    errors by design, which would otherwise hide a dead connection completely.
-    """
-    try:
-        body = _call(token, "getUpdates",
-                     {"offset": offset, "timeout": timeout,
-                      "allowed_updates": json.dumps(["message"])},
-                     timeout=timeout + 15)
-        if on_result:
-            on_result(True, "")
-    except Exception as e:  # noqa: BLE001 - network blips must not kill the listener
-        log.debug("telegram poll error: %s", e)
-        if on_result:
-            on_result(False, f"{type(e).__name__}: {str(e)[:150]}")
-        time.sleep(5)
-        return offset
-
-    for upd in body.get("result", []):
-        offset = max(offset, int(upd.get("update_id", 0)) + 1)
-        msg = upd.get("message") or {}
-        chat = str((msg.get("chat") or {}).get("id", ""))
-        # SECURITY GATE: owner only, checked before the text is even looked at.
-        if chat != str(owner_chat):
-            log.warning("telegram: ignored a message from unauthorised chat %s", chat[:12])
-            continue
-        text = msg.get("text") or ""
-        try:
-            reply = handle_text(text, work_dir)
-        except Exception as e:  # noqa: BLE001
-            log.error("telegram handler error: %s", e)
-            reply = "Something went wrong handling that. Try /help."
-        _reply(token, owner_chat, reply)
-    return offset

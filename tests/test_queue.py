@@ -77,6 +77,57 @@ def test_corrupt_queue_file_does_not_crash(tmp_path):
     assert Q.load_queue(work) == {"jobs": []}                # degrades, never raises
 
 
+# --- single-worker lock ------------------------------------------------------- #
+
+def test_lock_is_exclusive(tmp_path):
+    work = str(tmp_path)
+    assert Q.acquire_lock(work) is True
+    assert os.path.isfile(Q.lock_path(work))
+    assert Q.acquire_lock(work) is False       # a second holder is refused
+    Q.release_lock(work)
+    assert Q.acquire_lock(work) is True        # free again after release
+
+
+def test_stale_lock_from_a_dead_pid_is_reclaimed(tmp_path):
+    work = str(tmp_path)
+    os.makedirs(work, exist_ok=True)
+    with open(Q.lock_path(work), "w", encoding="utf-8") as f:
+        f.write("999999999")                   # a PID that (almost certainly) isn't running
+    assert Q.acquire_lock(work) is True         # reclaimed, not refused forever
+    with open(Q.lock_path(work), encoding="utf-8") as f:
+        assert f.read().strip() == str(os.getpid())
+
+
+def test_lock_held_by_a_live_pid_is_not_stolen(tmp_path):
+    work = str(tmp_path)
+    os.makedirs(work, exist_ok=True)
+    with open(Q.lock_path(work), "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))               # this process is definitely alive
+    assert Q.acquire_lock(work) is False
+
+
+def test_drain_queue_refuses_to_double_run_while_locked(tmp_path):
+    """The bug this guards: two drain_queue() runs picking up and rendering the
+    same job. If the lock is already held, a second drain must skip cleanly
+    rather than race the first for the pending job."""
+    from shortforge import runner
+
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.add_job(q, "https://a/1")
+    Q.save_queue(q, work)
+
+    assert Q.acquire_lock(work) is True         # simulate another worker running
+    try:
+        calls = []
+        s = runner.drain_queue(lambda: Config.load(), work, announce=calls.append)
+    finally:
+        Q.release_lock(work)
+    assert s["made"] == 0
+    assert calls == []                          # never even started the job
+    assert Q.counts(Q.load_queue(work))[Q.PENDING] == 1   # still there for the real worker
+
+
 def test_job_slug_tags_outputs_readably():
     q = {"jobs": []}
     a = Q.add_job(q, "https://a", {}, label="Pirates & Guilds!")

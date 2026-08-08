@@ -262,8 +262,11 @@ def score_frames_for(candidates: list[Candidate], indices: list[int], source_pat
             for r in results:
                 if r.get("status") != 200:
                     # issue 2: surface the FULL response body so a 400 is diagnosable
-                    # (encoding? too many images? resolution? payload size?).
-                    body = (r.get("body") or r.get("error") or "")[:600]
+                    # (encoding? too many images? resolution? payload size?). Redacted:
+                    # a gateway error page can echo back the request, key included.
+                    from ..providers.base import redact
+                    body = redact((r.get("body") or r.get("error") or "")[:600],
+                                 m.get("api_key"))
                     raise ShortForgeError(
                         f"vision HTTP {r.get('status')} ({r.get('images')} image(s), "
                         f"max_images={max_imgs}, frame_width={fw}px): {body} "
@@ -300,7 +303,7 @@ def detect(transcript: Transcript, cfg: Config, source_path: str | None,
         c.signals["transcript_llm"] = {"score": sc, "reason": reason}
         cands.append(c)
 
-    fuse_frames = bool(cfg.get("detect.hook_frames", True))
+    fuse_frames = bool(cfg.get("detect.hook_frames", False))
     topk = int(cfg.get("detect.frame_topk", 12))
     if fuse_frames and source_path:
         order = sorted(range(len(cands)), key=lambda i: cands[i].score, reverse=True)[:topk]

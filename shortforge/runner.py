@@ -1,4 +1,5 @@
-"""Shared queue worker — used by both `cli.py queue run` and the Telegram bot.
+"""Shared queue worker — used by both `cli.py queue run` and `cli.py listen`
+(the ntfy phone-driven mode).
 
 One implementation so the two entry points can never drift in how they resume,
 tag outputs, apply per-link settings or report progress.
@@ -85,39 +86,54 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
                 announce: Callable[[str], None] | None = None) -> dict:
     """Work through every pending link, one at a time. Returns a summary dict.
 
-    Re-reads the queue each iteration so links added meanwhile (UI, Telegram) are
-    picked up without a restart.
+    Re-reads the queue each iteration so links added meanwhile (UI, ntfy) are
+    picked up without a restart. Holds a whole-run lock (``queue.lock``) so a
+    second drain_queue() — a hand-run `queue run` while `listen`'s worker is
+    also draining, say — can't pick up and render the same job twice.
     """
     announce = announce or N.notify
     t_all = time.time()
     made = 0
-    while True:
-        if should_stop is not None and should_stop():
-            break
+    if not Q.acquire_lock(work_dir):
+        log.warning("queue: another worker already holds the lock (queue.lock) — "
+                   "skipping this drain to avoid double-rendering a job.")
         q = Q.load_queue(work_dir)
-        if Q.is_paused(q):       # /pause from Telegram: finish nothing new, stay alive
-            break
-        job = Q.next_pending(q)
-        if job is None:
-            break
-        idx = q["jobs"].index(job) + 1
-        total = len(q["jobs"])
-        Q.mark(q, job["id"], Q.RUNNING)
-        Q.save_queue(q, work_dir)
-        log.info("=== queue %d/%d [%s] %s ===", idx, total, job["id"], job["url"])
+        c = Q.counts(q)
+        return {"made": 0, "done": c[Q.DONE], "failed": c[Q.FAILED],
+                "total_clips": Q.total_clips(q), "elapsed": 0.0}
+    try:
+        while True:
+            if should_stop is not None and should_stop():
+                break
+            q = Q.load_queue(work_dir)
+            if Q.is_paused(q):       # /pause (or the startup permission gate): stay alive
+                break
+            job = Q.next_pending(q)
+            if job is None:
+                break
+            idx = q["jobs"].index(job) + 1
+            total = len(q["jobs"])
+            Q.mark(q, job["id"], Q.RUNNING)
+            Q.save_queue(q, work_dir)
+            log.info("=== queue %d/%d [%s] %s ===", idx, total, job["id"], job["url"])
 
-        # Record the link in flight BEFORE starting: if the power goes out mid-job
-        # the next startup can name what it was doing instead of guessing.
-        detail = Q.describe_settings(job)
-        lifecycle.heartbeat(work_dir, current={"url": job["url"], "detail": detail,
-                                               "index": idx, "total": total})
-        # Announce the start too — "it's alive and this is what it understood".
-        announce(f"🎬 <b>Link {idx}/{total} started</b> — making {detail}\n{job['url'][:80]}")
+            # Record the link in flight BEFORE starting: if the power goes out mid-job
+            # the next startup can name what it was doing instead of guessing. The
+            # prefix is how a crash report can count clips already on disk for THIS
+            # job — the queue only records a job's clips on a clean finish.
+            detail = Q.describe_settings(job)
+            lifecycle.heartbeat(work_dir, current={"url": job["url"], "detail": detail,
+                                                   "index": idx, "total": total,
+                                                   "prefix": Q.job_slug(job, idx)})
+            # Announce the start too — "it's alive and this is what it understood".
+            announce(f"🎬 <b>Link {idx}/{total} started</b> — making {detail}\n{job['url'][:80]}")
 
-        ok, n, msg = run_one(job, idx, total, make_cfg, work_dir)
-        made += n
-        lifecycle.heartbeat(work_dir, current=None)
-        announce(msg)
+            ok, n, msg = run_one(job, idx, total, make_cfg, work_dir)
+            made += n
+            lifecycle.heartbeat(work_dir, current=None)
+            announce(msg)
+    finally:
+        Q.release_lock(work_dir)
 
     q = Q.load_queue(work_dir)
     c = Q.counts(q)

@@ -262,6 +262,107 @@ def announce_offline(work_dir: str = ".shortforge", reason: str = "closed",
 # --- catching every way the operator can close the program ------------------- #
 
 _console_handler = None     # ctypes callback; must outlive the call or Windows crashes
+_session_wndproc = None     # ditto for the shutdown window's WNDPROC
+
+# Windows shutdown/logoff messages. An interactive program learns the PC is
+# going down through its WINDOW, not through the console control handler.
+WM_QUERYENDSESSION = 0x0011
+WM_ENDSESSION = 0x0016
+ENDSESSION_LOGOFF = 0x80000000
+
+
+def session_end_reason(msg: int, lparam: int) -> str | None:
+    """Map a Windows session message to a shutdown reason, or None if it isn't one.
+
+    Pulled out as a pure function so the routing is testable off Windows — the
+    surrounding window plumbing can only be exercised on the operator's machine.
+    """
+    if msg not in (WM_QUERYENDSESSION, WM_ENDSESSION):
+        return None
+    return "signed out" if lparam & ENDSESSION_LOGOFF else "PC shutting down"
+
+
+def install_session_end_notice(on_end) -> bool:
+    """Catch a Windows shutdown/logoff, which the console handler cannot see.
+
+    ``SetConsoleCtrlHandler`` looks like it covers this — the existing handler
+    maps ``CTRL_SHUTDOWN_EVENT`` and ``CTRL_LOGOFF_EVENT`` — but Microsoft's own
+    HandlerRoutine documentation is explicit that both are delivered *only to
+    services*: "Interactive applications are not present by the time the system
+    sends this signal." A console program started from a .bat file is
+    interactive, so those two branches have never once run. That is exactly the
+    operator's report: closing the window sends a goodbye (CTRL_CLOSE_EVENT is
+    real), shutting the PC down sends nothing.
+
+    What interactive programs actually get is ``WM_QUERYENDSESSION`` /
+    ``WM_ENDSESSION``, delivered to a top-level window — so this creates a
+    hidden one and pumps messages for it on a daemon thread. It must be a real
+    top-level window: a message-only (``HWND_MESSAGE``) window is excluded from
+    these broadcasts.
+
+    Returns True if the listener was armed. Never raises: a missing goodbye is
+    a nuisance, a crashed startup is not acceptable.
+    """
+    global _session_wndproc
+    try:
+        import ctypes
+        from ctypes import wintypes
+        if not hasattr(ctypes, "windll"):
+            return False                     # not Windows; nothing to arm
+    except Exception:                        # noqa: BLE001 - pragma: no cover
+        return False
+
+    try:
+        LRESULT = ctypes.c_ssize_t
+        WNDPROC = ctypes.WINFUNCTYPE(LRESULT, wintypes.HWND, wintypes.UINT,
+                                     ctypes.c_size_t, ctypes.c_ssize_t)
+        user32 = ctypes.windll.user32
+
+        def _proc(hwnd, msg, wparam, lparam):
+            reason = session_end_reason(int(msg), int(lparam))
+            if reason is not None:
+                try:
+                    on_end(reason)
+                except Exception:            # noqa: BLE001 - never refuse shutdown
+                    pass
+                # TRUE = "fine by us". Blocking the shutdown to buy time would
+                # hold up the operator's PC; the notify attempt already happened
+                # synchronously above, inside the window Windows gives us.
+                return LRESULT(1).value if msg == WM_QUERYENDSESSION else LRESULT(0).value
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        _session_wndproc = WNDPROC(_proc)    # strong ref: GC here would crash Windows
+
+        class WNDCLASS(ctypes.Structure):
+            _fields_ = [("style", wintypes.UINT), ("lpfnWndProc", WNDPROC),
+                        ("cbClsExtra", ctypes.c_int), ("cbWndExtra", ctypes.c_int),
+                        ("hInstance", wintypes.HINSTANCE), ("hIcon", wintypes.HICON),
+                        ("hCursor", wintypes.HANDLE), ("hbrBackground", wintypes.HBRUSH),
+                        ("lpszMenuName", wintypes.LPCWSTR), ("lpszClassName", wintypes.LPCWSTR)]
+
+        def _pump():
+            wc = WNDCLASS()
+            wc.lpfnWndProc = _session_wndproc
+            wc.hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)
+            wc.lpszClassName = "ShortForgeSessionWatcher"
+            if not user32.RegisterClassW(ctypes.byref(wc)):
+                return
+            hwnd = user32.CreateWindowExW(0, wc.lpszClassName, "ShortForge",
+                                          0, 0, 0, 0, 0, None, None, wc.hInstance, None)
+            if not hwnd:
+                return
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                user32.TranslateMessage(ctypes.byref(msg))
+                user32.DispatchMessageW(ctypes.byref(msg))
+
+        threading.Thread(target=_pump, daemon=True,
+                         name="shortforge-session-watcher").start()
+        log.debug("shutdown notice armed for PC shutdown / sign-out (window messages)")
+        return True
+    except Exception as e:                   # noqa: BLE001 - never block startup
+        log.debug("session-end listener unavailable: %s", e)
+        return False
 
 
 def install_exit_notice(work_dir: str = ".shortforge", *, state_file: str = STATE_FILE,
@@ -307,15 +408,26 @@ def install_exit_notice(work_dir: str = ".shortforge", *, state_file: str = STAT
             except (ValueError, OSError):   # not the main thread / unsupported
                 pass
 
+    # The case the console handler structurally cannot see: the operator shuts
+    # the PC down (or signs out) with ShortForge still running. Armed FIRST —
+    # the Windows block below returns early on other platforms, and burying this
+    # after it made a no-op out of the very thing that fixes the reported bug.
+    install_session_end_notice(_offline)
+
     # Windows: clicking the window's X sends CTRL_CLOSE_EVENT and Python installs
     # no handler for it, so the process just vanishes and atexit never runs.
     try:
         import ctypes
         if not hasattr(ctypes, "windll"):
             return
-        CTRL_C, CTRL_BREAK, CTRL_CLOSE, CTRL_LOGOFF, CTRL_SHUTDOWN = 0, 1, 2, 5, 6
-        reasons = {CTRL_C: "stopped", CTRL_BREAK: "stopped", CTRL_CLOSE: "window closed",
-                   CTRL_LOGOFF: "signed out", CTRL_SHUTDOWN: "PC shutting down"}
+        # Only the first three are real here. CTRL_LOGOFF_EVENT (5) and
+        # CTRL_SHUTDOWN_EVENT (6) are documented as delivered to SERVICES only —
+        # an interactive console app is already gone by the time Windows sends
+        # them — so they were listed here but never once fired, which is why a
+        # PC shutdown produced no goodbye. install_session_end_notice() below
+        # covers that case properly, via window messages.
+        CTRL_C, CTRL_BREAK, CTRL_CLOSE = 0, 1, 2
+        reasons = {CTRL_C: "stopped", CTRL_BREAK: "stopped", CTRL_CLOSE: "window closed"}
         proto = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_uint)
 
         def _on_console_event(ctrl_type):

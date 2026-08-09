@@ -658,11 +658,18 @@ def _render_queue() -> None:
         # that stays true even if this button later moves into a fragment
         # (fragments re-run alone, which is where the window really opens).
         fresh = Q.load_queue(work_dir)
-        for u in urls:
-            Q.add_job(fresh, u, settings, label=label)
+        # Same dedupe as ntfy/Chat/CLI — one policy, one wording (see
+        # queue.add_links). Re-adding a link the queue already has would render
+        # the same video twice: hours of CPU here, and paid spend twice over.
+        added, skipped = Q.add_links(fresh, urls, settings, label=label)
         Q.save_queue(fresh, work_dir)
-        st.success(f"Added {len(urls)} link(s). {Q.describe(fresh)}")
-        st.rerun()
+        if added:
+            st.success(f"Added {len(added)} link(s). {Q.describe(fresh)}")
+        if skipped:
+            st.warning(f"Skipped {len(skipped)} link(s) already in the queue:\n\n"
+                       + Q.describe_skipped(skipped))
+        if added:
+            st.rerun()
     if not urls:
         st.info("➕ Paste at least one link above.")
     elif not owner:

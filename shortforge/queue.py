@@ -193,6 +193,103 @@ def get_job(q: dict, job_id: str) -> dict | None:
     return next((j for j in q.get("jobs", []) if j["id"] == job_id), None)
 
 
+# --- duplicate links ---------------------------------------------------------- #
+# Adding the same video twice renders it twice: hours of CPU on this machine and
+# a second helping of paid LLM/TTS spend, for a byte-identical result. Nothing
+# checked for it. Plain string comparison is not enough either — sharing from the
+# YouTube phone app appends a `?si=` tracking parameter, so the *same* video
+# arrives as a different string every time you share it.
+
+_YT_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com",
+             "youtu.be", "www.youtu.be"}
+# Share/analytics junk that never identifies a different video.
+_JUNK_PARAMS = {"si", "feature", "t", "start", "utm_source", "utm_medium",
+                "utm_campaign", "utm_term", "utm_content", "gclid", "fbclid",
+                "pp", "ab_channel", "app"}
+
+
+def canonical_url(url: str) -> str:
+    """A stable identity for a link, so the same video is recognised however
+    it was shared. YouTube links reduce to their video id; anything else is
+    normalised (lowercased host, no trailing slash, tracking params dropped).
+    """
+    from urllib.parse import parse_qs, urlparse, urlencode
+
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    try:
+        p = urlparse(raw)
+    except ValueError:                      # malformed — compare it literally
+        return raw.lower()
+    host = (p.hostname or "").lower()
+    path = (p.path or "").rstrip("/")
+
+    if host in _YT_HOSTS:
+        vid = ""
+        if host.endswith("youtu.be"):
+            vid = path.lstrip("/").split("/")[0]
+        elif path == "/watch":
+            vid = (parse_qs(p.query).get("v") or [""])[0]
+        else:
+            for prefix in ("/shorts/", "/embed/", "/live/", "/v/"):
+                if path.startswith(prefix):
+                    vid = path[len(prefix):].split("/")[0]
+                    break
+        if vid:
+            return f"youtube:{vid}"          # one identity for every share form
+
+    keep = {k: v for k, v in parse_qs(p.query).items() if k.lower() not in _JUNK_PARAMS}
+    query = urlencode(sorted((k, v[0]) for k, v in keep.items() if v))
+    return f"{host}{path}" + (f"?{query}" if query else "")
+
+
+def find_duplicate(q: dict, url: str) -> dict | None:
+    """The existing job for this link, whatever status it's in, or None."""
+    target = canonical_url(url)
+    if not target:
+        return None
+    return next((j for j in q.get("jobs", [])
+                 if canonical_url(j.get("url", "")) == target), None)
+
+
+def add_links(q: dict, urls, settings: dict | None = None,
+              label: str = "") -> tuple[list[dict], list[dict]]:
+    """Add several links at once, skipping ones already in the queue.
+
+    Returns ``(added, skipped)`` where ``skipped`` holds the *existing* jobs the
+    new links collided with. Shared by every door — ntfy, the dashboard's Add
+    button, the Chat screen and `cli.py queue add` — so all four dedupe the same
+    way and report it in the same words (CLAUDE.md rule 6); four private copies
+    of this policy would just be four chances to disagree.
+
+    Duplicates within the same batch are caught too, since each addition is
+    checked against the queue as it grows.
+    """
+    added: list[dict] = []
+    skipped: list[dict] = []
+    for url in urls:
+        existing = find_duplicate(q, url)
+        if existing is not None:
+            skipped.append(existing)
+            continue
+        added.append(add_job(q, url, settings, label=label))
+    return added, skipped
+
+
+def describe_skipped(skipped: list[dict]) -> str:
+    """Plain-English 'why nothing happened for those', with the way out."""
+    if not skipped:
+        return ""
+    states = {PENDING: "already waiting", RUNNING: "running right now",
+              DONE: "already done", FAILED: "already tried (it failed)"}
+    lines = [f"• {j['url'][:60]} — {states.get(j['status'], j['status'])}"
+             for j in skipped[:5]]
+    more = f"\n…and {len(skipped) - 5} more" if len(skipped) > 5 else ""
+    return ("\n".join(lines) + more
+            + "\nTo run one again, remove it first (/clear drops finished jobs).")
+
+
 def next_pending(q: dict) -> dict | None:
     """The next job to work on, in the order the links were added."""
     return next((j for j in q.get("jobs", []) if j["status"] == PENDING), None)

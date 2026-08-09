@@ -469,13 +469,19 @@ def handle_text(text: str, work_dir: str) -> str:
     q = Q.load_queue(work_dir)
     if len(q.get("jobs", [])) + len(links) > MAX_QUEUE:
         return f"Queue is full ({MAX_QUEUE} max). Use /clear first."
-    for url in links:
-        Q.add_job(q, url, settings, label=label)
+    added, skipped = Q.add_links(q, links, settings, label=label)
     Q.save_queue(q, work_dir)
 
     # Echo back what was UNDERSTOOD, not what was typed — that is how a
     # misread "2 min" gets caught before an hour of rendering.
     detail = Q.describe_settings({"settings": settings})
-    return (f"➕ Queued <b>{len(links)}</b> link(s): {detail}.\n"
-            f"⏳ {Q.counts(q)[Q.PENDING]} pending — I'll message you when each one "
-            f"starts and finishes.")
+    if not added:
+        return ("⚠️ <b>Nothing added — already in the queue.</b>\n"
+                + Q.describe_skipped(skipped))
+    msg = (f"➕ Queued <b>{len(added)}</b> link(s): {detail}.\n"
+           f"⏳ {Q.counts(q)[Q.PENDING]} pending — I'll message you when each one "
+           f"starts and finishes.")
+    if skipped:
+        msg += (f"\n\n⚠️ Skipped {len(skipped)} already in the queue:\n"
+                + Q.describe_skipped(skipped))
+    return msg

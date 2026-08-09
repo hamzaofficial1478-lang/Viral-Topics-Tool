@@ -99,6 +99,55 @@ def test_install_exit_notice_is_idempotent(tmp_path):
     assert L._installed is True
 
 
+# --- shutting the PC down must send a goodbye too ----------------------------- #
+# Operator: closing ShortForge sends a message, but shutting the PC down with it
+# running sends nothing. Cause: the console handler mapped CTRL_SHUTDOWN_EVENT
+# and CTRL_LOGOFF_EVENT, but Microsoft documents both as delivered to SERVICES
+# only -- "Interactive applications are not present by the time the system sends
+# this signal" -- so for a .bat-launched console app those branches never ran.
+# Interactive programs get WM_QUERYENDSESSION / WM_ENDSESSION on a window.
+
+def test_a_shutdown_message_is_recognised_as_a_shutdown():
+    assert L.session_end_reason(L.WM_QUERYENDSESSION, 0) == "PC shutting down"
+    assert L.session_end_reason(L.WM_ENDSESSION, 0) == "PC shutting down"
+
+
+def test_a_logoff_is_told_apart_from_a_shutdown():
+    assert L.session_end_reason(L.WM_ENDSESSION, L.ENDSESSION_LOGOFF) == "signed out"
+    assert L.session_end_reason(L.WM_QUERYENDSESSION,
+                                L.ENDSESSION_LOGOFF | 0x1) == "signed out"
+
+
+def test_ordinary_window_messages_are_not_mistaken_for_a_shutdown():
+    """The pump sees every message for the window; only these two mean goodbye."""
+    for msg in (0x0001, 0x0002, 0x000F, 0x0010, 0x0018, 0x0100):
+        assert L.session_end_reason(msg, 0) is None
+
+
+def test_install_exit_notice_arms_the_session_listener_too(tmp_path, monkeypatch):
+    """The console handler alone cannot see a PC shutdown, so arming the exit
+    notice must also arm the window-message listener that can."""
+    armed = []
+    monkeypatch.setattr(L, "install_session_end_notice",
+                        lambda on_end: armed.append(on_end) or True)
+    L.install_exit_notice(str(tmp_path))
+    assert len(armed) == 1
+
+    # and the callback it was given really does announce a shutdown
+    sent = []
+    monkeypatch.setattr(L, "announce_offline",
+                        lambda wd, reason, **k: sent.append(reason) or True)
+    armed[0]("PC shutting down")
+    assert sent == ["PC shutting down"]
+
+
+def test_arming_the_session_listener_is_a_safe_no_op_off_windows():
+    """It must never raise or block startup on a machine without windll."""
+    calls = []
+    assert L.install_session_end_notice(calls.append) is False
+    assert calls == []
+
+
 # --- one process must never retract another's claim --------------------------- #
 # `cli.py queue run` (which the dashboard can spawn as a short helper) and
 # `cli.py listen` share runstate.json. The helper's atexit used to delete it

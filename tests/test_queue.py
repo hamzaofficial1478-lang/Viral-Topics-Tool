@@ -4,6 +4,8 @@ import json
 import os
 import time
 
+import pytest
+
 from shortforge import queue as Q
 from shortforge.config import Config
 
@@ -136,6 +138,108 @@ def test_drain_queue_refuses_to_double_run_while_locked(tmp_path):
 # link they had added was still sitting pending, untouched. The drain had
 # exited instantly (the queue was paused) but returned a dict indistinguishable
 # from a completed run, so the caller announced success over work never done.
+
+# --- duplicate links, and the order links come out in ------------------------- #
+# Adding the same video twice renders it twice: hours of CPU on this machine and
+# paid spend a second time, for a byte-identical result. Nothing checked.
+
+@pytest.mark.parametrize("a,b", [
+    # the same video, every way a phone can hand it over
+    ("https://youtu.be/dQw4w9WgXcQ", "https://youtu.be/dQw4w9WgXcQ?si=AbCdEf"),
+    ("https://youtu.be/dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+    ("https://youtu.be/dQw4w9WgXcQ", "https://m.youtube.com/watch?v=dQw4w9WgXcQ"),
+    ("https://youtu.be/dQw4w9WgXcQ", "https://www.youtube.com/shorts/dQw4w9WgXcQ"),
+    ("https://youtu.be/dQw4w9WgXcQ", "https://youtu.be/dQw4w9WgXcQ/"),
+    ("https://example.com/vid?a=1", "https://example.com/vid?a=1&utm_source=x"),
+])
+def test_the_same_video_shared_different_ways_is_one_link(a, b):
+    """Sharing from the YouTube app appends a `?si=` tracking parameter, so a
+    plain string comparison sees a new link every single time."""
+    assert Q.canonical_url(a) == Q.canonical_url(b)
+
+
+@pytest.mark.parametrize("a,b", [
+    ("https://youtu.be/AAAAAAAAAAA", "https://youtu.be/BBBBBBBBBBB"),
+    ("https://example.com/one", "https://example.com/two"),
+    ("https://example.com/v?id=1", "https://example.com/v?id=2"),
+])
+def test_genuinely_different_links_stay_different(a, b):
+    assert Q.canonical_url(a) != Q.canonical_url(b)
+
+
+def test_adding_a_link_already_in_the_queue_is_refused(tmp_path):
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    added, skipped = Q.add_links(q, ["https://youtu.be/dQw4w9WgXcQ"])
+    assert len(added) == 1 and not skipped
+
+    added2, skipped2 = Q.add_links(q, ["https://youtu.be/dQw4w9WgXcQ?si=xyz"])
+    assert added2 == [] and len(skipped2) == 1
+    assert len(q["jobs"]) == 1
+    assert "already waiting" in Q.describe_skipped(skipped2)
+
+
+def test_a_link_already_running_or_done_is_also_refused(tmp_path):
+    """The operator's exact case: add one link, start it, then add five more —
+    all six must be different, including against the one already working."""
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.add_links(q, ["https://youtu.be/RUNNINGNOW"])
+    Q.mark(q, q["jobs"][0]["id"], Q.RUNNING)
+
+    added, skipped = Q.add_links(q, ["https://youtu.be/RUNNINGNOW",
+                                     "https://youtu.be/BRANDNEW01"])
+    assert [j["url"] for j in added] == ["https://youtu.be/BRANDNEW01"]
+    assert len(skipped) == 1 and "running right now" in Q.describe_skipped(skipped)
+
+
+def test_duplicates_inside_one_batch_are_caught_too(tmp_path):
+    q = Q.load_queue(str(tmp_path))
+    added, skipped = Q.add_links(q, ["https://youtu.be/SAMEVIDEO01",
+                                     "https://youtu.be/SAMEVIDEO01?si=a",
+                                     "https://youtu.be/OTHERVIDEO"])
+    assert len(added) == 2 and len(skipped) == 1
+
+
+def test_links_are_worked_in_the_order_they_were_added(tmp_path):
+    """Never random: append order in, append order out, regardless of how many
+    batches they arrived in or what settings each carried."""
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.add_links(q, ["https://youtu.be/first-000"], {"num_clips": 5})
+    Q.add_links(q, [f"https://youtu.be/batch-{i:03d}" for i in range(5)])
+    Q.save_queue(q, work)
+
+    order = []
+    while True:
+        q = Q.load_queue(work)
+        job = Q.next_pending(q)
+        if job is None:
+            break
+        order.append(job["url"])
+        Q.mark(q, job["id"], Q.DONE)
+        Q.save_queue(q, work)
+
+    assert order == ["https://youtu.be/first-000"] + \
+        [f"https://youtu.be/batch-{i:03d}" for i in range(5)]
+
+
+def test_adding_while_one_is_running_does_not_disturb_the_pending_order(tmp_path):
+    q = Q.load_queue(str(tmp_path))
+    Q.add_links(q, ["https://youtu.be/aaaaaaaaaaa", "https://youtu.be/bbbbbbbbbbb"])
+    Q.mark(q, q["jobs"][0]["id"], Q.RUNNING)          # first one is working
+    Q.add_links(q, ["https://youtu.be/ccccccccccc"])   # more arrive meanwhile
+    assert Q.next_pending(q)["url"] == "https://youtu.be/bbbbbbbbbbb"
+
+
+def test_a_blank_or_broken_link_never_collides_with_everything(tmp_path):
+    """canonical_url must not map junk to a single shared identity, or one bad
+    entry would silently block every later add."""
+    q = Q.load_queue(str(tmp_path))
+    assert Q.find_duplicate(q, "") is None
+    added, _ = Q.add_links(q, ["not a url at all", "also not a url"])
+    assert len(added) == 2
+
 
 # --- a leftover lock must never wedge the queue forever ----------------------- #
 # The operator's machine reached exactly this state: links added fine, ntfy

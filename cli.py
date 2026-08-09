@@ -423,9 +423,14 @@ def cmd_queue(args: argparse.Namespace) -> int:
             log.error("queue add needs at least one URL (or --from-file).")
             return 2
         settings = {k: getattr(args, k, None) for k in Q.JOB_SETTINGS}
-        for u in urls:
-            job = Q.add_job(q, u, settings, label=getattr(args, "label", "") or "")
-            print(f"  + {job['id']}  {u}" + (f"   {job['settings']}" if job["settings"] else ""))
+        added, skipped = Q.add_links(q, urls, settings,
+                                     label=getattr(args, "label", "") or "")
+        for job in added:
+            print(f"  + {job['id']}  {job['url']}"
+                  + (f"   {job['settings']}" if job["settings"] else ""))
+        if skipped:
+            print(f"  skipped {len(skipped)} already in the queue:")
+            print("  " + Q.describe_skipped(skipped).replace("\n", "\n  "))
         Q.save_queue(q, work_dir)
         print(Q.describe(q))
         return 0

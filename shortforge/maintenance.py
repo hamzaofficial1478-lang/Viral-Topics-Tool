@@ -47,6 +47,41 @@ def _dir_size(path: str) -> tuple[int, int]:
     return total, files
 
 
+def autoclean_settings() -> dict:
+    """Operator's auto-clean preference from the settings store.
+
+    Off unless switched on: this program does not delete the operator's data on
+    its own initiative. Once enabled it runs after each finished job, which is
+    the only moment nothing is mid-read.
+    """
+    try:
+        from .providers.store import load_store
+        cfg = (load_store().get("autoclean", {}) or {})
+    except Exception:  # noqa: BLE001 - store optional; never block a render
+        cfg = {}
+    return {"enabled": bool(cfg.get("enabled", False)),
+            "keep_hours": float(cfg.get("keep_hours") or DEFAULT_KEEP_HOURS)}
+
+
+def autoclean(work_dir: str = ".shortforge") -> tuple[int, int]:
+    """Prune reclaimable cache if the operator switched auto-clean on.
+
+    Returns ``(items, bytes)`` — ``(0, 0)`` when disabled. Deliberately reuses
+    the same age-based pruning as the manual buttons rather than a second,
+    more aggressive policy: one behaviour to reason about, and the running
+    job's own workspace is never a candidate.
+    """
+    s = autoclean_settings()
+    if not s["enabled"]:
+        return 0, 0
+    n1, f1 = prune_downloads(work_dir, keep_hours=s["keep_hours"])
+    n2, f2 = prune_source_caches(work_dir, keep_hours=s["keep_hours"])
+    if n1 + n2:
+        log.info("auto-clean: removed %d cached item(s), freed %s",
+                 n1 + n2, human_gb(f1 + f2))
+    return n1 + n2, f1 + f2
+
+
 def _source_cache_dirs(work_dir: str) -> list[str]:
     """The per-source cache folders (named by content hash).
 

@@ -330,6 +330,43 @@ def parse_links(text: str) -> list[str]:
     return links
 
 
+def parse_link_groups(text: str) -> list[tuple[list[str], dict]]:
+    """Split a message into (links, settings) groups — one group per LINE.
+
+    Settings used to be parsed from the WHOLE message and applied to every link
+    in it, which quietly mangled the obvious way to send a batch::
+
+        https://youtu.be/A 3 clips of 60s
+        https://youtu.be/B 6 clips of 2min portrait
+        https://youtu.be/C 2 clips 720p
+
+    Every link came out as "3 clips of 1m00s, 9:16, 720p" — line 2's portrait
+    and line 3's 720p leaked onto line 1, and B's "6 clips of 2min" vanished.
+    Not merely a missing feature: it silently rendered something the operator
+    never asked for.
+
+    Now each line carries its own settings. A line with no links is treated as
+    a default for the lines beneath it, so a shared header still works::
+
+        3 clips of 60s portrait      <- applies to any link that says nothing
+        https://youtu.be/A
+        https://youtu.be/B 6 clips   <- overrides the count, keeps the rest
+    """
+    defaults: dict = {}
+    groups: list[tuple[list[str], dict]] = []
+    for line in (text or "").splitlines():
+        links = parse_links(line)
+        settings = parse_settings(line)
+        if not links:
+            defaults.update(settings)        # a bare settings line: use below
+            continue
+        merged = {**defaults, **settings}    # the line's own wins
+        groups.append((links, merged))
+    if not groups:                           # no line held a link
+        return []
+    return groups
+
+
 def _pause(work_dir: str) -> str:
     Q.mutate_queue(work_dir, lambda q: Q.set_paused(q, True))
     return ("⏸ <b>Paused.</b> The link being worked on will finish, then I'll stop "
@@ -498,20 +535,35 @@ def handle_text(text: str, work_dir: str) -> str:
     if not links:
         return _unknown_reply(text, work_dir)
 
-    settings = parse_settings(text)
-    label = settings.pop("_label", "")
+    groups = parse_link_groups(text)
     if len(Q.load_queue(work_dir).get("jobs", [])) + len(links) > MAX_QUEUE:
         return f"Queue is full ({MAX_QUEUE} max). Use /clear first."
+
+    def _add_all(qq):
+        added_all, skipped_all = [], []
+        for urls, settings in groups:
+            settings = dict(settings)
+            label = settings.pop("_label", "")
+            a, s = Q.add_links(qq, urls, settings, label=label)
+            added_all += a
+            skipped_all += s
+        return added_all, skipped_all
+
     # Under the queue mutex: the worker writes this same file from another
     # thread as it claims and completes jobs, and an interleaved add would
     # either vanish or roll the worker's progress back. Also means the
     # duplicate check sees the queue as it is at write time, not before.
-    q, (added, skipped) = Q.mutate_queue(
-        work_dir, lambda qq: Q.add_links(qq, links, settings, label=label))
+    q, (added, skipped) = Q.mutate_queue(work_dir, _add_all)
 
-    # Echo back what was UNDERSTOOD, not what was typed — that is how a
-    # misread "2 min" gets caught before an hour of rendering.
-    detail = Q.describe_settings({"settings": settings})
+    # Echo back what was UNDERSTOOD per link, not what was typed — that is how
+    # a misread "2 min" gets caught before an hour of rendering. Listed one per
+    # line now that each link can carry its own settings, so a mistake on line
+    # 3 of ten is actually visible.
+    if len(added) > 1:
+        detail = "\n" + "\n".join(
+            f"• {j['url'][:48]} — {Q.describe_settings(j)}" for j in added)
+    else:
+        detail = Q.describe_settings(added[0]) if added else ""
     if not added:
         return ("⚠️ <b>Nothing added — already in the queue.</b>\n"
                 + Q.describe_skipped(skipped))

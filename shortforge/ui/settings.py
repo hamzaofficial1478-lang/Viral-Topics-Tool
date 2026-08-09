@@ -343,6 +343,42 @@ def _render_disk_usage() -> None:
     st.caption("Your job queue, worker state and chat history are never touched by either "
                "button — only re-downloadable cache.")
 
+    # Automatic housekeeping — opt-in. Nothing here deletes the operator's data
+    # unless they ask for it, but "remember to clear 5 GB by hand" is not a
+    # reasonable thing to expect of anyone.
+    store_now = _load()
+    ac = store_now.get("autoclean", {}) or {}
+    st.markdown("**Automatic clean-up**")
+    auto_on = st.checkbox(
+        "Clear old cache automatically after each finished video", key="ac_on",
+        value=bool(ac.get("enabled", False)),
+        help="Runs between jobs, when nothing is mid-read. Uses the same age rule as the "
+             "buttons above, so the video being worked on is never affected.")
+    auto_hours = st.number_input(
+        "Keep cache for (hours)", min_value=1, max_value=24 * 90, step=24, key="ac_hours",
+        value=int(ac.get("keep_hours") or 48),
+        help="Anything untouched for longer is removed on the next clean-up.")
+    if st.button("💾 Save clean-up setting", width="stretch"):
+        store_now["autoclean"] = {"enabled": bool(auto_on), "keep_hours": int(auto_hours)}
+        _persist(store_now)
+        st.success("Saved — " + ("clean-up runs after each finished video."
+                                 if auto_on else "automatic clean-up is off."))
+
+    st.divider()
+    st.subheader("🖥️ Dashboard")
+    ui_cfg = store_now.get("ui", {}) or {}
+    refresh = st.number_input(
+        "Queue screen refresh (seconds)", min_value=1, max_value=60, step=1,
+        value=int(float(ui_cfg.get("refresh_seconds") or 3)),
+        help="How often the Queue screen re-reads progress. Lower feels more live; "
+             "higher does less work per minute, which can help while a render is "
+             "using the whole CPU. Only affects how fresh the numbers look — never "
+             "the rendering itself.")
+    if st.button("💾 Save dashboard setting", width="stretch"):
+        store_now["ui"] = {**ui_cfg, "refresh_seconds": int(refresh)}
+        _persist(store_now)
+        st.success(f"Saved — refreshing every {int(refresh)}s. Reload the page to apply.")
+
 
 def _render_backup_restore(store: dict) -> None:
     """Export/import the whole settings store so moving machines needs no re-entry."""

@@ -500,3 +500,46 @@ def test_ntfy_exchange_is_logged_and_readable_from_the_shared_log(tmp_path, monk
     assert log[0]["source"] == "ntfy"
     assert "phone" in log[0]["text"]
     assert "Queued" in log[0]["reply"]
+
+
+# --- one message, many links, each with its own settings ---------------------- #
+# Settings were parsed from the WHOLE message and applied to every link in it,
+# so the obvious way to send a batch silently mangled it: line 2's "portrait"
+# and line 3's "720p" leaked onto line 1, and line 2's clip count vanished.
+
+def test_each_line_keeps_its_own_settings(tmp_path):
+    work = str(tmp_path)
+    RC.handle_text("https://youtu.be/AAAAAAAAAAA 3 clips of 60s\n"
+                   "https://youtu.be/BBBBBBBBBBB 6 clips of 2min portrait\n"
+                   "https://youtu.be/CCCCCCCCCCC 2 clips 720p", work)
+    by_url = {j["url"][-11:]: j["settings"] for j in Q.load_queue(work)["jobs"]}
+    assert by_url["AAAAAAAAAAA"] == {"num_clips": 3, "duration": 60}
+    assert by_url["BBBBBBBBBBB"] == {"num_clips": 6, "duration": 120, "aspect": "9:16"}
+    assert by_url["CCCCCCCCCCC"] == {"num_clips": 2, "resolution": "720p"}
+
+
+def test_a_settings_only_line_acts_as_a_default_for_the_links_below(tmp_path):
+    work = str(tmp_path)
+    RC.handle_text("3 clips of 60s portrait\n"
+                   "https://youtu.be/DDDDDDDDDDD\n"
+                   "https://youtu.be/EEEEEEEEEEE 6 clips", work)
+    by_url = {j["url"][-11:]: j["settings"] for j in Q.load_queue(work)["jobs"]}
+    assert by_url["DDDDDDDDDDD"] == {"num_clips": 3, "duration": 60, "aspect": "9:16"}
+    # the line's own value wins over the header, the rest is inherited
+    assert by_url["EEEEEEEEEEE"] == {"num_clips": 6, "duration": 60, "aspect": "9:16"}
+
+
+def test_several_links_on_one_line_still_share_that_line(tmp_path):
+    work = str(tmp_path)
+    RC.handle_text("https://youtu.be/FFFFFFFFFFF https://youtu.be/GGGGGGGGGGG 4 clips", work)
+    for j in Q.load_queue(work)["jobs"]:
+        assert j["settings"]["num_clips"] == 4
+
+
+def test_the_reply_lists_what_it_understood_for_each_link(tmp_path):
+    """With per-link settings, one merged summary would hide a mistake on line
+    3 of ten — so each link echoes its own."""
+    reply = RC.handle_text("https://youtu.be/HHHHHHHHHHH 3 clips\n"
+                           "https://youtu.be/IIIIIIIIIII 7 clips", str(tmp_path))
+    assert "3 clip(s)" in reply and "7 clip(s)" in reply
+    assert "HHHHHHHHHHH" in reply and "IIIIIIIIIII" in reply

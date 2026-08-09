@@ -471,19 +471,33 @@ def _begin_working(work_dir: str) -> str:
     return "Started. It keeps running even if you close this tab."
 
 
-@st.fragment(run_every="5s")
+def _refresh_seconds() -> str:
+    """How often the Queue screen refreshes itself, operator-controlled.
+
+    I had quietly changed this from 3s to 5s while making the fragment do more
+    work per tick, which is a UI-feel decision that is not mine to make on
+    someone else's machine — the only cost of 3s is more frequent redraws, and
+    the only cost of 5s is up to two extra seconds of staleness. So it is a
+    setting now, defaulting to the original 3s.
+    """
+    try:
+        from shortforge.providers.store import load_store
+        v = float((load_store().get("ui", {}) or {}).get("refresh_seconds") or 3.0)
+    except Exception:  # noqa: BLE001
+        v = 3.0
+    return f"{max(1.0, min(v, 60.0)):g}s"
+
+
+@st.fragment(run_every=_refresh_seconds())
 def _queue_status_fragment(work_dir: str) -> None:
     """Everything that changes while the queue runs — metrics, the
     working/paused banner, live progress for the running job, and the jobs
     table — auto-refreshing together on the browser's own timer.
 
-    5s, not 3s: this fragment grew from "just the progress bar" to metrics +
-    buttons + banner + warnings + log + table in the live-detail fix above,
-    so each tick now does noticeably more work (a queue read, a log-file
-    read, a dataframe rebuild) — worth trading a little responsiveness for
-    fewer ticks/hour, particularly on the CPU-constrained machine this runs
-    on (rendering itself already saturates it). Still fast enough that a
-    finished job never sits stale for more than a few seconds.
+    Refresh cadence is `_refresh_seconds()` — 3s by default, adjustable in
+    Settings. The tick does more work than it used to (a queue read, a log-file
+    read, a dataframe rebuild), so on a busy machine a slower cadence can feel
+    better; the only thing a slower one costs is staleness.
 
     The bug this fixes: an earlier version only put the progress bar/log
     inside a fragment and left the metrics + jobs table computed once per

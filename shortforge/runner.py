@@ -222,6 +222,14 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
             made += n
             lifecycle.heartbeat(work_dir, current=None)
             announce(msg)
+            # Between jobs is the only safe moment: nothing is mid-read, and the
+            # workspace just used is far too new to be a pruning candidate.
+            # No-op unless the operator switched auto-clean on in Settings.
+            try:
+                from . import maintenance
+                maintenance.autoclean(work_dir)
+            except Exception as e:  # noqa: BLE001 - housekeeping never fails a run
+                log.debug("auto-clean skipped: %s", e)
     finally:
         beat_stop.set()
         Q.release_lock(work_dir)

@@ -236,3 +236,30 @@ def test_human_gb_scales_units():
     assert M.human_gb(5 * 1024 ** 2) == "5 MB"
     assert M.human_gb(3 * 1024 ** 3) == "3.0 GB"
     assert M.human_gb(None) == "?"
+
+
+# --- opt-in automatic clean-up ------------------------------------------------ #
+
+def test_autoclean_is_off_unless_switched_on(tmp_path, monkeypatch):
+    """Nothing deletes the operator's data on its own initiative."""
+    monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(tmp_path / "p.json"))
+    work = _work(tmp_path)
+    _download(work, "old.mp4", age_hours=99, size=5000)
+    assert M.autoclean(work) == (0, 0)
+    assert os.path.exists(os.path.join(work, "downloads", "old.mp4"))
+
+
+def test_autoclean_when_enabled_prunes_downloads_and_workspaces(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(tmp_path / "p.json"))
+    from shortforge.providers import store as S
+    S.save_store({"providers": [], "credentials": [],
+                  "autoclean": {"enabled": True, "keep_hours": 48}})
+    work = _work(tmp_path)
+    _download(work, "old.mp4", age_hours=99, size=5000)
+    _source_workspace(work, "oldws001", age_hours=99, size=7000)
+    _download(work, "fresh.mp4", size=1000)
+
+    n, freed = M.autoclean(work)
+
+    assert (n, freed) == (2, 12000)
+    assert os.listdir(os.path.join(work, "downloads")) == ["fresh.mp4"]

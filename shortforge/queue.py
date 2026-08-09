@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 
@@ -21,6 +22,20 @@ from .utils import log
 
 QUEUE_FILE = "queue.json"
 LOCK_FILE = "queue.lock"
+
+# A held lock is kept "warm" by the worker touching its mtime (see
+# `lock_heartbeat`). Anything older than this has no live worker behind it and
+# is reclaimed, whatever its PID says.
+#
+# Why an age check and not PID liveness alone: PID liveness was the ONLY test,
+# and Windows recycles PIDs aggressively. A worker killed without releasing
+# (window closed, kill -9, power cut) leaves the file behind; once an unrelated
+# process inherits that number, `pid_alive()` answers True forever and the
+# queue is wedged permanently — every drain returns "locked", links pile up
+# pending, and nothing in the dashboard or ntfy can clear it. That is not
+# hypothetical: it is the state the operator's machine ended up in.
+LOCK_STALE_AFTER = 300.0
+_LOCK_TOUCH_EVERY = 30.0
 
 PENDING, RUNNING, DONE, FAILED = "pending", "running", "done", "failed"
 
@@ -57,9 +72,17 @@ def acquire_lock(work_dir: str = ".shortforge") -> bool:
             with open(path, "r", encoding="utf-8") as f:
                 held_by = int(f.read().strip())
         except (OSError, ValueError):
-            return False           # unreadable lock: don't guess, just refuse
-        if pid_alive(held_by):
-            return False           # a live holder — including ourselves — wins
+            held_by = -1           # unreadable/corrupt: fall through to the age test
+        try:
+            age = time.time() - os.path.getmtime(path)
+        except OSError:            # vanished between the two calls — it's free now
+            return acquire_lock(work_dir)
+        if age < LOCK_STALE_AFTER and held_by > 0 and pid_alive(held_by):
+            return False           # a live holder, still checking in — it wins
+        why = ("its holder is gone" if held_by <= 0 or not pid_alive(held_by)
+               else f"it stopped checking in {age:.0f}s ago (PID {held_by} was reused)")
+        log.warning("queue: reclaiming a stale lock — %s. If a real worker is "
+                    "somehow still running it will stop at its next job.", why)
         try:
             os.remove(path)
         except OSError:
@@ -72,6 +95,38 @@ def release_lock(work_dir: str = ".shortforge") -> None:
         os.remove(lock_path(work_dir))
     except OSError:
         pass
+
+
+def touch_lock(work_dir: str = ".shortforge") -> None:
+    """Mark the held lock as still alive. Cheap, best-effort."""
+    try:
+        os.utime(lock_path(work_dir), None)
+    except OSError:
+        pass
+
+
+def start_lock_heartbeat(work_dir: str = ".shortforge",
+                         every: float = _LOCK_TOUCH_EVERY) -> threading.Event:
+    """Keep the held lock warm while this worker really is working.
+
+    Returns the stop Event — ``.set()`` it when the drain finishes.
+
+    The age test in `acquire_lock` is only safe because a live worker keeps
+    saying so. A single job can legitimately run far longer than
+    ``LOCK_STALE_AFTER`` (a 3-minute clip on this CPU is minutes of encode) and
+    `drain_queue` has no hook inside a job to touch the file from, so a daemon
+    thread does it on a timer. A process that dies stops touching instantly,
+    and its lock ages out by itself — which is the whole point: no leftover
+    lock can wedge the queue forever again.
+    """
+    stop = threading.Event()
+
+    def _beat():
+        while not stop.wait(every):
+            touch_lock(work_dir)
+
+    threading.Thread(target=_beat, daemon=True, name="queue-lock-heartbeat").start()
+    return stop
 
 # Per-job overrides: queue setting -> dotted config path applied for that job only.
 JOB_SETTINGS = {

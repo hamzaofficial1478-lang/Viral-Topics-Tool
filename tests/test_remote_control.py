@@ -225,6 +225,56 @@ def test_an_unrecognised_message_reports_the_queue_state_instead_of_a_dead_end(t
     assert "start" in reply.lower()          # the word that would have worked
 
 
+@pytest.mark.parametrize("cmd", ["/start", "/resume", "/on", "/go", "/run"])
+def test_slash_start_actually_starts(tmp_path, cmd):
+    """`/start` returned the HELP text and left the queue paused — a leftover of
+    the Telegram convention where /start is a bot's intro. The operator replied
+    "/start" to the "shall I begin?" prompt, got a wall of help, and nothing
+    ran. A command called start that does not start is a trap."""
+    work = str(tmp_path)
+    RC.handle_text("https://a/1", work)
+    RC.handle_text("/pause", work)
+    assert Q.is_paused(Q.load_queue(work)) is True
+
+    reply = RC.handle_text(cmd, work)
+
+    assert Q.is_paused(Q.load_queue(work)) is False, f"{cmd} did not start the queue"
+    assert "Working again" in reply
+
+
+def test_help_is_still_reachable_on_its_own_command(tmp_path):
+    work = str(tmp_path)
+    assert "send me links" in RC.handle_text("/help", work)
+
+
+def test_help_documents_that_the_slash_is_optional(tmp_path):
+    """The operator asked outright which form works. Both do — and the help
+    now says so instead of listing only the slash spellings."""
+    text = RC.handle_text("/help", str(tmp_path))
+    assert "slash is optional" in text
+    assert "start" in text and "cancel" in text
+
+
+def test_status_flags_a_queue_that_is_unpaused_with_work_but_nothing_running(tmp_path):
+    """The silent-stall shape. With the worker lock wedged, "start" looked like
+    it worked and nothing happened, with no way to tell from the phone."""
+    work = str(tmp_path)
+    RC.handle_text("https://a/1", work)
+    RC.handle_text("start", work)
+
+    status = RC.handle_text("/status", work)
+
+    assert "Nothing is running" in status
+    assert "lock" in status.lower()
+
+
+def test_status_says_nothing_alarming_when_the_queue_is_simply_paused(tmp_path):
+    work = str(tmp_path)
+    RC.handle_text("https://a/1", work)
+    RC.handle_text("pause", work)
+    assert "Nothing is running even though" not in RC.handle_text("/status", work)
+
+
 # --- plain-English /cancel and /clear ----------------------------------------- #
 # The exact operator-reported bug: cancelled a job by texting "cancel" (no
 # slash, having learned "pause"/"start" work that way), then found it still

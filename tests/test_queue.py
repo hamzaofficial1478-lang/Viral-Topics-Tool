@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 
 from shortforge import queue as Q
 from shortforge.config import Config
@@ -135,6 +136,92 @@ def test_drain_queue_refuses_to_double_run_while_locked(tmp_path):
 # link they had added was still sitting pending, untouched. The drain had
 # exited instantly (the queue was paused) but returned a dict indistinguishable
 # from a completed run, so the caller announced success over work never done.
+
+# --- a leftover lock must never wedge the queue forever ----------------------- #
+# The operator's machine reached exactly this state: links added fine, ntfy
+# replied, but nothing ever ran. A worker had been killed without releasing the
+# lock, and PID liveness was the ONLY reclaim test — so once Windows recycled
+# that PID onto an unrelated live process, `pid_alive()` answered True forever
+# and every drain returned "locked". Nothing in the dashboard or ntfy could
+# clear it.
+
+def test_a_lock_whose_pid_was_reused_is_reclaimed_once_it_goes_cold(tmp_path):
+    import os
+    work = str(tmp_path)
+    # A live PID (this interpreter) that is emphatically not a ShortForge worker.
+    open(Q.lock_path(work), "w").write(str(os.getpid()))
+    cold = time.time() - (Q.LOCK_STALE_AFTER + 60)
+    os.utime(Q.lock_path(work), (cold, cold))
+
+    assert Q.acquire_lock(work) is True, "a cold lock wedged the queue"
+    Q.release_lock(work)
+
+
+def test_a_lock_being_kept_warm_by_a_real_worker_is_still_respected(tmp_path):
+    """The age test must not become a licence to steal a busy worker's lock —
+    a single render legitimately runs longer than the staleness window."""
+    work = str(tmp_path)
+    assert Q.acquire_lock(work) is True
+    try:
+        Q.touch_lock(work)                       # what the heartbeat thread does
+        assert Q.acquire_lock(work) is False
+    finally:
+        Q.release_lock(work)
+
+
+def test_the_heartbeat_keeps_a_held_lock_warm(tmp_path):
+    import os
+    work = str(tmp_path)
+    assert Q.acquire_lock(work) is True
+    cold = time.time() - (Q.LOCK_STALE_AFTER + 60)
+    os.utime(Q.lock_path(work), (cold, cold))    # pretend it aged while working
+
+    stop = Q.start_lock_heartbeat(work, every=0.05)
+    try:
+        time.sleep(0.25)
+        age = time.time() - os.path.getmtime(Q.lock_path(work))
+        assert age < Q.LOCK_STALE_AFTER, "the heartbeat did not refresh the lock"
+        assert Q.acquire_lock(work) is False     # so it is still protected
+    finally:
+        stop.set()
+        Q.release_lock(work)
+
+
+def test_a_dead_holder_is_still_reclaimed_immediately(tmp_path):
+    """Unchanged behaviour: a dead PID never has to wait out the age window."""
+    work = str(tmp_path)
+    open(Q.lock_path(work), "w").write("999999")      # not a running process
+    assert Q.acquire_lock(work) is True
+    Q.release_lock(work)
+
+
+def test_a_corrupt_lock_file_does_not_wedge_the_queue(tmp_path):
+    """An unreadable lock used to mean 'refuse forever'; it now ages out."""
+    import os
+    work = str(tmp_path)
+    open(Q.lock_path(work), "w").write("not-a-pid")
+    cold = time.time() - (Q.LOCK_STALE_AFTER + 60)
+    os.utime(Q.lock_path(work), (cold, cold))
+    assert Q.acquire_lock(work) is True
+    Q.release_lock(work)
+
+
+def test_drain_recovers_on_its_own_from_a_wedged_lock(tmp_path):
+    """End to end: the queue that could never start again now does."""
+    import os
+    from shortforge import runner
+
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.add_job(q, "https://a/1")
+    Q.save_queue(q, work)
+    open(Q.lock_path(work), "w").write(str(os.getpid()))
+    cold = time.time() - (Q.LOCK_STALE_AFTER + 60)
+    os.utime(Q.lock_path(work), (cold, cold))
+
+    s = runner.drain_queue(lambda: Config.load(), work, announce=lambda m: None)
+    assert s["stopped_because"] != "locked"
+
 
 def test_a_paused_drain_reports_why_it_did_nothing(tmp_path):
     from shortforge import runner

@@ -214,14 +214,15 @@ HELP = (
     "• orientation — landscape (16:9), portrait (9:16), square, 4:5\n"
     "• res — 1080p / 720p / 480p\n"
     "• lang, template, label\n\n"
-    "<b>Commands:</b>\n"
-    "/status — how the queue is doing\n"
-    "/list — the queued links\n"
-    "/pause (or just \"pause\"/\"stop\"/\"no\") — stop starting new links "
+    "<b>Commands</b> — the slash is optional, both forms do the same thing:\n"
+    "<b>start</b> (or /start, /resume, \"go\", \"yes\", \"start working\") — begin "
+    "working through the queue\n"
+    "<b>pause</b> (or /pause, \"stop\", \"no\", \"wait\") — stop starting new links "
     "(the current one finishes)\n"
-    "/resume (or just \"start\"/\"go\"/\"yes\") — start working again\n"
-    "/clear — remove finished jobs\n"
-    "/cancel — drop everything still pending\n"
+    "<b>cancel</b> (or /cancel) — drop everything still pending\n"
+    "<b>clear</b> (or /clear) — remove finished jobs\n"
+    "/status — how the queue is doing (and whether anything is stuck)\n"
+    "/list — the queued links\n"
     "/help — this message"
 )
 
@@ -358,6 +359,20 @@ def _cancel(work_dir: str) -> str:
     return f"🛑 Dropped {before - len(q['jobs'])} pending job(s). Any running job finishes."
 
 
+def _lock_note(work_dir: str) -> str:
+    """Describe the worker lock when it looks like it is in the way."""
+    import os
+    path = Q.lock_path(work_dir)
+    try:
+        age = time.time() - os.path.getmtime(path)
+    except OSError:
+        return "No worker lock is held, so nothing is blocking the queue."
+    if age < Q.LOCK_STALE_AFTER:
+        return f"A worker is holding the queue lock (checked in {age:.0f}s ago)."
+    return (f"A stale worker lock is present ({age / 60:.0f} min without a check-in) — "
+            "it will be cleared automatically on the next attempt.")
+
+
 def _unknown_reply(text: str, work_dir: str) -> str:
     """A dead end is the worst possible answer to a control message.
 
@@ -398,11 +413,16 @@ def handle_text(text: str, work_dir: str) -> str:
         if norm in _CANCEL_WORDS:
             return _cancel(work_dir)
 
-    if low.startswith(("/resume", "/on")):
+    # "/start" STARTS. It used to return the help text — a leftover of the
+    # Telegram convention where /start is the bot's intro — so an operator
+    # replying "/start" to the "shall I begin?" prompt got a wall of help and a
+    # queue that was still paused, with nothing saying so. Whatever the history,
+    # a command named start that does not start is a trap. Help is /help.
+    if low.startswith(("/resume", "/on", "/start", "/go", "/run")):
         return _resume(work_dir)
     if low.startswith(("/pause", "/stop", "/off")):
         return _pause(work_dir)
-    if low.startswith(("/start", "/help")):
+    if low.startswith("/help"):
         return HELP
     if low.startswith("/status"):
         q = Q.load_queue(work_dir)
@@ -415,6 +435,13 @@ def handle_text(text: str, work_dir: str) -> str:
                f"🎬 {Q.total_clips(q)} clip(s) produced")
         if running:
             msg += f"\n\nNow: {running['url'][:70]}"
+        elif c[Q.PENDING] and not Q.is_paused(q):
+            # Unpaused with work waiting and nothing running is the shape of a
+            # stuck queue. Say so here rather than leaving the operator to
+            # wonder why "start" appeared to work and nothing happened.
+            msg += ("\n\n⚠️ Nothing is running even though links are pending and the "
+                    "queue isn't paused — is `start_all.bat` still open? "
+                    + _lock_note(work_dir))
         return msg
     if low.startswith("/list"):
         q = Q.load_queue(work_dir)

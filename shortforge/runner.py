@@ -178,6 +178,9 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
         return _summary("locked", 0.0)
 
     reason = "empty"
+    # Keep the lock warm while we really are working, so `acquire_lock`'s
+    # staleness test can safely reclaim locks that no live worker is behind.
+    beat_stop = Q.start_lock_heartbeat(work_dir)
     try:
         while True:
             if should_stop is not None and should_stop():
@@ -217,6 +220,7 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
             lifecycle.heartbeat(work_dir, current=None)
             announce(msg)
     finally:
+        beat_stop.set()
         Q.release_lock(work_dir)
 
     return _summary(reason, time.time() - t_all)

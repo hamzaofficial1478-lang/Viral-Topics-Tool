@@ -47,6 +47,61 @@ def _dir_size(path: str) -> tuple[int, int]:
     return total, files
 
 
+def _source_cache_dirs(work_dir: str) -> list[str]:
+    """The per-source cache folders (named by content hash).
+
+    These hold the genuinely large intermediates and were never pruned by
+    anything: ``source_48k.wav`` alone is ~330 MB for a 29-minute video (48 kHz
+    stereo PCM), plus ``audio16k.wav`` for Whisper, plus any TTS/dub/stem output.
+    A handful of videos reaches several GB — which is exactly what the operator
+    found. Identified structurally (a directory that isn't one of the known
+    named caches) so a new intermediate can't quietly escape the sweep.
+    """
+    known = {DOWNLOADS, "hookscores"}
+    out = []
+    try:
+        for name in os.listdir(work_dir):
+            path = os.path.join(work_dir, name)
+            if os.path.isdir(path) and name not in known:
+                out.append(path)
+    except OSError:
+        pass
+    return out
+
+
+def prune_source_caches(work_dir: str = ".shortforge", *,
+                        keep_hours: float = DEFAULT_KEEP_HOURS,
+                        dry_run: bool = False) -> tuple[int, int]:
+    """Delete per-source intermediate folders untouched for ``keep_hours``.
+
+    Everything in them is re-derivable from the source video; the cost of
+    losing one is re-transcribing, not lost work. Age is judged by the newest
+    file inside, so a folder the running job is actively writing is never a
+    candidate.
+    """
+    import shutil
+    cutoff = time.time() - keep_hours * 3600
+    n = freed = 0
+    for path in _source_cache_dirs(work_dir):
+        size, _ = _dir_size(path)
+        try:
+            newest = max((os.path.getmtime(os.path.join(r, f))
+                          for r, _d, fs in os.walk(path) for f in fs),
+                         default=os.path.getmtime(path))
+        except OSError:
+            continue
+        if newest >= cutoff:
+            continue
+        n += 1
+        freed += size
+        if dry_run:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+    if n and not dry_run:
+        log.info("pruned %d source cache folder(s), freed %s", n, human_gb(freed))
+    return n, freed
+
+
 def cache_report(work_dir: str = ".shortforge") -> dict:
     """What the working directory is holding, split by what it costs to lose.
 
@@ -57,6 +112,11 @@ def cache_report(work_dir: str = ".shortforge") -> dict:
     dl_bytes, dl_files = _dir_size(os.path.join(work_dir, DOWNLOADS))
     hook_bytes, hook_files = _dir_size(os.path.join(work_dir, "hookscores"))
     total_bytes, _ = _dir_size(work_dir)
+    src_bytes = src_dirs = 0
+    for path in _source_cache_dirs(work_dir):
+        size, _ = _dir_size(path)
+        src_bytes += size
+        src_dirs += 1
     free = None
     try:
         import shutil
@@ -66,8 +126,12 @@ def cache_report(work_dir: str = ".shortforge") -> dict:
     return {
         "downloads_bytes": dl_bytes, "downloads_files": dl_files,
         "hookscores_bytes": hook_bytes, "hookscores_files": hook_files,
+        "source_cache_bytes": src_bytes, "source_cache_dirs": src_dirs,
         "total_bytes": total_bytes,
-        "reclaimable_bytes": dl_bytes,
+        # Both are re-derivable from the source video; only the paid hook-score
+        # cache is excluded. The per-source folders were the missing piece —
+        # they hold the multi-hundred-MB WAV intermediates.
+        "reclaimable_bytes": dl_bytes + src_bytes,
         "free_bytes": free,
     }
 

@@ -62,7 +62,8 @@ def poll_once(topic: str, server: str, since: str | int, token: str | None = Non
         log.debug("ntfy poll error: %s", e)
         if on_result:
             on_result(False, f"{type(e).__name__}: {str(e)[:150]}")
-        time.sleep(5)
+        # No extra sleep here: the caller's own interval already paces retries,
+        # and stacking another 5s on top made a blip cost ~10s of deafness.
         return since, 0
 
     handled = 0
@@ -92,8 +93,16 @@ def poll_once(topic: str, server: str, since: str | int, token: str | None = Non
     return newest, handled
 
 
-def listen(work_dir: str = ".shortforge", stop=None, interval: int = 5) -> None:
-    """Poll the command topic until ``stop()`` returns True."""
+def listen(work_dir: str = ".shortforge", stop=None, interval: float | None = None) -> None:
+    """Poll the command topic until ``stop()`` returns True.
+
+    ``interval`` is the gap between polls; it is the dominant part of how long
+    a phone command takes to land. It sat at 5s, so a "start" could sit unread
+    for five seconds before anything happened — which reads as an unresponsive
+    program when you are staring at your phone waiting. 2s is a much better
+    trade for a single operator's own topic (the request is a tiny conditional
+    GET), and `ntfy.poll_interval` in the provider store can tune it further.
+    """
     from . import lifecycle
     from .notify import OutageWatch
 
@@ -113,7 +122,15 @@ def listen(work_dir: str = ".shortforge", stop=None, interval: int = 5) -> None:
         watch.record(ok, detail)
         lifecycle.note_ntfy_status(work_dir, ok, detail)
 
-    log.info("ntfy: listening for commands on '%s'", topic[:6] + "…")
+    if interval is None:
+        try:
+            from .providers.store import load_store
+            interval = float((load_store().get("ntfy", {}) or {}).get("poll_interval") or 2.0)
+        except Exception:  # noqa: BLE001
+            interval = 2.0
+    interval = max(0.5, min(float(interval), 60.0))
+    log.info("ntfy: listening for commands on '%s' (checking every %.1fs)",
+             topic[:6] + "…", interval)
     while not (stop and stop()):
         since, n = poll_once(topic, server, since, token, work_dir,
                              on_result=_on_result)

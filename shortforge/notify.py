@@ -145,6 +145,62 @@ _ES_SYSTEM_REQUIRED = 0x00000001
 _ES_AWAYMODE_REQUIRED = 0x00000040
 
 
+def _resist_background_throttling() -> bool:
+    """Ask Windows to stop slowing us down once the screen goes off.
+
+    `KeepAwake` only stops the machine *suspending* — it says nothing about
+    speed, and the operator measured exactly that gap: renders run at full
+    speed with the monitor on and visibly slow down when it blanks.
+
+    Two separate Windows mechanisms cause that, and neither is sleep:
+
+    * **EcoQoS.** Windows 11 puts processes it considers background into
+      "Efficiency mode", parking them on efficiency cores and capping clock
+      speed. `SetProcessInformation(ProcessPowerThrottling, ...)` with the
+      EXECUTION_SPEED mask set and its state cleared opts out explicitly.
+    * **Priority.** A console job that stops receiving input drifts down the
+      scheduler's preference order; ABOVE_NORMAL keeps ffmpeg/Whisper
+      competitive without the system-wide harm of HIGH/REALTIME.
+
+    Best-effort and self-limiting: unsupported on Windows 10 builds without
+    the throttling API, a no-op elsewhere, and never fatal.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        if not hasattr(ctypes, "windll"):
+            return False
+
+        class _PowerThrottlingState(ctypes.Structure):
+            _fields_ = [("Version", wintypes.ULONG),
+                        ("ControlMask", wintypes.ULONG),
+                        ("StateMask", wintypes.ULONG)]
+
+        PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED = 0x1
+        ProcessPowerThrottling = 4
+
+        state = _PowerThrottlingState(
+            Version=PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask=PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            StateMask=0)                      # 0 = do NOT throttle us
+        ok = ctypes.windll.kernel32.SetProcessInformation(
+            ctypes.windll.kernel32.GetCurrentProcess(), ProcessPowerThrottling,
+            ctypes.byref(state), ctypes.sizeof(state))
+
+        ABOVE_NORMAL_PRIORITY_CLASS = 0x00008000
+        ctypes.windll.kernel32.SetPriorityClass(
+            ctypes.windll.kernel32.GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS)
+
+        log.info("power: background throttling opt-out %s; priority raised "
+                 "(keeps full speed with the screen off)",
+                 "accepted" if ok else "unavailable on this Windows build")
+        return bool(ok)
+    except Exception as e:  # noqa: BLE001 - a slower render beats a crashed one
+        log.debug("could not opt out of background throttling: %s", e)
+        return False
+
+
 class KeepAwake:
     """Stop Windows suspending the machine mid-render.
 
@@ -168,6 +224,7 @@ class KeepAwake:
                 flags = _ES_CONTINUOUS | _ES_SYSTEM_REQUIRED
                 ctypes.windll.kernel32.SetThreadExecutionState(flags)
             self._active = True
+            _resist_background_throttling()
             log.info("power: sleep suppressed while working (screen may still turn off)")
         except Exception as e:  # noqa: BLE001
             log.debug("could not suppress sleep: %s", e)

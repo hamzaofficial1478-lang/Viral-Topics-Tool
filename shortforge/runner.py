@@ -133,8 +133,14 @@ def run_one(job: dict, idx: int, total: int, make_cfg: Callable[[], Config],
     left = Q.counts(q)[Q.PENDING]
     title = (manifest.get("source") or {}).get("title", job["url"])[:80]
     log.info("queue: job %s done — %d clip(s) in %s", job["id"], len(clips), took)
+    # If fewer clips came out than were asked for, say so here rather than
+    # letting the operator count them and wonder. They asked for 6 and got 4
+    # with no explanation anywhere.
+    asked = int((job.get("settings") or {}).get("num_clips") or 0)
+    short = (f"\n⚠️ You asked for {asked} — the source only had room for "
+             f"{len(clips)} at this clip length." if asked and len(clips) < asked else "")
     return True, len(clips), (
-        f"✅ <b>Link {idx}/{total} done</b> — {len(clips)} clip(s) in {took}\n{title}\n"
+        f"✅ <b>Link {idx}/{total} done</b> — {len(clips)} clip(s) in {took}\n{title}{short}\n"
         + (f"➡️ Moving to the next link ({left} left)." if left else "That was the last one."))
 
 

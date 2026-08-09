@@ -147,6 +147,43 @@ def build_clips(
             start=segments[anchor].start, end=segments[anchor].end, score=0.0))
         chosen.append((lo, hi, anchor_cand))
 
+    # Second pass: the first pass anchors on the highest-scoring segments, and
+    # each clip it places consumes a contiguous block. That fragments the
+    # timeline, so later high-score anchors can sit next to used material and
+    # fail to grow to the requested length — the operator asked for 6 clips of
+    # 2 minutes from a 29-minute source (12 min of 29 — easily available) and
+    # got 4, because scoring order, not available material, had run out. So
+    # before giving up, sweep the untouched stretches chronologically for room
+    # the score-ordered pass skipped over.
+    if len(chosen) < n:
+        for anchor in range(len(segments)):
+            if len(chosen) >= n:
+                break
+            if anchor in used:
+                continue
+            lo, hi = (_grow_coherent(anchor, segments, gaps, used, lower, upper,
+                                     target, pause_thr, max_backup) if coherent
+                      else _grow(anchor, segments, used, lower, upper))
+            if lo is None:
+                continue
+            if segments[hi].end - segments[lo].start < _MIN_CLIP_SECONDS:
+                continue
+            for i in range(lo, hi + 1):
+                used.add(i)
+            chosen.append((lo, hi, seg_score.get(anchor, Candidate(
+                start=segments[anchor].start, end=segments[anchor].end, score=0.0))))
+
+    # Still short? Say so. Quietly handing back 4 clips when 6 were asked for is
+    # exactly the silent degrade this project forbids — the operator has no way
+    # to tell "the source couldn't give more" from "something went wrong".
+    if requested > 0 and len(chosen) < requested:
+        covered = sum(segments[hi].end - segments[lo].start for lo, hi, _ in chosen)
+        log.warning(
+            "asked for %d clip(s) of ~%.0fs but only %d fit: %.0fs of the %.0fs source "
+            "is usable speech once each clip is grown to a whole thought and clips "
+            "cannot overlap. Ask for shorter clips, or a longer source, for more.",
+            requested, target, len(chosen), covered, transcript.duration or 0.0)
+
     # Emit in chronological order; keep the rank/score for the manifest.
     chosen.sort(key=lambda t: segments[t[0]].start)
     clips: list[Clip] = []

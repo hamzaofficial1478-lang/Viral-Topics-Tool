@@ -170,6 +170,67 @@ def test_the_emergency_disk_remedy_spares_the_paid_hook_score_cache(tmp_path, mo
         "the paid hook-score cache was destroyed to reclaim kilobytes"
 
 
+# --- the per-video working folders (what actually fills the disk) ------------- #
+# The operator found .shortforge at ~5 GB full of audio files. Pruning only
+# covered downloads/ — the per-source-hash folders, which hold source_48k.wav
+# (~330 MB for a 29-minute video) and audio16k.wav, were never touched.
+
+def _source_workspace(work, name="a1b2c3d4", age_hours=0.0, size=1000):
+    d = os.path.join(work, name)
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "source_48k.wav"), "wb") as f:
+        f.write(b"x" * size)
+    if age_hours:
+        old = time.time() - age_hours * 3600
+        os.utime(os.path.join(d, "source_48k.wav"), (old, old))
+        os.utime(d, (old, old))
+    return d
+
+
+def test_source_workspaces_count_as_reclaimable(tmp_path):
+    work = _work(tmp_path)
+    _download(work, "v.mp4", size=2000)
+    _source_workspace(work, size=8000)
+    r = M.cache_report(work)
+    assert r["source_cache_dirs"] == 1 and r["source_cache_bytes"] == 8000
+    # the big WAV folders used to be invisible here, so "reclaimable" understated
+    # the recoverable space by an order of magnitude
+    assert r["reclaimable_bytes"] == 10000
+
+
+def test_old_source_workspaces_are_pruned(tmp_path):
+    work = _work(tmp_path)
+    d = _source_workspace(work, "old00001", age_hours=99, size=5000)
+    n, freed = M.prune_source_caches(work, keep_hours=48)
+    assert (n, freed) == (1, 5000)
+    assert not os.path.exists(d)
+
+
+def test_a_workspace_the_running_job_is_using_is_never_pruned(tmp_path):
+    """Judged by the newest file inside, so an actively-written folder is safe
+    even if the directory entry itself looks older."""
+    work = _work(tmp_path)
+    d = _source_workspace(work, "busy0001", age_hours=99, size=1000)
+    with open(os.path.join(d, "transcript.json"), "w") as f:   # just written
+        f.write("{}")
+    assert M.prune_source_caches(work, keep_hours=48) == (0, 0)
+    assert os.path.exists(d)
+
+
+def test_pruning_workspaces_never_touches_downloads_or_hook_scores(tmp_path):
+    work = _work(tmp_path)
+    _download(work, "keep.mp4", age_hours=99, size=4000)
+    os.makedirs(os.path.join(work, "hookscores"))
+    open(os.path.join(work, "hookscores", "s.json"), "w").write("[]")
+    _source_workspace(work, "old00002", age_hours=99, size=6000)
+
+    n, freed = M.prune_source_caches(work, keep_hours=48)
+
+    assert (n, freed) == (1, 6000)                       # only the workspace
+    assert os.path.exists(os.path.join(work, "downloads", "keep.mp4"))
+    assert os.path.exists(os.path.join(work, "hookscores", "s.json"))
+
+
 def test_human_gb_scales_units():
     assert M.human_gb(5_000) == "5 KB"
     assert M.human_gb(5 * 1024 ** 2) == "5 MB"

@@ -1000,6 +1000,8 @@ def cmd_cache(args: argparse.Namespace) -> int:
         print(f"Working directory: {os.path.abspath(work_dir)}")
         print(f"  cached downloads : {M.human_gb(r['downloads_bytes'])} "
               f"({r['downloads_files']} file(s))   <- reclaimable, re-fetchable")
+        print(f"  source workspaces: {M.human_gb(r['source_cache_bytes'])} "
+              f"({r['source_cache_dirs']} folder(s)) <- big WAV intermediates, reclaimable")
         print(f"  hook scores      : {M.human_gb(r['hookscores_bytes'])} "
               f"({r['hookscores_files']} file(s))   <- paid LLM work, kept")
         print(f"  everything       : {M.human_gb(r['total_bytes'])}")
@@ -1010,13 +1012,17 @@ def cmd_cache(args: argparse.Namespace) -> int:
     if args.cache_action == "prune":
         n, freed = M.prune_downloads(work_dir, keep_hours=args.keep_hours,
                                      dry_run=args.dry_run)
+        n2, freed2 = M.prune_source_caches(work_dir, keep_hours=args.keep_hours,
+                                           dry_run=args.dry_run)
+        n += n2
+        freed += freed2
         if not n:
             print(f"Nothing older than {args.keep_hours:g}h to remove.")
         elif args.dry_run:
-            print(f"Would remove {n} download(s) older than {args.keep_hours:g}h, "
+            print(f"Would remove {n} item(s) older than {args.keep_hours:g}h, "
                   f"freeing {M.human_gb(freed)}. Re-run without --dry-run to do it.")
         else:
-            print(f"Removed {n} download(s) older than {args.keep_hours:g}h — "
+            print(f"Removed {n} item(s) older than {args.keep_hours:g}h — "
                   f"freed {M.human_gb(freed)}.")
         return 0
 

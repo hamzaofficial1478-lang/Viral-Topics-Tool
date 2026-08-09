@@ -302,15 +302,19 @@ def _render_disk_usage() -> None:
     r = M.cache_report(work_dir)
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Cached downloads", M.human_gb(r["downloads_bytes"]),
-              help="Source videos kept so a re-run or resume doesn't re-download them. "
-                   "Safe to delete — they cost time to re-fetch, nothing else.")
+    c1.metric("Reclaimable", M.human_gb(r["reclaimable_bytes"]),
+              help="Downloaded source videos plus the per-video working folders "
+                   "(large WAV intermediates used for transcription and audio). "
+                   "All re-derivable — deleting costs time to redo, nothing else.")
     c2.metric("Working folder", M.human_gb(r["total_bytes"]))
     c3.metric("Free on disk", M.human_gb(r["free_bytes"]))
     if r["free_bytes"] is not None and r["free_bytes"] < 20 * 1024 ** 3:
         st.warning("⚠️ Under 20 GB free — downloads, stems and renders all need room. "
                    "Clearing old downloads below is the safest space to reclaim.")
-    st.caption(f"Hook scores held: {M.human_gb(r['hookscores_bytes'])} "
+    st.caption(f"Per-video working folders: {M.human_gb(r['source_cache_bytes'])} "
+               f"({r['source_cache_dirs']}) — extracted audio kept for re-runs; a 29-min "
+               f"video leaves ~400 MB here. This is usually what fills the folder.\n\n"
+               f"Hook scores held: {M.human_gb(r['hookscores_bytes'])} "
                f"({r['hookscores_files']} file(s)) — these are kept deliberately. Each one "
                "is a **paid** LLM scoring pass, and they're tiny, so deleting them would "
                "cost money to rebuild and free almost nothing.")
@@ -320,11 +324,15 @@ def _render_disk_usage() -> None:
                              help="Anything the running job needs is minutes old, so it can "
                                   "never be caught by this.")
     n_old, freed = M.prune_downloads(work_dir, keep_hours=float(keep_h), dry_run=True)
+    n_src, freed_src = M.prune_source_caches(work_dir, keep_hours=float(keep_h), dry_run=True)
+    n_old += n_src
+    freed += freed_src
     d1, d2 = st.columns(2)
     if d1.button(f"🧽 Remove {n_old} old download(s) · {M.human_gb(freed)}",
                  width="stretch", disabled=not n_old):
         n, got = M.prune_downloads(work_dir, keep_hours=float(keep_h))
-        st.success(f"Removed {n} download(s), freed {M.human_gb(got)}.")
+        n2, got2 = M.prune_source_caches(work_dir, keep_hours=float(keep_h))
+        st.success(f"Removed {n + n2} item(s), freed {M.human_gb(got + got2)}.")
         st.rerun()
     if d2.button("🗑 Remove ALL cached downloads", width="stretch",
                  disabled=not r["downloads_files"]):

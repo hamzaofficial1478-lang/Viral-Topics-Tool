@@ -478,9 +478,22 @@ def handle_text(text: str, work_dir: str) -> str:
     if not added:
         return ("⚠️ <b>Nothing added — already in the queue.</b>\n"
                 + Q.describe_skipped(skipped))
+    # Say whether this will actually START, and if not, what to send. The reply
+    # used to promise "I'll message you when each one starts and finishes"
+    # unconditionally — including when the queue was paused and therefore
+    # nothing was going to start at all. That single sentence is why "I added
+    # the link and nothing happened" kept recurring: the confirmation read like
+    # work had begun. Same rule as everywhere else — never sound successful
+    # when you aren't.
+    pending = Q.counts(q)[Q.PENDING]
+    if Q.is_paused(q):
+        next_step = ("⏸ The queue is <b>paused</b>, so this will not start yet.\n"
+                     "Reply <b>start</b> when you want me to begin.")
+    else:
+        next_step = ("▶️ Working through them now — I'll message you as each one "
+                     "starts and finishes.")
     msg = (f"➕ Queued <b>{len(added)}</b> link(s): {detail}.\n"
-           f"⏳ {Q.counts(q)[Q.PENDING]} pending — I'll message you when each one "
-           f"starts and finishes.")
+           f"⏳ {pending} pending. {next_step}")
     if skipped:
         msg += (f"\n\n⚠️ Skipped {len(skipped)} already in the queue:\n"
                 + Q.describe_skipped(skipped))

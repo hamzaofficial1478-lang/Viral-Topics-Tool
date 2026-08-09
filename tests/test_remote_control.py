@@ -225,6 +225,35 @@ def test_an_unrecognised_message_reports_the_queue_state_instead_of_a_dead_end(t
     assert "start" in reply.lower()          # the word that would have worked
 
 
+def test_queueing_into_a_paused_queue_says_it_will_not_start_yet(tmp_path):
+    """The confirmation used to promise "I'll message you when each one starts
+    and finishes" even when the queue was paused and nothing was going to
+    start — which is why "I added the link and nothing happened" kept coming
+    back. The reply has to distinguish the two cases."""
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.set_paused(q, True)
+    Q.save_queue(q, work)
+
+    reply = RC.handle_text("https://youtu.be/AAAAAAAAAAA", work)
+
+    assert "paused" in reply.lower()
+    assert "start" in reply.lower()                     # names the way forward
+    assert "I'll message you when each one starts" not in reply   # no false promise
+
+
+def test_queueing_into_a_running_queue_says_it_is_getting_on_with_it(tmp_path):
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.set_paused(q, False)
+    Q.save_queue(q, work)
+
+    reply = RC.handle_text("https://youtu.be/AAAAAAAAAAA", work)
+
+    assert "paused" not in reply.lower()
+    assert "starts and finishes" in reply
+
+
 @pytest.mark.parametrize("cmd", ["/start", "/resume", "/on", "/go", "/run"])
 def test_slash_start_actually_starts(tmp_path, cmd):
     """`/start` returned the HELP text and left the queue paused — a leftover of

@@ -359,6 +359,52 @@ def _cancel(work_dir: str) -> str:
     return f"🛑 Dropped {before - len(q['jobs'])} pending job(s). Any running job finishes."
 
 
+def _status(work_dir: str) -> str:
+    """Queue state AND why it is or isn't moving, ending in one next action.
+
+    "/status" used to print counts and, if anything looked stuck, a fixed
+    "is start_all.bat still open?" line — printed identically whether a worker
+    was running or not, because it never actually checked. That is no help at
+    all for the single question the operator keeps having to ask: *I added a
+    link, is it going to start on its own or do I have to send something?*
+    So each state now names its own cause and its own next step.
+    """
+    from . import lifecycle
+
+    q = Q.load_queue(work_dir)
+    c = Q.counts(q)
+    paused = Q.is_paused(q)
+    worker = lifecycle.worker_is_live(work_dir)
+    running = next((j for j in q.get("jobs", []) if j["status"] == Q.RUNNING), None)
+
+    msg = (f"📊 <b>Queue</b> — {'⏸ PAUSED' if paused else '▶ working'}"
+           f" · worker {'🟢 running' if worker else '🔴 not running'}\n"
+           f"⏳ {c[Q.PENDING]} pending · ▶ {c[Q.RUNNING]} running · "
+           f"✅ {c[Q.DONE]} done · ✗ {c[Q.FAILED]} failed\n"
+           f"🎬 {Q.total_clips(q)} clip(s) produced")
+
+    if running:
+        return msg + f"\n\n🎬 Now: {running['url'][:70]}\nNothing to do — it's working."
+    if not c[Q.PENDING]:
+        return msg + "\n\n✅ Nothing waiting. Send me a link whenever you like."
+
+    # Links are waiting. Exactly one of these is the reason they aren't moving.
+    if not worker:
+        return msg + ("\n\n🔴 <b>ShortForge isn't running on the PC</b>, so nothing can "
+                      "start — the queue is only a list until a worker reads it.\n"
+                      "👉 Open <b>start_all.bat</b> on the PC. It picks these up by itself.")
+    if paused:
+        return msg + ("\n\n⏸ <b>Waiting for your go-ahead</b> — this is the permission "
+                      "gate, so nothing runs behind your back after a restart.\n"
+                      "👉 Reply <b>start</b>.")
+    note = _lock_note(work_dir)
+    if "stale" in note:
+        return msg + f"\n\n⚠️ {note}\n👉 Nothing to do — it clears itself, then work resumes."
+    return msg + ("\n\n▶️ Unpaused, worker running, links waiting — the next one should "
+                  "begin within a few seconds.\n👉 Nothing to send. Re-check with /status "
+                  "if it hasn't moved in a minute.")
+
+
 def _lock_note(work_dir: str) -> str:
     """Describe the worker lock when it looks like it is in the way."""
     import os
@@ -425,24 +471,7 @@ def handle_text(text: str, work_dir: str) -> str:
     if low.startswith("/help"):
         return HELP
     if low.startswith("/status"):
-        q = Q.load_queue(work_dir)
-        c = Q.counts(q)
-        running = next((j for j in q.get("jobs", []) if j["status"] == Q.RUNNING), None)
-        state = "⏸ PAUSED" if Q.is_paused(q) else "▶ working"
-        msg = (f"📊 <b>Queue</b> — {state}\n"
-               f"⏳ {c[Q.PENDING]} pending · ▶ {c[Q.RUNNING]} running · "
-               f"✅ {c[Q.DONE]} done · ✗ {c[Q.FAILED]} failed\n"
-               f"🎬 {Q.total_clips(q)} clip(s) produced")
-        if running:
-            msg += f"\n\nNow: {running['url'][:70]}"
-        elif c[Q.PENDING] and not Q.is_paused(q):
-            # Unpaused with work waiting and nothing running is the shape of a
-            # stuck queue. Say so here rather than leaving the operator to
-            # wonder why "start" appeared to work and nothing happened.
-            msg += ("\n\n⚠️ Nothing is running even though links are pending and the "
-                    "queue isn't paused — is `start_all.bat` still open? "
-                    + _lock_note(work_dir))
-        return msg
+        return _status(work_dir)
     if low.startswith("/list"):
         q = Q.load_queue(work_dir)
         jobs = q.get("jobs", [])

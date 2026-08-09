@@ -416,15 +416,12 @@ def _render_results(manifest: dict, out_dir: str | None = None,
 def _worker_is_live(work_dir: str, *, freshness_s: float = 30.0) -> bool:
     """Is a queue worker (``cli.py listen``) already running and checking in?
 
-    ``listen`` heartbeats every 5s even while idle, so a recent ``last_seen``
-    means its worker thread is alive and will pick up pending work on its own
-    within a few seconds of the queue being unpaused.
+    Thin wrapper over `lifecycle.worker_is_live` — one implementation shared
+    with ntfy's /status, so the dashboard and the phone can never disagree
+    about whether a worker exists on this machine.
     """
     from shortforge import lifecycle
-    state = lifecycle.read_state(work_dir)
-    if not state:
-        return False
-    return (time.time() - float(state.get("last_seen") or 0)) < freshness_s
+    return lifecycle.worker_is_live(work_dir, freshness_s=freshness_s)
 
 
 def _start_worker() -> None:

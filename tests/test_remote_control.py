@@ -225,6 +225,89 @@ def test_an_unrecognised_message_reports_the_queue_state_instead_of_a_dead_end(t
     assert "start" in reply.lower()          # the word that would have worked
 
 
+# --- /status must answer "will this start, or must I send something?" --------- #
+# The operator has had to ask that question every round. /status used to print
+# counts plus a fixed "is start_all.bat still open?" line -- emitted identically
+# whether a worker was running or not, because it never checked.
+
+def _queued(work, *, paused=False, running=False):
+    q = Q.load_queue(work)
+    Q.add_job(q, "https://youtu.be/AAAAAAAAAAA")
+    if running:
+        Q.mark(q, q["jobs"][0]["id"], Q.RUNNING)
+    Q.set_paused(q, paused)
+    Q.save_queue(q, work)
+
+
+def test_status_says_open_start_all_when_no_worker_is_running(tmp_path):
+    """The queue is only a list until something reads it."""
+    work = str(tmp_path)
+    _queued(work)
+    s = RC.handle_text("/status", work)
+    assert "not running" in s and "start_all.bat" in s
+    assert "Reply <b>start</b>" not in s          # sending start would not help
+
+
+def test_status_says_reply_start_when_the_permission_gate_is_holding(tmp_path):
+    from shortforge import lifecycle
+    work = str(tmp_path)
+    _queued(work, paused=True)
+    lifecycle.mark_online(work, "listen")
+    s = RC.handle_text("/status", work)
+    assert "Reply <b>start</b>" in s and "permission gate" in s
+    assert "start_all.bat" not in s               # the worker IS running
+
+
+def test_status_says_nothing_to_send_when_it_will_start_on_its_own(tmp_path):
+    """The case behind the recurring question: unpaused with a live worker means
+    it begins by itself, and the operator should be told to just wait."""
+    from shortforge import lifecycle
+    work = str(tmp_path)
+    _queued(work)
+    lifecycle.mark_online(work, "listen")
+    s = RC.handle_text("/status", work)
+    assert "Nothing to send" in s
+    assert "Reply <b>start</b>" not in s
+
+
+def test_status_reports_a_running_job_instead_of_diagnosing(tmp_path):
+    from shortforge import lifecycle
+    work = str(tmp_path)
+    _queued(work, running=True)
+    lifecycle.mark_online(work, "listen")
+    s = RC.handle_text("/status", work)
+    assert "Now:" in s and "it's working" in s
+
+
+def test_status_on_an_empty_queue_is_not_alarming(tmp_path):
+    from shortforge import lifecycle
+    work = str(tmp_path)
+    lifecycle.mark_online(work, "listen")
+    s = RC.handle_text("/status", work)
+    assert "Nothing waiting" in s
+
+
+def test_status_always_states_whether_a_worker_exists(tmp_path):
+    """The single fact that decides whether anything can happen at all."""
+    from shortforge import lifecycle
+    work = str(tmp_path)
+    _queued(work)
+    assert "🔴 not running" in RC.handle_text("/status", work)
+    lifecycle.mark_online(work, "listen")
+    assert "🟢 running" in RC.handle_text("/status", work)
+
+
+def test_the_phone_and_the_dashboard_agree_on_whether_a_worker_exists(tmp_path):
+    """One implementation, so /status and the Start button can never contradict
+    each other about the same machine."""
+    import app
+    from shortforge import lifecycle
+    work = str(tmp_path)
+    assert app._worker_is_live(work) is lifecycle.worker_is_live(work) is False
+    lifecycle.mark_online(work, "listen")
+    assert app._worker_is_live(work) is lifecycle.worker_is_live(work) is True
+
+
 def test_queueing_into_a_paused_queue_says_it_will_not_start_yet(tmp_path):
     """The confirmation used to promise "I'll message you when each one starts
     and finishes" even when the queue was paused and nothing was going to
@@ -285,16 +368,17 @@ def test_help_documents_that_the_slash_is_optional(tmp_path):
 
 
 def test_status_flags_a_queue_that_is_unpaused_with_work_but_nothing_running(tmp_path):
-    """The silent-stall shape. With the worker lock wedged, "start" looked like
-    it worked and nothing happened, with no way to tell from the phone."""
+    """The silent-stall shape. With no worker, "start" looks like it worked and
+    nothing happens — the phone must be able to tell that apart from progress.
+    (Cause-specific wording is covered by the /status tests above.)"""
     work = str(tmp_path)
     RC.handle_text("https://a/1", work)
     RC.handle_text("start", work)
 
     status = RC.handle_text("/status", work)
 
-    assert "Nothing is running" in status
-    assert "lock" in status.lower()
+    assert "not running" in status
+    assert "👉" in status              # always ends in a concrete next step
 
 
 def test_status_says_nothing_alarming_when_the_queue_is_simply_paused(tmp_path):

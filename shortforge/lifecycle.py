@@ -143,6 +143,24 @@ def heartbeat(work_dir: str = ".shortforge", current: dict | None = _KEEP,
     _write_state(work_dir, state, state_file)
 
 
+def worker_is_live(work_dir: str = ".shortforge", *, freshness_s: float = 30.0) -> bool:
+    """Is a queue worker (``cli.py listen``) running and checking in?
+
+    ``listen`` heartbeats every 5s even while idle, so a recent ``last_seen``
+    means its worker thread is alive and will pick up pending work by itself
+    within a few seconds of the queue being unpaused. A missing or stale file
+    means nothing is going to run, however healthy the queue looks.
+
+    Shared by the dashboard (deciding whether to spawn a worker) and by
+    ``/status`` (telling the operator why nothing is happening) so the two can
+    never give contradictory answers about the same machine.
+    """
+    state = read_state(work_dir)
+    if not state:
+        return False
+    return (time.time() - float(state.get("last_seen") or 0)) < freshness_s
+
+
 def clips_made_for(prefix: str, out_dir: str | None = None) -> int:
     """Best-effort count of clip files already on disk for a job prefix.
 

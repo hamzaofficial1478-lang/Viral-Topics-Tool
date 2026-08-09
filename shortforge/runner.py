@@ -108,29 +108,27 @@ def run_one(job: dict, idx: int, total: int, make_cfg: Callable[[], Config],
                 manifest = run_pipeline(job["url"], cfg, owner_confirmed=True,
                                         transcript_path=None, confirm_cost=lambda est: True)
             except Exception as e2:  # noqa: BLE001 - retry failed; report the new error
-                q = Q.load_queue(work_dir)
-                Q.mark(q, job["id"], Q.FAILED, error=str(e2)[:500])
-                Q.save_queue(q, work_dir)
+                err2 = str(e2)[:500]   # bind now: Python unbinds `e2` at block exit
+                Q.mutate_queue(work_dir,
+                               lambda q: Q.mark(q, job["id"], Q.FAILED, error=err2))
                 log.error("queue: job %s FAILED after self-heal: %s", job["id"], e2)
                 return False, 0, (f"⚠️ <b>Link {idx}/{total} still failed after the fix</b>\n"
                                   f"{job['url'][:80]}\n{str(e2)[:300]}")
             else:
                 clips = [c.get("file_path") for c in manifest.get("clips", [])]
-                q = Q.load_queue(work_dir)
-                Q.mark(q, job["id"], Q.DONE, clips=clips)
-                Q.save_queue(q, work_dir)
+                Q.mutate_queue(work_dir,
+                               lambda q: Q.mark(q, job["id"], Q.DONE, clips=clips))
                 return True, len(clips), (f"{msg}\n✅ <b>Link {idx}/{total} done after the fix</b> "
                                           f"— {len(clips)} clip(s)")
-        q = Q.load_queue(work_dir)
-        Q.mark(q, job["id"], Q.FAILED, error=str(e)[:500])
-        Q.save_queue(q, work_dir)
+        err = str(e)[:500]             # bind now: Python unbinds `e` at block exit
+        Q.mutate_queue(work_dir,
+                       lambda q: Q.mark(q, job["id"], Q.FAILED, error=err))
         log.error("queue: job %s FAILED: %s", job["id"], e)
         return False, 0, f"{msg}\n<i>Link {idx}/{total}</i> — continuing with the rest."
 
     clips = [c.get("file_path") for c in manifest.get("clips", [])]
-    q = Q.load_queue(work_dir)
-    Q.mark(q, job["id"], Q.DONE, clips=clips)
-    Q.save_queue(q, work_dir)
+    q, _ = Q.mutate_queue(work_dir,
+                          lambda qq: Q.mark(qq, job["id"], Q.DONE, clips=clips))
     took = fmt_hms(time.time() - t0)
     left = Q.counts(q)[Q.PENDING]
     title = (manifest.get("source") or {}).get("title", job["url"])[:80]
@@ -195,8 +193,7 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
                 break
             idx = q["jobs"].index(job) + 1
             total = len(q["jobs"])
-            Q.mark(q, job["id"], Q.RUNNING)
-            Q.save_queue(q, work_dir)
+            Q.mutate_queue(work_dir, lambda qq: Q.mark(qq, job["id"], Q.RUNNING))
             log.info("=== queue %d/%d [%s] %s ===", idx, total, job["id"], job["url"])
 
             # Record the link in flight BEFORE starting: if the power goes out mid-job

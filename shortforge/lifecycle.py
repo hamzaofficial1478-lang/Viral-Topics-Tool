@@ -61,13 +61,9 @@ def read_state(work_dir: str = ".shortforge", state_file: str = STATE_FILE) -> d
 
 
 def _write_state(work_dir: str, state: dict, state_file: str = STATE_FILE) -> None:
-    path = state_path(work_dir, state_file)
+    from .utils import write_json_atomic
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        write_json_atomic(state_path(work_dir, state_file), state)
     except OSError as e:
         log.debug("could not write run state: %s", e)
 

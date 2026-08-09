@@ -67,10 +67,21 @@ def protected_names() -> set[str]:
     from . import lifecycle, queue as Q, remote_control as RC
     from . import runner
 
-    names = {Q.QUEUE_FILE, Q.LOCK_FILE, lifecycle.STATE_FILE,
-             lifecycle.UI_STATE_FILE, RC.CHAT_LOG_FILE, runner.JOB_LOG_FILE}
-    # atomic writes land on a sibling ".tmp" first — never collect those either
-    return names | {n + ".tmp" for n in names}
+    return {Q.QUEUE_FILE, Q.LOCK_FILE, lifecycle.STATE_FILE,
+            lifecycle.UI_STATE_FILE, RC.CHAT_LOG_FILE, runner.JOB_LOG_FILE}
+
+
+def is_protected(entry: str) -> bool:
+    """True for a state file or an in-flight atomic-write temp of one.
+
+    Atomic writes land on a per-writer sibling named ``<file>.<random>.tmp``
+    (a shared ``<file>.tmp`` let concurrent writers corrupt each other), so the
+    guard matches by prefix rather than by exact name.
+    """
+    if entry in protected_names():
+        return True
+    return entry.endswith(".tmp") and any(
+        entry.startswith(name + ".") for name in protected_names())
 
 
 def clear_cache(work_dir: str, what: str = "all") -> int:
@@ -87,9 +98,8 @@ def clear_cache(work_dir: str, what: str = "all") -> int:
         return 0
     removed = 0
     if what == "all":
-        keep = protected_names()
         for entry in os.listdir(work_dir):
-            if entry in keep:
+            if is_protected(entry):
                 continue
             p = os.path.join(work_dir, entry)
             try:

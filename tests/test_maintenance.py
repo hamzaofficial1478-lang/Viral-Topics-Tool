@@ -60,12 +60,19 @@ def test_clear_all_still_removes_the_actual_caches(tmp_path):
 def test_the_protected_list_tracks_the_modules_that_own_each_name():
     """Imported from source rather than hardcoded, so renaming a state file
     can't silently drop it out of the protected set."""
+    from shortforge.cache import is_protected
     from shortforge.runner import JOB_LOG_FILE
     names = protected_names()
     for owned in (Q.QUEUE_FILE, Q.LOCK_FILE, L.STATE_FILE, L.UI_STATE_FILE,
                   RC.CHAT_LOG_FILE, JOB_LOG_FILE):
         assert owned in names
-        assert owned + ".tmp" in names          # atomic-write siblings too
+        assert is_protected(owned)
+        # Atomic writes land on a per-writer sibling "<file>.<random>.tmp"
+        # (a shared "<file>.tmp" let concurrent writers corrupt each other),
+        # so an in-flight temp must be matched by prefix, not exact name.
+        assert is_protected(f"{owned}.a1b2c3.tmp")
+    assert not is_protected("somecachedir")
+    assert not is_protected("deadbeef.tmp")
 
 
 def test_a_lock_held_by_a_live_worker_survives_a_cache_clear(tmp_path):

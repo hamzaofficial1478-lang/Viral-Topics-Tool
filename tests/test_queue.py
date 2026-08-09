@@ -139,6 +139,117 @@ def test_drain_queue_refuses_to_double_run_while_locked(tmp_path):
 # exited instantly (the queue was paused) but returned a dict indistinguishable
 # from a completed run, so the caller announced success over work never done.
 
+# --- adding links WHILE a job runs -------------------------------------------- #
+# `cli.py listen` polls ntfy on one thread and drains the queue on another, both
+# writing queue.json. Before the mutex + per-writer temp files, an add landing at
+# the same moment as a status update could: crash the poller (both writers shared
+# one "queue.json.tmp", so one renamed the other's out from under it), CORRUPT the
+# file into unparseable JSON — after which load_queue "starts empty" and the whole
+# queue is gone — or silently lose either the completion or the new link.
+
+def test_adding_links_while_the_worker_writes_never_loses_or_corrupts(tmp_path):
+    import threading
+
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    job = Q.add_job(q, "https://youtu.be/RUNNINGJOB")
+    Q.mark(q, job["id"], Q.RUNNING)
+    Q.save_queue(q, work)
+    jid = job["id"]
+
+    problems = []
+    for trial in range(40):
+        Q.mutate_queue(work, lambda x: (
+            x.update(jobs=[j for j in x["jobs"] if j["id"] == jid]),
+            Q.mark(x, jid, Q.RUNNING), x["jobs"][0].update(clips=[])))
+
+        def worker():
+            try:
+                Q.mutate_queue(work, lambda w: (
+                    time.sleep(0.0005),
+                    Q.mark(w, jid, Q.DONE, clips=["a.mp4", "b.mp4", "c.mp4"]))[1])
+            except Exception as e:                      # noqa: BLE001
+                problems.append(f"worker crashed: {e}")
+
+        def adder(n=trial):
+            try:
+                Q.mutate_queue(work, lambda a: (
+                    time.sleep(0.0005),
+                    Q.add_links(a, [f"https://youtu.be/NEW{n:04d}"]))[1])
+            except Exception as e:                      # noqa: BLE001
+                problems.append(f"add crashed: {e}")
+
+        t1, t2 = threading.Thread(target=worker), threading.Thread(target=adder)
+        t1.start(); t2.start(); t1.join(); t2.join()
+
+        final = Q.load_queue(work)
+        if not final["jobs"]:
+            problems.append("queue file was corrupted and read back empty")
+            break
+        done = next((j for j in final["jobs"] if j["id"] == jid), None)
+        if done is None or done["status"] != Q.DONE or len(done["clips"]) != 3:
+            problems.append("the finished job was rolled back / its clips erased")
+        if not any(f"NEW{trial:04d}" in j["url"] for j in final["jobs"]):
+            problems.append("the newly added link was lost")
+
+    assert not problems, problems[:3]
+
+
+def test_two_writers_never_share_a_scratch_file(tmp_path):
+    """The corruption's root cause: every atomic writer built its temp path as
+    "<file>.tmp", one name shared by all of them."""
+    import threading
+
+    work = str(tmp_path)
+    Q.save_queue({"jobs": []}, work)
+    seen = []
+    real_mkstemp = __import__("tempfile").mkstemp
+
+    def spy(*a, **k):
+        fd, path = real_mkstemp(*a, **k)
+        seen.append(path)
+        return fd, path
+
+    import tempfile as _t
+    _t.mkstemp = spy
+    try:
+        ts = [threading.Thread(target=Q.save_queue, args=({"jobs": []}, work))
+              for _ in range(20)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+    finally:
+        _t.mkstemp = real_mkstemp
+    assert len(seen) == len(set(seen)), "two writers shared a temp filename"
+
+
+def test_a_link_added_mid_drain_is_picked_up_without_another_start(tmp_path):
+    """What the operator actually wants: send more links while one renders and
+    have them run after it, with no second command."""
+    from shortforge import runner
+
+    work = str(tmp_path)
+    q = Q.load_queue(work)
+    Q.add_links(q, ["https://youtu.be/FIRSTLINK1"])
+    Q.save_queue(q, work)
+
+    order = []
+
+    def fake(url, cfg, **kw):
+        order.append(url)
+        if len(order) == 1:                  # arrives while the first is rendering
+            Q.mutate_queue(work, lambda x: Q.add_links(x, ["https://youtu.be/SECONDLINK"]))
+        return {"clips": [{"file_path": "a.mp4"}]}
+
+    runner.run_pipeline = fake
+    s = runner.drain_queue(lambda: Config.load(), work, announce=lambda m: None)
+
+    assert order == ["https://youtu.be/FIRSTLINK1", "https://youtu.be/SECONDLINK"]
+    assert s["stopped_because"] == "empty"
+    assert Q.counts(Q.load_queue(work))[Q.DONE] == 2
+
+
 # --- duplicate links, and the order links come out in ------------------------- #
 # Adding the same video twice renders it twice: hours of CPU on this machine and
 # paid spend a second time, for a byte-identical result. Nothing checked.

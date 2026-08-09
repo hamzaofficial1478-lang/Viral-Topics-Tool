@@ -137,6 +137,39 @@ def _timeout_for(cmd: list[str]) -> float:
     return _DEFAULT_TIMEOUT
 
 
+def write_json_atomic(path: str, data) -> None:
+    """Write JSON so a reader never sees a half-written file — even when two
+    writers land at the same moment.
+
+    Every atomic writer here used to build its temp path as ``path + ".tmp"``,
+    a name *shared by every writer of that file*. Two concurrent saves then
+    opened the same temp file, interleaved their output, and one renamed the
+    resulting garbage into place — while the other crashed with
+    ``FileNotFoundError`` because its temp file had been renamed away. Observed
+    live on ``queue.json``: adding a link from ntfy while the worker recorded a
+    finished job corrupted the file, and `load_queue` degraded to "starting
+    empty" — silently discarding the whole queue.
+
+    A per-writer temp name in the same directory fixes both: the rename stays
+    atomic, but no two writers can ever share a scratch file.
+    """
+    import tempfile
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + ".",
+                               suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def run(cmd: list[str], *, quiet: bool = True,
         timeout: float | None = None) -> subprocess.CompletedProcess:
     """Run a command, raising ShortForgeError with captured stderr on failure.

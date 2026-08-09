@@ -12,6 +12,7 @@ because "5 x 2min from this link, 6 x 1min from that one" is the real workflow.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -159,13 +160,84 @@ def load_queue(work_dir: str = ".shortforge") -> dict:
 
 
 def save_queue(q: dict, work_dir: str = ".shortforge") -> None:
-    """Write atomically — a power cut must never leave a truncated queue file."""
-    path = queue_path(work_dir)
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(q, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    """Write atomically — a power cut must never leave a truncated queue file,
+    and two simultaneous writers must never share a scratch file."""
+    from .utils import write_json_atomic
+    write_json_atomic(queue_path(work_dir), q)
+
+
+MUTEX_FILE = "queue.mutex"
+_MUTEX_WAIT = 5.0        # give up rather than hang a render waiting for a peer
+_MUTEX_STALE = 30.0      # any holder gone this long crashed mid-mutation
+
+
+def _mutex_path(work_dir: str) -> str:
+    return os.path.join(work_dir, MUTEX_FILE)
+
+
+@contextlib.contextmanager
+def queue_mutex(work_dir: str = ".shortforge"):
+    """Short exclusive hold for one read-modify-write of the queue file.
+
+    Distinct from the drain lock, which is held for an entire run (hours). This
+    one is held for microseconds, purely so two writers can't interleave.
+
+    Without it, `load_queue` → mutate → `save_queue` is a classic lost-update
+    race, and it is *routinely* exercised: `cli.py listen` polls ntfy on one
+    thread and drains the queue on another, both writing this file. Adding a
+    link at the moment the worker recorded a finished job would roll that job
+    back to running and erase its clip list — so an already-rendered video got
+    rendered again — or drop the new link entirely.
+
+    Best-effort by design: if the mutex can't be taken within ``_MUTEX_WAIT``
+    the caller proceeds anyway. A slightly racy write beats blocking a render,
+    and the unique-temp-file fix means the worst case is a lost update, never a
+    corrupt file.
+    """
+    path = _mutex_path(work_dir)
+    os.makedirs(work_dir, exist_ok=True)
+    deadline = time.time() + _MUTEX_WAIT
+    acquired = False
+    while time.time() < deadline:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            acquired = True
+            break
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(path) > _MUTEX_STALE:
+                    os.remove(path)          # holder died mid-mutation
+                    continue
+            except OSError:
+                pass
+            time.sleep(0.01)
+    if not acquired:
+        log.warning("queue: could not take the queue mutex in %.0fs — writing anyway",
+                    _MUTEX_WAIT)
+    try:
+        yield
+    finally:
+        if acquired:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def mutate_queue(work_dir: str, fn):
+    """Read the queue, apply ``fn(q)``, save — atomically against other writers.
+
+    Returns ``(queue, fn's return value)``. Every mutation should go through
+    here rather than hand-rolling load/modify/save, which is what allowed the
+    lost-update race above.
+    """
+    with queue_mutex(work_dir):
+        q = load_queue(work_dir)
+        result = fn(q)
+        save_queue(q, work_dir)
+    return q, result
 
 
 def add_job(q: dict, url: str, settings: dict | None = None, label: str = "") -> dict:

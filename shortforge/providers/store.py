@@ -47,17 +47,17 @@ def save_store(store: dict) -> None:
     """Write atomically (tmp + os.replace) — every credential lives here, so a
     power cut mid-write must never truncate/corrupt it (same discipline as
     queue.py and lifecycle.py's state file)."""
+    from ..utils import write_json_atomic
     path = store_path()
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(store, f, ensure_ascii=False, indent=2)
-    # Keys live here — make sure it never becomes world-readable on POSIX.
+    # Shared writer: a per-writer temp name, so two saves can never share a
+    # scratch file and rename each other's half-written output into place.
+    # mkstemp already creates at 0600 — keys live here, so re-assert it after
+    # the rename rather than trusting the umask.
+    write_json_atomic(path, store)
     try:
-        os.chmod(tmp, 0o600)
+        os.chmod(path, 0o600)
     except OSError:
         pass
-    os.replace(tmp, path)
 
 
 def masked(key: str | None) -> str:

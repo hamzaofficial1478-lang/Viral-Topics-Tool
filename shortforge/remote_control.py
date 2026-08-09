@@ -71,9 +71,14 @@ def _trim_chat_log(path: str, keep: int = _CHAT_LOG_MAX) -> None:
     if len(lines) <= keep * 2:
         return
     tail = lines[-keep:]
-    tmp = path + ".tmp"
+    # Per-writer temp name: the dashboard and the ntfy poller both trim this
+    # file, and a shared "<path>.tmp" lets one rename the other's partial write
+    # into place.
+    import tempfile
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
+                                   prefix=os.path.basename(path) + ".", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.writelines(tail)
         os.replace(tmp, path)
     except OSError:
@@ -326,37 +331,37 @@ def parse_links(text: str) -> list[str]:
 
 
 def _pause(work_dir: str) -> str:
-    q = Q.load_queue(work_dir)
-    Q.set_paused(q, True)
-    Q.save_queue(q, work_dir)
+    Q.mutate_queue(work_dir, lambda q: Q.set_paused(q, True))
     return ("⏸ <b>Paused.</b> The link being worked on will finish, then I'll stop "
             "starting new ones. Links you send are still queued. Reply \"start\" "
             "(or /resume) to continue.")
 
 
 def _resume(work_dir: str) -> str:
-    q = Q.load_queue(work_dir)
-    Q.set_paused(q, False)
-    Q.save_queue(q, work_dir)
+    q, _ = Q.mutate_queue(work_dir, lambda qq: Q.set_paused(qq, False))
     pending = Q.counts(q)[Q.PENDING]
     return (f"▶️ <b>Working again.</b> {pending} link(s) pending."
             if pending else "▶️ <b>Working again.</b> Nothing queued — send me a link.")
 
 
 def _clear(work_dir: str) -> str:
-    q = Q.load_queue(work_dir)
-    before = len(q.get("jobs", []))
-    q["jobs"] = [j for j in q.get("jobs", []) if j["status"] in (Q.PENDING, Q.RUNNING)]
-    Q.save_queue(q, work_dir)
-    return f"🧹 Removed {before - len(q['jobs'])} finished job(s)."
+    def _drop(q):
+        before = len(q.get("jobs", []))
+        q["jobs"] = [j for j in q.get("jobs", []) if j["status"] in (Q.PENDING, Q.RUNNING)]
+        return before - len(q["jobs"])
+
+    _, removed = Q.mutate_queue(work_dir, _drop)
+    return f"🧹 Removed {removed} finished job(s)."
 
 
 def _cancel(work_dir: str) -> str:
-    q = Q.load_queue(work_dir)
-    before = len(q.get("jobs", []))
-    q["jobs"] = [j for j in q.get("jobs", []) if j["status"] != Q.PENDING]
-    Q.save_queue(q, work_dir)
-    return f"🛑 Dropped {before - len(q['jobs'])} pending job(s). Any running job finishes."
+    def _drop(q):
+        before = len(q.get("jobs", []))
+        q["jobs"] = [j for j in q.get("jobs", []) if j["status"] != Q.PENDING]
+        return before - len(q["jobs"])
+
+    _, dropped = Q.mutate_queue(work_dir, _drop)
+    return f"🛑 Dropped {dropped} pending job(s). Any running job finishes."
 
 
 def _status(work_dir: str) -> str:
@@ -495,11 +500,14 @@ def handle_text(text: str, work_dir: str) -> str:
 
     settings = parse_settings(text)
     label = settings.pop("_label", "")
-    q = Q.load_queue(work_dir)
-    if len(q.get("jobs", [])) + len(links) > MAX_QUEUE:
+    if len(Q.load_queue(work_dir).get("jobs", [])) + len(links) > MAX_QUEUE:
         return f"Queue is full ({MAX_QUEUE} max). Use /clear first."
-    added, skipped = Q.add_links(q, links, settings, label=label)
-    Q.save_queue(q, work_dir)
+    # Under the queue mutex: the worker writes this same file from another
+    # thread as it claims and completes jobs, and an interleaved add would
+    # either vanish or roll the worker's progress back. Also means the
+    # duplicate check sees the queue as it is at write time, not before.
+    q, (added, skipped) = Q.mutate_queue(
+        work_dir, lambda qq: Q.add_links(qq, links, settings, label=label))
 
     # Echo back what was UNDERSTOOD, not what was typed — that is how a
     # misread "2 min" gets caught before an hour of rendering.

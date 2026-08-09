@@ -983,8 +983,38 @@ def cmd_providers(args: argparse.Namespace) -> int:
 def cmd_cache(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     cfg = Config.load(args.config)
+    from shortforge import maintenance as M
     from shortforge.cache import clear_cache
     work_dir = getattr(args, "work_dir", None) or cfg.get("paths.work_dir", ".shortforge")
+
+    if args.cache_action == "report":
+        # Cached sources are gigabytes and were never pruned by anything except
+        # the post-failure emergency path, so on a modest disk the first sign of
+        # trouble was a render dying on "no space left on device".
+        r = M.cache_report(work_dir)
+        print(f"Working directory: {os.path.abspath(work_dir)}")
+        print(f"  cached downloads : {M.human_gb(r['downloads_bytes'])} "
+              f"({r['downloads_files']} file(s))   <- reclaimable, re-fetchable")
+        print(f"  hook scores      : {M.human_gb(r['hookscores_bytes'])} "
+              f"({r['hookscores_files']} file(s))   <- paid LLM work, kept")
+        print(f"  everything       : {M.human_gb(r['total_bytes'])}")
+        print(f"  free on disk     : {M.human_gb(r['free_bytes'])}")
+        print("\nprune old downloads:  python cli.py cache prune --dry-run")
+        return 0
+
+    if args.cache_action == "prune":
+        n, freed = M.prune_downloads(work_dir, keep_hours=args.keep_hours,
+                                     dry_run=args.dry_run)
+        if not n:
+            print(f"Nothing older than {args.keep_hours:g}h to remove.")
+        elif args.dry_run:
+            print(f"Would remove {n} download(s) older than {args.keep_hours:g}h, "
+                  f"freeing {M.human_gb(freed)}. Re-run without --dry-run to do it.")
+        else:
+            print(f"Removed {n} download(s) older than {args.keep_hours:g}h — "
+                  f"freed {M.human_gb(freed)}.")
+        return 0
+
     if args.cache_action == "clear":
         if args.translation:
             what = "translation"
@@ -994,6 +1024,7 @@ def cmd_cache(args: argparse.Namespace) -> int:
             what = "all"
         n = clear_cache(work_dir, what)
         print(f"cleared {n} cached item(s) [{what}] from {work_dir}")
+        print("(the job queue, worker state and chat history are never touched)")
         return 0
     log.error("unknown cache action")
     return 2
@@ -1159,13 +1190,20 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Your interests/channel for a personalized pick (needs Claude)")
     nsub.set_defaults(func=cmd_niches)
 
-    csub = sub.add_parser("cache", help="Inspect / clear ShortForge caches")
-    csub.add_argument("cache_action", choices=["clear"], help="cache operation")
+    csub = sub.add_parser("cache", help="Inspect / clear / prune ShortForge caches")
+    csub.add_argument("cache_action", choices=["report", "clear", "prune"],
+                      help="report = show what the work dir is holding; "
+                           "clear = drop caches (queue and state are never touched); "
+                           "prune = remove only downloads older than --keep-hours")
     csub.add_argument("--translation", action="store_true",
                       help="Clear only cached translations")
     csub.add_argument("--transcript", action="store_true",
                       help="Clear only cached transcripts")
     csub.add_argument("--all", action="store_true", help="Clear the whole cache (default)")
+    csub.add_argument("--keep-hours", type=float, default=48.0, dest="keep_hours",
+                      help="prune: keep downloads newer than this (default 48)")
+    csub.add_argument("--dry-run", action="store_true",
+                      help="prune: show what would go without removing it")
     csub.add_argument("--work-dir", help="Cache directory (default from config)")
     csub.set_defaults(func=cmd_cache)
 

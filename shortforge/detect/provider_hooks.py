@@ -239,9 +239,9 @@ def score_frames_for(candidates: list[Candidate], indices: list[int], source_pat
     from ..providers import run_failover
     from ..providers.store import task_timeout
     from ..providers.vision import sample_frames, score_frames
-    n = int(cfg.get("vision.frames_per_clip", 6))
+    n = int(cfg.get("vision.frames_per_clip", 2))
     fw = int(cfg.get("vision.frame_width", 768))
-    max_imgs = int(cfg.get("vision.max_images", 6))
+    max_imgs = int(cfg.get("vision.max_images", 1))
     vtimeout = int(cfg.get("vision.timeout", 0) or task_timeout("vision_scoring"))
     tmp = tempfile.mkdtemp(prefix="hookframes_")
     prompt = ("Rate the VISUAL interest of these frames for a short-form clip from 0.0 to "

@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 
 import streamlit as st
 
 from ..providers import store as S
 from ..providers import detect as D
-from ..providers import test_tts_provider, capability_warnings
+from ..providers import capability_warnings
 
 _CATS = list(S.CATEGORIES)
 
@@ -285,6 +284,58 @@ def _render_youtube_auth(store: dict) -> None:
         (st.success if ok else st.error)(detail)
 
 
+def _render_disk_usage() -> None:
+    """What the working directory is holding, and a safe way to reclaim it.
+
+    Cached source videos are gigabytes and nothing ever removed them: the only
+    cleanup in the codebase fired *after* a render had already died on "no
+    space left on device". On a modest disk that is a scheduled failure, and
+    the operator cannot hand-edit files or run cleanup scripts — so it has to
+    be visible and one click away here.
+    """
+    from ..config import Config
+    from .. import maintenance as M
+
+    st.divider()
+    st.subheader("🧹 Disk space")
+    work_dir = Config.load().get("paths.work_dir", ".shortforge")
+    r = M.cache_report(work_dir)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Cached downloads", M.human_gb(r["downloads_bytes"]),
+              help="Source videos kept so a re-run or resume doesn't re-download them. "
+                   "Safe to delete — they cost time to re-fetch, nothing else.")
+    c2.metric("Working folder", M.human_gb(r["total_bytes"]))
+    c3.metric("Free on disk", M.human_gb(r["free_bytes"]))
+    if r["free_bytes"] is not None and r["free_bytes"] < 20 * 1024 ** 3:
+        st.warning("⚠️ Under 20 GB free — downloads, stems and renders all need room. "
+                   "Clearing old downloads below is the safest space to reclaim.")
+    st.caption(f"Hook scores held: {M.human_gb(r['hookscores_bytes'])} "
+               f"({r['hookscores_files']} file(s)) — these are kept deliberately. Each one "
+               "is a **paid** LLM scoring pass, and they're tiny, so deleting them would "
+               "cost money to rebuild and free almost nothing.")
+
+    keep_h = st.number_input("Remove cached downloads older than (hours)", min_value=1,
+                             max_value=24 * 90, value=48, step=24,
+                             help="Anything the running job needs is minutes old, so it can "
+                                  "never be caught by this.")
+    n_old, freed = M.prune_downloads(work_dir, keep_hours=float(keep_h), dry_run=True)
+    d1, d2 = st.columns(2)
+    if d1.button(f"🧽 Remove {n_old} old download(s) · {M.human_gb(freed)}",
+                 width="stretch", disabled=not n_old):
+        n, got = M.prune_downloads(work_dir, keep_hours=float(keep_h))
+        st.success(f"Removed {n} download(s), freed {M.human_gb(got)}.")
+        st.rerun()
+    if d2.button("🗑 Remove ALL cached downloads", width="stretch",
+                 disabled=not r["downloads_files"]):
+        got = M.clear_downloads(work_dir)
+        st.success(f"Cleared every cached download — freed {M.human_gb(got)}. "
+                   "Sources re-download on demand.")
+        st.rerun()
+    st.caption("Your job queue, worker state and chat history are never touched by either "
+               "button — only re-downloadable cache.")
+
+
 def _render_backup_restore(store: dict) -> None:
     """Export/import the whole settings store so moving machines needs no re-entry."""
     st.divider()
@@ -380,6 +431,9 @@ def render() -> None:
     # --- YouTube authentication (fix the bot wall on downloads) ---
     _render_youtube_auth(store)
 
+    # --- disk usage + safe reclaim (downloads grow forever otherwise) ---
+    _render_disk_usage()
+
     # --- backup / restore (move machines without re-entering keys) ---
     _render_backup_restore(store)
 
@@ -396,145 +450,6 @@ def render() -> None:
             _persist(store)
             st.success(f"Migrated {n} provider(s) into credentials.")
             st.rerun()
-
-
-def _render_card(store, p, idx, count):
-    pid = p["id"]
-    with st.expander(f"{p['name']}  ·  {_caps_summary(p)}", expanded=False):
-        c1, c2 = st.columns(2)
-        with c1:
-            name = st.text_input("Name", p["name"], key=f"n_{pid}")
-            base = st.text_input("Base URL", p.get("base_url", ""), key=f"b_{pid}")
-            key_in = st.text_input(f"API key (saved: {S.masked(p.get('api_key'))})",
-                                   "", type="password", key=f"k_{pid}",
-                                   placeholder="leave blank to keep current")
-        with c2:
-            model = st.text_input("Model", p.get("model", ""), key=f"m_{pid}")
-            voices = p.get("voices") or []
-            if voices:
-                cur = p.get("voice", "")
-                opts = ([cur] if cur and cur not in voices else []) + voices
-                voice = st.selectbox("Voice", opts, key=f"v_{pid}")
-            else:
-                voice = st.text_input("Voice / voice ID", p.get("voice", ""), key=f"vt_{pid}")
-            enabled = st.checkbox("Enabled", p.get("enabled", True), key=f"e_{pid}")
-            cost1k = None
-            if p["category"] == "tts":
-                cur_cost = float((p.get("capabilities") or {}).get("cost_per_1k_chars", 0.0) or 0.0)
-                cost1k = st.number_input("Cost per 1000 characters (USD)", min_value=0.0,
-                                         value=cur_cost, step=0.01, format="%.4f", key=f"c1k_{pid}")
-
-        # detected capabilities detail
-        caps = p.get("capabilities") or {}
-        if caps:
-            extra = ""
-            if p["category"] == "tts" and caps.get("emotion_params"):
-                extra = f"  ·  emotion params: `{', '.join(caps['emotion_params'])}`"
-            st.markdown("**Detected:** " + _caps_summary(p) + extra)
-            # STEP 3: TTS language coverage (a MODEL property).
-            if p["category"] == "tts":
-                langs = caps.get("languages") or []
-                if langs:
-                    st.markdown(f"**Languages ({p.get('model') or 'this model'}):** "
-                                + ", ".join(langs))
-                ml = caps.get("model_languages") or {}
-                if ml:
-                    with st.expander("Language coverage per model"):
-                        for mid, ls in sorted(ml.items()):
-                            st.markdown(f"- **{mid}**: {', '.join(ls)}")
-            for note in caps.get("notes", []):
-                st.caption("• " + note)
-            # Raw probe request/response (redacted) — makes failures diagnosable.
-            if caps.get("request_excerpt") or caps.get("response_excerpt"):
-                with st.expander("Raw probe request / response (keys redacted)"):
-                    if caps.get("request_excerpt"):
-                        st.code(caps["request_excerpt"])
-                    if caps.get("response_excerpt"):
-                        st.code(caps["response_excerpt"])
-
-        b = st.columns(6)
-        if b[0].button("💾 Save", key=f"sv_{pid}"):
-            fields = {"name": name, "base_url": base, "model": model,
-                      "voice": voice, "enabled": enabled}
-            if key_in:
-                fields["api_key"] = key_in
-            S.update_provider(store, pid, **fields)
-            if cost1k is not None:
-                caps = dict(S.get_provider(store, pid).get("capabilities") or {})
-                caps["cost_per_1k_chars"] = float(cost1k)
-                S.update_provider(store, pid, capabilities=caps)
-            _persist(store)
-            st.success("Saved.")
-            st.rerun()
-        if b[1].button("🔍 Test & Detect", key=f"td_{pid}"):
-            if key_in:
-                S.update_provider(store, pid, api_key=key_in)
-            S.update_provider(store, pid, name=name, base_url=base, model=model)
-            cur = S.get_provider(store, pid)
-            with st.spinner("Probing provider…"):
-                res = D.detect(cur["category"], cur.get("base_url", ""),
-                               cur.get("api_key", ""), cur.get("model", ""))
-            # Preserve the operator-set price (not auto-detectable).
-            prev_cost = (cur.get("capabilities") or {}).get("cost_per_1k_chars")
-            if prev_cost is not None:
-                res["cost_per_1k_chars"] = prev_cost
-            S.update_provider(store, pid, capabilities=res, api_shape=res.get("api_shape"),
-                              voices=res.get("voices", []), models=res.get("models", []))
-            _persist(store)
-            st.rerun()
-        if p["category"] == "tts" and b[2].button("🔊 Test", key=f"ts_{pid}"):
-            if key_in:
-                S.update_provider(store, pid, api_key=key_in)
-            cur = S.get_provider(store, pid)
-            out = tempfile.mktemp(suffix=".wav")
-            with st.spinner("Synthesizing sample…"):
-                r = test_tts_provider(cur, out)
-            S.update_provider(store, pid, last_test=r)
-            _persist(store)
-            if r["ok"]:
-                st.success(r["detail"])
-                st.session_state[f"audio_{pid}"] = out
-            else:
-                st.error(r["detail"])
-        if b[3].button("⬆", key=f"up_{pid}", disabled=idx == 0):
-            S.move_priority(store, pid, -1)
-            _persist(store)
-            st.rerun()
-        if b[4].button("⬇", key=f"dn_{pid}", disabled=idx == count - 1):
-            S.move_priority(store, pid, +1)
-            _persist(store)
-            st.rerun()
-        if b[5].button("🗑", key=f"del_{pid}"):
-            S.delete_provider(store, pid)
-            _persist(store)
-            st.rerun()
-
-        audio = st.session_state.get(f"audio_{pid}")
-        if audio and os.path.isfile(audio):
-            st.audio(audio)
-
-
-def _render_add_form(store):
-    st.subheader("➕ Add a provider")
-    with st.form("add_provider", clear_on_submit=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            name = st.text_input("Provider name", placeholder="e.g. ElevenLabs, OpenAI")
-            category = st.selectbox("Category", _CATS,
-                                    format_func=S.category_label)
-            base = st.text_input("Base URL", placeholder="https://api.provider.com/v1")
-        with c2:
-            key = st.text_input("API key", type="password")
-            model = st.text_input("Model / voice ID (optional)")
-        if st.form_submit_button("Add"):
-            if not name:
-                st.error("Name is required.")
-            else:
-                S.add_provider(store, name=name, category=category, base_url=base,
-                               api_key=key, model=model)
-                _persist(store)
-                st.success(f"Added {name}. Open its card to Test & Detect.")
-                st.rerun()
 
 
 # --------------------------------------------------------------------------- #

@@ -113,7 +113,7 @@ def translate_segments(
     if backend in ("auto", "llm") and _llm_available():
         try:
             out = _llm_translate(texts, src, tgt, cfg)
-            used, version = "llm", str(cfg.get("detect.llm_model", "claude"))
+            used, version = "llm", str(cfg.get("detect.llm_model", "claude-opus-4-8"))
             log.info("translated %d segments with Claude (%s->%s)", len(texts), src, tgt)
         except Exception as e:  # noqa: BLE001
             log.warning("LLM translation failed (%s); trying offline Argos", e)

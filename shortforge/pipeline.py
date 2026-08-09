@@ -184,7 +184,7 @@ def run_pipeline(
     cfg.override("reframe._src_w", probe.width)
     cfg.override("reframe._src_h", probe.height)
     fill = cfg.get("reframe.fill", "crop")
-    mode = cfg.get("reframe.mode", "track")
+    mode = cfg.get("reframe.mode", "center")
     fontsdir = _find_fontsdir()
 
     # A3: detect captions baked into the source pixels; treat the band so our
@@ -211,8 +211,8 @@ def run_pipeline(
     if _cap_style:
         log.info("caption template: %s (%s animation)",
                  _cap_style["_template"], _cap_style["animation"])
-    do_meta = bool(cfg.get("metadata.enabled", True))
-    do_thumb = bool(cfg.get("thumbnail.enabled", True))
+    do_meta = bool(cfg.get("metadata.enabled", False))
+    do_thumb = bool(cfg.get("thumbnail.enabled", False))
     do_review = bool(cfg.get("review.enabled", True))
     do_publish = bool(cfg.get("publish.sidecar", True))
     resume = bool(cfg.get("render.resume", False))

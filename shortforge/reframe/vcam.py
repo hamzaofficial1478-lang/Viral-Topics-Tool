@@ -40,10 +40,10 @@ class Sample:
 
 def _params(cfg: Config, src_w: int) -> dict:
     return {
-        "deadzone": float(cfg.get("reframe.deadzone_pct", 8)) / 100.0 * src_w,
-        "snap": float(cfg.get("reframe.snap_threshold_pct", 45)) / 100.0 * src_w,
-        "max_pan": float(cfg.get("reframe.max_pan_speed_pct_s", 35)) / 100.0 * src_w,
-        "min_dwell": float(cfg.get("reframe.min_dwell_s", 1.2)),
+        "deadzone": float(cfg.get("reframe.deadzone_pct", 12)) / 100.0 * src_w,
+        "snap": float(cfg.get("reframe.snap_threshold_pct", 60)) / 100.0 * src_w,
+        "max_pan": float(cfg.get("reframe.max_pan_speed_pct_s", 22)) / 100.0 * src_w,
+        "min_dwell": float(cfg.get("reframe.min_dwell_s", 2.0)),
     }
 
 
@@ -126,7 +126,7 @@ def _clamp_center(cx: float, cy: float, cw: int, ch: int, src_w: int, src_h: int
 
 
 def _cache_key(clip: Clip, cfg: Config) -> str:
-    hz = cfg.get("reframe.sample_hz", 6)
+    hz = cfg.get("reframe.sample_hz", 4)
     return f"vcam_{clip.clip_id}_{hz}_{_DETECTOR_VERSION}.json"
 
 
@@ -219,7 +219,7 @@ def detect_saliency(source_path: str, clip: Clip, cfg: Config, cache=None) -> li
     redetect = bool(cfg.get("reframe.redetect_on_scene_cut", True))
     # motion is salient when the CHANGED AREA is big enough (works for small
     # moving objects, unlike a whole-frame mean-diff threshold).
-    motion_min_area = float(cfg.get("reframe.motion_min_area_pct", 0.3)) / 100.0
+    motion_min_area = float(cfg.get("reframe.motion_min_area_pct", 0.8)) / 100.0
 
     # One ffmpeg pass: seek to the clip, sample at `hz`, scale to detection size.
     ffmpeg = require_binary("ffmpeg")
@@ -353,7 +353,7 @@ def debug_reframe(source_path: str, clip: Clip, out_w: int, out_h: int,
     cap = cv2.VideoCapture(source_path)
     if not cap.isOpened():
         return None
-    hz = float(cfg.get("reframe.sample_hz", 6))
+    hz = float(cfg.get("reframe.sample_hz", 4))
     src_w, src_h = track.src_w, track.src_h
     scale = min(1.0, 720.0 / src_w)
     dw, dh = int(src_w * scale), int(src_h * scale)

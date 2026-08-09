@@ -23,7 +23,7 @@ def _llm_available() -> bool:
 def _use_provider_hooks(cfg: Config) -> bool:
     """C1: use the task-routing LLM+frame scorer when forced, or (auto) when a
     hook_detection LLM is bound in the settings store."""
-    backend = cfg.get("detect.backend", "auto")
+    backend = cfg.get("detect.backend", "heuristic")
     if backend in ("provider", "fusion"):
         return True
     if backend == "auto":
@@ -53,7 +53,7 @@ def _transcript_candidates(
             except Exception as e:  # noqa: BLE001
                 log.warning("vision scorer failed (%s); falling back", e)
 
-    backend = cfg.get("detect.backend", "auto")
+    backend = cfg.get("detect.backend", "heuristic")
     if backend == "llm" or (backend == "auto" and _llm_available()):
         try:
             from . import llm
@@ -74,7 +74,7 @@ def detect_hooks(
         from . import provider_hooks
         try:
             cands = provider_hooks.detect(transcript, cfg, source_path, load_store())
-            min_score = float(cfg.get("detect.min_segment_score", 0.0))
+            min_score = float(cfg.get("detect.min_segment_score", 0.35))
             filtered = [c for c in cands if c.score >= min_score]
             strong = sum(1 for c in filtered if c.score >= 0.5)
             log.info("hook detection: provider-llm+frames (%d/%d above %.2f, %d strong)",
@@ -86,7 +86,7 @@ def detect_hooks(
     candidates, backend = _transcript_candidates(transcript, cfg, source_path)
 
     # --- M3++ visual fusion ------------------------------------------------ #
-    want_visual = source_path and cfg.get("detect.visual", True) and visual.available()
+    want_visual = source_path and cfg.get("detect.visual", False) and visual.available()
     if want_visual:
         vs = visual.analyze(source_path, transcript.duration, cfg)
         if vs:
@@ -99,7 +99,7 @@ def detect_hooks(
             candidates.sort(key=lambda c: c.score, reverse=True)
             backend += "+visual"
 
-    min_score = float(cfg.get("detect.min_segment_score", 0.0))
+    min_score = float(cfg.get("detect.min_segment_score", 0.35))
     filtered = [c for c in candidates if c.score >= min_score]
     log.info(
         "hook detection: %s (%d/%d segments above %.2f)",

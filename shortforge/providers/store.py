@@ -384,10 +384,6 @@ def routable_models(store: dict, category: str) -> list[dict]:
     return models_in(store, category, enabled_only=False) + builtin_models(category)
 
 
-def task_meta(key: str) -> dict | None:
-    return _TASK_BY_KEY.get(key)
-
-
 def tasks(store: dict) -> dict:
     return store.setdefault("tasks", {})
 

@@ -107,7 +107,38 @@ def require_binary(name: str) -> str:
     return path
 
 
-def run(cmd: list[str], *, quiet: bool = True) -> subprocess.CompletedProcess:
+# Wall-clock ceilings so a wedged child can never hang the whole queue.
+#
+# Before these, `run()` had no timeout at all: an ffmpeg that deadlocked (a
+# malformed input, a stalled hardware encoder) blocked its thread forever. The
+# job never finished, the queue never advanced, the dashboard sat on "Working…"
+# and no notification ever fired — indistinguishable from "still rendering",
+# which is precisely the state the operator has no way to diagnose from a phone.
+# With a ceiling the job fails loudly instead, and the queue moves to the next
+# link.
+#
+# The values are deliberately far above anything legitimate. Only ffmpeg,
+# ffprobe and espeak go through here — Whisper and Demucs are in-process
+# libraries and are NOT affected — and a single per-clip render measures ~100s
+# on this operator's CPU, so the ffmpeg ceiling is ~70x observed. Override per
+# environment if a genuinely longer call ever exists.
+_TIMEOUTS = {
+    "ffprobe": float(os.environ.get("SHORTFORGE_FFPROBE_TIMEOUT", 120)),
+    "ffmpeg": float(os.environ.get("SHORTFORGE_FFMPEG_TIMEOUT", 7200)),
+}
+_DEFAULT_TIMEOUT = float(os.environ.get("SHORTFORGE_SUBPROCESS_TIMEOUT", 600))
+
+
+def _timeout_for(cmd: list[str]) -> float:
+    base = os.path.basename(cmd[0]) if cmd else ""
+    for name, secs in _TIMEOUTS.items():
+        if base.startswith(name):
+            return secs
+    return _DEFAULT_TIMEOUT
+
+
+def run(cmd: list[str], *, quiet: bool = True,
+        timeout: float | None = None) -> subprocess.CompletedProcess:
     """Run a command, raising ShortForgeError with captured stderr on failure.
 
     STEP 0: every ffmpeg invocation is logged with its full command line and
@@ -116,12 +147,24 @@ def run(cmd: list[str], *, quiet: bool = True) -> subprocess.CompletedProcess:
     from . import timing
     log.debug("run: %s", " ".join(cmd))
     _t0 = time.time()
-    proc = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    _limit = timeout if timeout is not None else _timeout_for(cmd)
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=_limit,
+        )
+    except subprocess.TimeoutExpired as e:
+        # subprocess.run has already killed the child by the time this raises.
+        raise ShortForgeError(
+            f"{os.path.basename(cmd[0]) if cmd else 'command'} did not finish within "
+            f"{_limit:.0f}s and was stopped: {' '.join(cmd[:3])} ...\n"
+            f"This normally means it wedged rather than that it needed longer. "
+            f"Raise SHORTFORGE_FFMPEG_TIMEOUT / SHORTFORGE_FFPROBE_TIMEOUT if the "
+            f"work genuinely takes longer on this machine."
+        ) from e
     _dt = time.time() - _t0
     _base = os.path.basename(cmd[0]) if cmd else ""
     if _base.startswith("ffmpeg"):

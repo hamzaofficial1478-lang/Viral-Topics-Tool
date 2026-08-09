@@ -28,23 +28,20 @@ def _update_ytdlp() -> tuple[bool, str]:
 
 
 def _clear_cache() -> tuple[bool, str]:
-    """Drop cached downloads/intermediates to free space. Sources are re-fetched
-    on demand, so this loses nothing but time."""
-    import shutil
+    """Drop cached downloads to free space. Sources are re-fetched on demand,
+    so this loses nothing but time.
+
+    Deliberately does NOT touch ``hookscores``. Those are small hash-named JSON
+    score files — clearing them frees essentially nothing, while every entry
+    represents a *paid* LLM hook-scoring pass that would have to be bought
+    again on the next run. An emergency disk remedy that spends money to
+    reclaim kilobytes is a bad trade; the gigabytes are all in ``downloads``.
+    """
+    from .maintenance import clear_downloads
     from .config import Config
     work = Config.load().get("paths.work_dir", ".shortforge")
-    freed = 0
-    for sub in ("downloads", "hookscores"):
-        p = f"{work}/{sub}"
-        try:
-            import os
-            for root, _d, files in os.walk(p):
-                freed += sum(os.path.getsize(os.path.join(root, f))
-                             for f in files if os.path.exists(os.path.join(root, f)))
-            shutil.rmtree(p, ignore_errors=True)
-        except OSError:
-            pass
-    return True, f"cleared ~{freed / 1e9:.1f} GB of cache"
+    freed = clear_downloads(work)
+    return True, f"cleared ~{freed / 1e9:.1f} GB of downloaded sources"
 
 
 _RULES = [

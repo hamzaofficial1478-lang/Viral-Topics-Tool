@@ -138,10 +138,6 @@ def pick_segments(transcript: Transcript, n: int) -> list:
     return [segs[int(i * step)] for i in range(n)]
 
 
-def _cost(entry_caps_cost: float, chars: int) -> float | None:
-    return round(chars / 1000.0 * entry_caps_cost, 4) if entry_caps_cost else None
-
-
 def run_translate(transcript: Transcript, target_lang: str, providers: list[LLMEntry],
                   n: int, cfg: Config) -> dict:
     src_lang = transcript.language or "auto"

@@ -609,8 +609,10 @@ def _render_queue() -> None:
     st.caption("Paste one or more video links, choose the settings for this batch, and add "
                "them. ShortForge works through them one at a time — you can close this tab.")
 
+    # No page-level queue snapshot on purpose: every handler below re-reads the
+    # file at the moment it acts. A single long-lived `q` read here was how a
+    # stale copy got written back over the worker's progress.
     work_dir = _C.load().get("paths.work_dir", ".shortforge")
-    q = Q.load_queue(work_dir)
 
     # ---- add links -------------------------------------------------------- #
     st.subheader("1. Add links")
@@ -647,10 +649,19 @@ def _render_queue() -> None:
                  type="primary", width="stretch", disabled=not (urls and owner)):
         settings = {"num_clips": int(n_clips) or None, "duration": int(dur),
                     "aspect": aspect, "resolution": res}
+        # Read fresh rather than reusing a page-level snapshot. Streamlit
+        # re-runs the whole script on a click, so today's window is only
+        # milliseconds wide and no loss has been observed — but the shape is
+        # the hazard: writing back a queue read at a different time than it is
+        # saved is what would roll a worker-completed job back to `pending` and
+        # erase its recorded clips. Keeping every handler self-contained means
+        # that stays true even if this button later moves into a fragment
+        # (fragments re-run alone, which is where the window really opens).
+        fresh = Q.load_queue(work_dir)
         for u in urls:
-            Q.add_job(q, u, settings, label=label)
-        Q.save_queue(q, work_dir)
-        st.success(f"Added {len(urls)} link(s). {Q.describe(q)}")
+            Q.add_job(fresh, u, settings, label=label)
+        Q.save_queue(fresh, work_dir)
+        st.success(f"Added {len(urls)} link(s). {Q.describe(fresh)}")
         st.rerun()
     if not urls:
         st.info("➕ Paste at least one link above.")

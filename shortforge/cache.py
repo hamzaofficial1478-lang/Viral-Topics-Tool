@@ -44,11 +44,41 @@ class Cache:
         log.debug("cache write: %s", p)
 
 
+def protected_names() -> set[str]:
+    """Files in the work dir that are OPERATIONAL STATE, not cache.
+
+    The work dir holds both, side by side: re-derivable caches (per-source-hash
+    transcript dirs, downloads, hook scores) and the program's live state — the
+    job queue, the run/heartbeat files, the chat history, the queue lock, the
+    current job's log.
+
+    `clear_cache(work_dir, "all")` used to delete every entry in the directory
+    indiscriminately, so `python cli.py cache clear` — the command an operator
+    reaches for precisely when the disk is filling — destroyed the entire
+    pending queue, the worker's run state and the chat log, to reclaim space
+    that was almost entirely in the caches it was actually aiming at. Deleting
+    the lock and run state under a live worker also breaks the double-render
+    guard and crash recovery.
+
+    Imported lazily from the modules that own each name so this can never drift
+    out of sync with them (and to avoid an import cycle: runner -> pipeline ->
+    cache).
+    """
+    from . import lifecycle, queue as Q, remote_control as RC
+    from . import runner
+
+    names = {Q.QUEUE_FILE, Q.LOCK_FILE, lifecycle.STATE_FILE,
+             lifecycle.UI_STATE_FILE, RC.CHAT_LOG_FILE, runner.JOB_LOG_FILE}
+    # atomic writes land on a sibling ".tmp" first — never collect those either
+    return names | {n + ".tmp" for n in names}
+
+
 def clear_cache(work_dir: str, what: str = "all") -> int:
     """Remove cached artifacts under ``work_dir`` (A2 cache controls).
 
     ``what``: "translation" (transcript_<lang>_*.json), "transcript"
-    (transcript.json), or "all" (the whole work dir). Returns files removed.
+    (transcript.json), or "all" (every cache, but never the operational state
+    files — see :func:`protected_names`). Returns files removed.
     """
     import glob
     import shutil
@@ -57,9 +87,15 @@ def clear_cache(work_dir: str, what: str = "all") -> int:
         return 0
     removed = 0
     if what == "all":
+        keep = protected_names()
         for entry in os.listdir(work_dir):
+            if entry in keep:
+                continue
             p = os.path.join(work_dir, entry)
-            shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else os.remove(p)
+            try:
+                shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else os.remove(p)
+            except OSError:
+                continue
             removed += 1
         return removed
     if what == "translation":

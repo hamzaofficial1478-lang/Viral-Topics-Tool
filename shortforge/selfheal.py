@@ -14,7 +14,10 @@ Two deliberately separate things:
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import time
 
 from .utils import log
 
@@ -43,6 +46,13 @@ def _clear_cache() -> tuple[bool, str]:
     freed = clear_downloads(work)
     return True, f"cleared ~{freed / 1e9:.1f} GB of downloaded sources"
 
+
+# Plain-English name for each whitelisted remedy, so the approval request says
+# what it will actually DO rather than naming an internal rule.
+_REMEDY_LABELS = {
+    "ytdlp_stale": "update yt-dlp to the latest version (YouTube changed something)",
+    "disk_full": "clear old cached downloads to free disk space",
+}
 
 _RULES = [
     (
@@ -135,6 +145,90 @@ def diagnose(error: str, context: str = "") -> str:
         return ""
 
 
+PENDING_FIX_FILE = "pending_fix.json"
+
+
+def _pending_path(work_dir: str) -> str:
+    return os.path.join(work_dir, PENDING_FIX_FILE)
+
+
+def ask_first() -> bool:
+    """Should a repair wait for the operator's go-ahead? Default yes.
+
+    The operator asked for an agent that "asks me if I allow the agent to fix
+    that error" — so proposing beats acting, even for the whitelisted remedies
+    that used to run unattended. Switchable in Settings for anyone who wants
+    the old hands-off behaviour.
+    """
+    try:
+        from .providers.store import load_store
+        return bool((load_store().get("selfheal", {}) or {}).get("ask_first", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def propose(error: str, job_id: str, url: str, work_dir: str) -> str:
+    """Record a repair this failure would allow, for the operator to approve.
+
+    Returns a human description of what is being offered, or "" when this error
+    has no safe automatic remedy (a DRM block, say — nothing to retry).
+    """
+    kind, summary, remedy = classify(error)
+    if remedy is None:
+        return ""
+    entry = {"kind": kind, "summary": summary, "job_id": job_id, "url": url,
+             "error": (error or "")[:500], "ts": time.time()}
+    try:
+        from .utils import write_json_atomic
+        write_json_atomic(_pending_path(work_dir), entry)
+    except OSError as e:
+        log.debug("could not record the proposed fix: %s", e)
+        return ""
+    return _REMEDY_LABELS.get(kind, f"apply the '{kind}' remedy")
+
+
+def pending(work_dir: str) -> dict | None:
+    """The repair awaiting approval, if any."""
+    try:
+        with open(_pending_path(work_dir), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def discard_pending(work_dir: str) -> None:
+    try:
+        os.remove(_pending_path(work_dir))
+    except OSError:
+        pass
+
+
+def apply_pending(work_dir: str) -> tuple[bool, str]:
+    """Run the repair the operator just approved. Returns (ok, detail).
+
+    The remedy itself is still only ever chosen from the same whitelist — the
+    operator is approving one of a fixed set of machine-state repairs, not
+    granting the agent freedom to do whatever it reasons is best. Deliberate:
+    an unreviewed change on a machine nobody is watching can break a working
+    pipeline silently, so the agent's reach stays bounded no matter how
+    capable the model behind the diagnosis is.
+    """
+    entry = pending(work_dir)
+    if not entry:
+        return False, "There's no repair waiting for approval."
+    _kind, _summary, remedy = classify(entry.get("error", ""))
+    if remedy is None:
+        discard_pending(work_dir)
+        return False, "That failure has no safe automatic repair."
+    try:
+        ok, detail = remedy()
+    except Exception as e:  # noqa: BLE001 - a failed repair must not mask the original
+        discard_pending(work_dir)
+        return False, f"The repair failed: {e}"
+    discard_pending(work_dir)
+    return bool(ok), detail
+
+
 def report(error: str, context: str = "", *, try_fix: bool = True) -> tuple[bool, str]:
     """Triage a failure: attempt a safe repair, then build an ntfy message.
 
@@ -150,5 +244,16 @@ def report(error: str, context: str = "", *, try_fix: bool = True) -> tuple[bool
         lines.append("Retrying this link now.")
     else:
         why = diagnose(error, context)
-        lines.append(why or f"<code>{error[:400]}</code>")
+        if why:
+            # The LLM's reading is a GUESS, and it was previously the only
+            # account the operator got — the raw error was discarded whenever a
+            # diagnosis came back. That matters: a confident "this video is
+            # DRM-protected, don't retry" over what was really a bot wall or a
+            # format problem sends the operator to abandon a link that would
+            # have worked. Show both, labelled, so the interpretation can be
+            # checked against the evidence.
+            lines.append(why)
+            lines.append(f"<i>Actual error:</i> <code>{error[:300]}</code>")
+        else:
+            lines.append(f"<code>{error[:400]}</code>")
     return fixed, "\n".join(lines)

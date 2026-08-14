@@ -99,9 +99,19 @@ def run_one(job: dict, idx: int, total: int, make_cfg: Callable[[], Config],
         manifest = run_pipeline(job["url"], cfg, owner_confirmed=True,
                                 transcript_path=None, confirm_cost=lambda est: True)
     except Exception as e:  # noqa: BLE001
-        # Triage: apply a safe automatic remedy if one exists, then retry ONCE.
+        # Triage. By default the agent PROPOSES a repair and waits for the
+        # operator's go-ahead rather than acting on its own machine — see
+        # selfheal.ask_first(). Set it off to restore unattended repairs.
         from . import selfheal
-        fixed, msg = selfheal.report(str(e), context=job["url"][:80])
+        if selfheal.ask_first():
+            offer = selfheal.propose(str(e), job["id"], job["url"], work_dir)
+            fixed, msg = False, selfheal.report(str(e), context=job["url"][:80],
+                                                try_fix=False)[1]
+            if offer:
+                msg += (f"\n\n🤖 <b>I can try to fix this:</b> {offer}.\n"
+                        f"Reply <b>fix</b> to let me, or <b>skip</b> to leave it.")
+        else:
+            fixed, msg = selfheal.report(str(e), context=job["url"][:80])
         if fixed and int(job.get("attempts", 0)) < 2:
             log.info("self-heal succeeded — retrying job %s once", job["id"])
             try:

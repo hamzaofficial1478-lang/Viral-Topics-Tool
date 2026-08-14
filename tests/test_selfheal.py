@@ -50,3 +50,64 @@ def test_diagnosis_failure_is_not_fatal(monkeypatch):
     monkeypatch.setattr(SH, "diagnose", lambda e, c="": "")
     fixed, msg = SH.report("totally novel failure", try_fix=False)
     assert fixed is False and "novel failure" in msg   # falls back to the raw error
+
+
+# --- the permission-gated auto-fix agent -------------------------------------- #
+# The operator asked for an agent that reports the error and asks before fixing
+# it, rather than acting on their machine unannounced.
+
+def test_a_fixable_failure_is_proposed_not_applied(tmp_path):
+    from shortforge import selfheal as SH
+    offer = SH.propose("ERROR: Unable to extract player response", "job1",
+                       "https://youtu.be/x", str(tmp_path))
+    assert "yt-dlp" in offer
+    p = SH.pending(str(tmp_path))
+    assert p and p["job_id"] == "job1"
+
+
+def test_an_unfixable_failure_offers_nothing(tmp_path):
+    """A DRM block has no safe retry — offering one would be a false promise."""
+    from shortforge import selfheal as SH
+    assert SH.propose("This video is DRM protected", "job1", "u", str(tmp_path)) == ""
+    assert SH.pending(str(tmp_path)) is None
+
+
+def test_approving_runs_the_remedy_and_clears_it(tmp_path, monkeypatch):
+    from shortforge import selfheal as SH
+    monkeypatch.setattr(SH, "_RULES", [("ytdlp_stale", r"unable to extract",
+                                        "stale", lambda: (True, "updated"))])
+    SH.propose("Unable to extract player response", "j", "u", str(tmp_path))
+    ok, detail = SH.apply_pending(str(tmp_path))
+    assert ok and "updated" in detail
+    assert SH.pending(str(tmp_path)) is None          # not applied twice
+
+
+def test_approving_with_nothing_pending_is_harmless(tmp_path):
+    from shortforge import selfheal as SH
+    ok, detail = SH.apply_pending(str(tmp_path))
+    assert ok is False and "no repair" in detail.lower()
+
+
+def test_the_operator_can_decline(tmp_path):
+    from shortforge import selfheal as SH
+    SH.propose("Unable to extract player response", "j", "u", str(tmp_path))
+    SH.discard_pending(str(tmp_path))
+    assert SH.pending(str(tmp_path)) is None
+
+
+def test_asking_first_is_the_default():
+    from shortforge import selfheal as SH
+    assert SH.ask_first() is True
+
+
+def test_the_raw_error_is_kept_alongside_the_llm_reading(monkeypatch):
+    """The LLM's diagnosis is a guess and used to REPLACE the actual error.
+    A confident 'this is DRM, don't retry' over what was really a bot wall
+    sends the operator to abandon a link that would have worked."""
+    from shortforge import selfheal as SH
+    monkeypatch.setattr(SH, "diagnose", lambda e, c="": "1. It is DRM protected.")
+    _fixed, msg = SH.report("ERROR: Sign in to confirm you're not a bot", "u",
+                            try_fix=False)
+    assert "DRM protected" in msg                      # the reading is shown
+    assert "not a bot" in msg                          # and so is the evidence
+    assert "Actual error" in msg

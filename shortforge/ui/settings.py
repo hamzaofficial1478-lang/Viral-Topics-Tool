@@ -365,6 +365,24 @@ def _render_disk_usage() -> None:
                                  if auto_on else "automatic clean-up is off."))
 
     st.divider()
+    st.subheader("🤖 Auto-fix agent")
+    sh = store_now.get("selfheal", {}) or {}
+    ask = st.checkbox(
+        "Ask me before applying a repair", key="sh_ask",
+        value=bool(sh.get("ask_first", True)),
+        help="When a job fails with something ShortForge knows how to address (a stale "
+             "downloader, a full disk), it messages you what it would do and waits for "
+             "'fix'. Untick to let it repair and retry on its own.")
+    st.caption("Repairs are limited to a fixed list of machine-state actions — updating "
+               "yt-dlp, clearing cache. The agent never edits the program's own code, "
+               "however capable the model behind the diagnosis is: an unreviewed change "
+               "on an unattended machine can break a working pipeline silently.")
+    if st.button("💾 Save auto-fix setting", width="stretch"):
+        store_now["selfheal"] = {"ask_first": bool(ask)}
+        _persist(store_now)
+        st.success("Saved — " + ("I'll ask first." if ask else "repairs run automatically."))
+
+    st.divider()
     st.subheader("🖥️ Dashboard")
     ui_cfg = store_now.get("ui", {}) or {}
     refresh = st.number_input(

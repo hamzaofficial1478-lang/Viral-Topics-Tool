@@ -185,6 +185,10 @@ def _normalize(text: str) -> str:
 # to the Queue screen, the job was still running — because "cancel" alone had
 # never actually reached the /cancel handler).
 _CANCEL_WORDS = {"cancel", "cancel all", "cancel pending", "drop pending"}
+# Approving (or declining) the repair the agent offered after a failure.
+_FIX_WORDS = {"fix", "fix it", "yes fix", "apply fix", "repair", "go fix",
+              "try the fix", "yes please fix"}
+_SKIP_WORDS = {"skip", "skip it", "no fix", "leave it", "don't fix", "dont fix"}
 _CLEAR_WORDS = {"clear", "clean", "clear finished", "clean up"}
 
 
@@ -233,6 +237,8 @@ HELP = (
     "(the current one finishes)\n"
     "<b>cancel</b> (or /cancel) — drop everything still pending\n"
     "<b>clear</b> (or /clear) — remove finished jobs\n"
+    "<b>fix</b> — let the agent apply the repair it offered after a failure "
+    "(<b>skip</b> declines)\n"
     "/status — how the queue is doing (and whether anything is stuck)\n"
     "/list — the queued links\n"
     "/help — this message"
@@ -423,6 +429,47 @@ def _cancel(work_dir: str) -> str:
     return f"🛑 Dropped {dropped} pending job(s). Any running job finishes."
 
 
+def _apply_fix(work_dir: str) -> str:
+    """Approve the repair the agent offered, then re-queue the link it failed on.
+
+    The agent proposes; the operator decides. Only remedies from selfheal's
+    fixed whitelist are ever on offer — approving one is not a licence for the
+    agent to do whatever it judges best on this machine.
+    """
+    from . import selfheal
+
+    entry = selfheal.pending(work_dir)
+    if not entry:
+        return ("Nothing is waiting to be fixed. I only offer a repair right after "
+                "a job fails with something I know how to address.")
+    ok, detail = selfheal.apply_pending(work_dir)
+    if not ok:
+        return f"⚠️ <b>The repair didn't work.</b> {detail}"
+
+    job_id = entry.get("job_id")
+
+    def _requeue(q):
+        job = Q.get_job(q, job_id) if job_id else None
+        if job is None or job["status"] != Q.FAILED:
+            return False
+        job["status"] = Q.PENDING
+        job["error"] = None
+        return True
+
+    _, requeued = Q.mutate_queue(work_dir, _requeue)
+    tail = ("\n▶️ Put that link back in the queue — I'll retry it."
+            if requeued else "\n(The link is no longer in the queue to retry.)")
+    return f"🔧 <b>Fixed.</b> {detail}{tail}"
+
+
+def _skip_fix(work_dir: str) -> str:
+    from . import selfheal
+    if not selfheal.pending(work_dir):
+        return "Nothing was waiting to be fixed."
+    selfheal.discard_pending(work_dir)
+    return "👍 Left it alone. The link stays failed; send it again if you change your mind."
+
+
 def _status(work_dir: str) -> str:
     """Queue state AND why it is or isn't moving, ending in one next action.
 
@@ -522,6 +569,10 @@ def handle_text(text: str, work_dir: str) -> str:
             return _clear(work_dir)
         if norm in _CANCEL_WORDS:
             return _cancel(work_dir)
+        if norm in _FIX_WORDS:
+            return _apply_fix(work_dir)
+        if norm in _SKIP_WORDS:
+            return _skip_fix(work_dir)
 
     # "/start" STARTS. It used to return the help text — a leftover of the
     # Telegram convention where /start is the bot's intro — so an operator

@@ -66,6 +66,16 @@ class _NoFormat(Exception):
     """Auth worked, but no stream matched the format selector — loosen it."""
 
 
+class _DRMProtected(Exception):
+    """The stream is encrypted. No cookie, client or format selector helps.
+
+    Nothing recognised DRM before, so such a video fell through every auth
+    strategy in turn and ended as a generic "Download failed after trying N
+    auth strategy(ies)" — which told the operator nothing, cost three pointless
+    retries, and left the real cause to be guessed at by an LLM.
+    """
+
+
 _ANSI = None
 
 
@@ -83,6 +93,10 @@ def _clean_err(e: Exception) -> str:
 
 def _classify(e: Exception) -> Exception:
     msg = str(e).lower()
+    # Checked first: a DRM stream can also report "no formats", and retrying
+    # that with different cookies is a guaranteed waste of time.
+    if "drm" in msg or ("encrypted" in msg and "stream" in msg):
+        return _DRMProtected(str(e))
     if "requested format is not available" in msg or "no video formats found" in msg:
         return _NoFormat(str(e))
     if "not a bot" in msg or "confirm you" in msg or "sign in to confirm" in msg:
@@ -367,6 +381,16 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
             log.warning("auth strategy '%s' hit YouTube's bot wall after %.1fs; trying next",
                         label, time.time() - t0)
             continue
+        except _DRMProtected as e:
+            # Fail immediately and say so plainly. Walking the rest of the auth
+            # chain cannot help, and a vague failure here is what sent the
+            # operator chasing a program bug that did not exist.
+            raise ShortForgeError(
+                f"This video is DRM-protected, so its stream cannot be downloaded "
+                f"({_clean_err(e)[:160]}). This is a restriction on the video "
+                f"itself — not a problem with ShortForge, your cookies or your "
+                f"connection. Nothing can fix it; use a different source."
+            ) from e
         except _Unavailable as e:
             raise ShortForgeError(
                 f"'{url}' is unavailable or not a valid video URL ({e}). "

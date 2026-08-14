@@ -63,6 +63,12 @@ _RULES = [
         _update_ytdlp,
     ),
     (
+        "drm",
+        r"drm.?protected|protected by drm|\bdrm\b",
+        "This video's stream is encrypted (DRM) — it cannot be downloaded.",
+        None,   # nothing repairs DRM; the link itself is the limit
+    ),
+    (
         "bot_wall",
         r"not a bot|sign in to confirm",
         "YouTube asked for a login on this download.",

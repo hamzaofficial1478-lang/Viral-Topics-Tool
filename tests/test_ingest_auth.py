@@ -357,3 +357,54 @@ def test_probe_calls_carry_the_same_extractor_args_as_downloads(_fake_ytdlp):
     assert _FakeYDL.opts_seen                      # the fake was actually exercised
     for opts in _FakeYDL.opts_seen:
         assert opts["extractor_args"] == I._extractor_args(cfg)
+
+
+# --- DRM was not recognised at all -------------------------------------------- #
+# A DRM-protected video matched no branch of _classify, so it fell through EVERY
+# auth strategy in turn and surfaced as a generic "Download failed after trying
+# N auth strategy(ies)". selfheal then read that as "unknown", and the operator
+# got "Something unexpected went wrong" plus an LLM guess -- with three
+# pointless retries and no way to tell a video limit from a program bug.
+
+@pytest.mark.parametrize("raw", [
+    "ERROR: This video is DRM protected",
+    "ERROR: [youtube] abc: The stream is encrypted and cannot be downloaded",
+    "Requested format is not available. Video is protected by DRM",
+])
+def test_drm_errors_are_recognised(raw):
+    assert isinstance(I._classify(Exception(raw)), I._DRMProtected)
+
+
+def test_drm_fails_immediately_instead_of_trying_every_strategy(tmp_path, monkeypatch,
+                                                                _stub_probe):
+    """No cookie, client or format selector can decrypt a stream, so retrying
+    is guaranteed waste."""
+    calls = []
+
+    def fake(url, opts, cfg):
+        calls.append(1)
+        raise I._DRMProtected("This video is DRM protected")
+
+    monkeypatch.setattr(I, "_download_with_retries", fake)
+    cfg = Config.load()
+    cfg.override("paths.work_dir", str(tmp_path))
+    cfg.override("ingest.cookies_from_browser", "firefox")   # 2 strategies available
+
+    with pytest.raises(ShortForgeError) as ei:
+        I._ingest_url("https://youtu.be/x", cfg)
+
+    assert len(calls) == 1, "kept retrying a stream that cannot be decrypted"
+    assert "DRM-protected" in str(ei.value)
+    assert "not a problem with ShortForge" in str(ei.value)   # names whose fault it is
+
+
+def test_a_drm_failure_reads_as_the_link_not_a_program_bug():
+    """End of the chain: it must reach the operator as 'this video', not as
+    'Something unexpected went wrong'."""
+    from shortforge import selfheal as SH
+    err = ("This video is DRM-protected, so its stream cannot be downloaded. "
+           "This is a restriction on the video itself")
+    kind, summary, remedy = SH.classify(err)
+    assert kind == "drm" and remedy is None
+    assert SH.origin(err) == SH.LINK
+    assert "this video, not the program" in SH.where_and_what(err)

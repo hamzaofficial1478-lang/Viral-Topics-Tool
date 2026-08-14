@@ -32,31 +32,71 @@ if not defined PY (
 )
 echo [ok ] Python found:
 %PY% --version
+REM The project is developed and tested on 3.11-3.13. A brand-new release
+REM (3.14 at time of writing) often has no prebuilt wheels yet for the heavy
+REM dependencies here -- faster-whisper, ctranslate2, torch -- so pip tries to
+REM build them from source and fails in ways that look nothing like the real
+REM cause. Warn plainly rather than let that happen silently.
+for /f "tokens=2" %%v in ('%PY% --version 2^>^&1') do set "PYVER=%%v"
+echo !PYVER! | findstr /b /c:"3.14" /c:"3.15" >nul && (
+  echo.
+  echo [!!] Python !PYVER! is newer than this project is tested against ^(3.11-3.13^).
+  echo      Several dependencies may have no wheels for it yet and will fail to
+  echo      install. If the install below fails, install Python 3.13 from
+  echo      python.org, then delete the "venv" folder and re-run setup.bat.
+  echo.
+)
 echo.
 
 REM ---- 2. Virtual environment + Python packages ---------------------------
-if not exist "venv\Scripts\activate.bat" (
-  echo [..] Creating virtual environment "venv" ...
+REM A venv records an ABSOLUTE path to the Python that built it. Move, upgrade
+REM or uninstall that Python and every "python -m pip" inside the venv dies with
+REM "did not find executable at ...\python.exe" -- while activate.bat is still
+REM sitting there, so a test for the FILE reports a healthy venv and setup
+REM skips the rebuild that would fix it. That is exactly how a fresh machine
+REM ends up failing every install step and then "No module named 'yaml'".
+REM So: prove the venv can actually run, and rebuild it when it can't.
+set "VENV_OK="
+if exist "venv\Scripts\python.exe" (
+  "venv\Scripts\python.exe" -c "import sys" >nul 2>&1
+  if !ERRORLEVEL! EQU 0 set "VENV_OK=1"
+)
+if defined VENV_OK (
+  echo [ok ] venv already exists and works.
+) else (
+  if exist "venv" (
+    echo [!!] The existing venv is broken - it points at a Python that is no
+    echo      longer installed. Rebuilding it from scratch ...
+    rmdir /s /q "venv"
+  ) else (
+    echo [..] Creating virtual environment "venv" ...
+  )
   %PY% -m venv venv
   if !ERRORLEVEL! NEQ 0 (
     echo [FAIL] Could not create the virtual environment.
     goto :fail
   )
-) else (
-  echo [ok ] venv already exists.
+  if not exist "venv\Scripts\python.exe" (
+    echo [FAIL] The virtual environment was created but has no python.exe.
+    goto :fail
+  )
 )
 call "venv\Scripts\activate.bat"
+REM Call the venv's python by full path: if activate silently fails, "python"
+REM would be the SYSTEM one and packages would land outside the venv -- which
+REM is why `cli.py doctor` reported "No module named 'yaml'" afterwards.
+set "VPY=%CD%\venv\Scripts\python.exe"
 echo [..] Upgrading pip ...
-python -m pip install --upgrade pip
+"%VPY%" -m pip install --upgrade pip
 echo [..] Installing requirements ^(a few minutes on first run^) ...
-python -m pip install -r requirements.txt
+"%VPY%" -m pip install -r requirements.txt
 if !ERRORLEVEL! NEQ 0 (
   echo [FAIL] pip install failed - scroll up for the error.
   goto :fail
 )
 echo [ok ] Python packages installed.
 echo [..] Updating yt-dlp to the latest ^(YouTube extractors break often^) ...
-python -m pip install -U yt-dlp
+"%VPY%" -m pip install -U yt-dlp
 echo.
 
 REM ---- 3. FFmpeg -----------------------------------------------------------
@@ -98,7 +138,7 @@ echo.
 
 REM ---- 5. Pre-download the Whisper "small" model --------------------------
 echo [..] Caching the Whisper "small" model so the first real run is fast ...
-python -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8'); print('whisper small ready')"
+"%VPY%" -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8'); print('whisper small ready')"
 if !ERRORLEVEL! NEQ 0 (
   echo [warn] Model pre-download failed - it will download on the first run instead.
 ) else (
@@ -110,7 +150,7 @@ REM ---- 6. Final environment check ----------------------------------------
 echo ============================================================
 echo   Environment check  ^(python cli.py doctor^)
 echo ============================================================
-python cli.py doctor
+"%VPY%" cli.py doctor
 set "DOC=!ERRORLEVEL!"
 echo.
 if "!DOC!"=="0" (

@@ -335,6 +335,11 @@ def install_session_end_notice(on_end) -> bool:
         def _proc(hwnd, msg, wparam, lparam):
             reason = session_end_reason(int(msg), int(lparam))
             if reason is not None:
+                # Logged BEFORE the send is attempted, so a failed goodbye can
+                # be told apart from one that was never triggered. Without this
+                # the two look identical from outside — which is precisely the
+                # position the operator was left in.
+                log.warning("session ending (%s) — sending the shutdown notice now", reason)
                 try:
                     on_end(reason)
                 except Exception:            # noqa: BLE001 - never refuse shutdown
@@ -364,7 +369,18 @@ def install_session_end_notice(on_end) -> bool:
             hwnd = user32.CreateWindowExW(0, wc.lpszClassName, "ShortForge",
                                           0, 0, 0, 0, 0, None, None, wc.hInstance, None)
             if not hwnd:
+                log.warning("shutdown watcher: could not create its window "
+                            "(err %s) — a PC shutdown will NOT be announced",
+                            ctypes.windll.kernel32.GetLastError())
                 return
+            # Ask Windows to hold the shutdown briefly. Without it the process
+            # can be killed before an HTTPS POST completes — and during shutdown
+            # networking is torn down early, so every second counts.
+            try:
+                user32.ShutdownBlockReasonCreate(hwnd, "ShortForge is sending its shutdown notice")
+            except Exception:  # noqa: BLE001 - unsupported on some editions
+                pass
+            log.info("shutdown watcher: armed (a PC shutdown will be announced)")
             msg = wintypes.MSG()
             while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 user32.TranslateMessage(ctypes.byref(msg))

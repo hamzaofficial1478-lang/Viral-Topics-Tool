@@ -322,6 +322,38 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if any(c.status == FAIL for c in checks) else 0
 
 
+def cmd_test_shutdown(args: argparse.Namespace) -> int:
+    """Prove whether the PC-shutdown notice can actually be delivered.
+
+    Two independent things can break it and they look identical from outside:
+    Windows never telling us the session is ending, or telling us and the
+    notification failing to leave the machine (networking is torn down early
+    in a shutdown). This exercises the exact code path a real shutdown takes,
+    with the network still up, so the two can be told apart.
+    """
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+    from shortforge import lifecycle, notify as N
+
+    print("1. Can the shutdown watcher be armed on this machine?")
+    armed = lifecycle.install_session_end_notice(lambda reason: None)
+    print(f"   {'YES' if armed else 'NO'} — "
+          + ("a real shutdown will reach the handler." if armed else
+             "this is not Windows, or the window could not be created."))
+
+    print("2. Can a notification actually be sent right now?")
+    if not N.configured():
+        print("   NO — no ntfy topic saved (Settings -> Notifications).")
+        return 2
+    ok, detail = N.send_ntfy("🧪 ShortForge shutdown-notice test — "
+                             "if this arrived, sending works.", timeout=10)
+    print(f"   {'YES' if ok else 'NO'} — {detail}")
+    if armed and ok:
+        print("\nBoth halves work. If a real shutdown still sends nothing, the "
+              "cause is Windows killing the process before the send completes.")
+    return 0 if ok else 1
+
+
 def cmd_check_llm(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     load_env_file(getattr(args, "env_file", None) or ".env")
@@ -1232,6 +1264,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     dsub = sub.add_parser("doctor", help="Check the environment / dependencies (C1)")
     dsub.set_defaults(func=cmd_doctor)
+
+    tsub = sub.add_parser("test-shutdown",
+                          help="Check whether a PC-shutdown notice can be delivered")
+    tsub.set_defaults(func=cmd_test_shutdown)
 
     lsub = sub.add_parser("check-llm", help="Test the configured LLM provider (E)")
     lsub.set_defaults(func=cmd_check_llm)

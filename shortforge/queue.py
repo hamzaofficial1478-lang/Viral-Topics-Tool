@@ -138,6 +138,11 @@ JOB_SETTINGS = {
     "resolution": "reframe.resolution",
     "language": "localize.language",
     "caption_template": "captions.template",
+    # Asking for a title/description from the phone silently did nothing: the
+    # request was parsed, dropped for not being on this whitelist, and the run
+    # produced no metadata with no error anywhere. These make it reachable.
+    "metadata": "metadata.enabled",
+    "thumbnail": "thumbnail.enabled",
 }
 
 
@@ -445,6 +450,10 @@ def describe_settings(job: dict) -> str:
             bits.append(str(s[key]))
     if s.get("language"):
         bits.append(f"→ {s['language']}")
+    if s.get("metadata"):
+        bits.append("+ title/description")
+    if s.get("thumbnail"):
+        bits.append("+ thumbnail")
     if s.get("caption_template"):
         bits.append(f"{s['caption_template']} captions")
     return ", ".join(bits) or "default settings"

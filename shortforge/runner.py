@@ -141,7 +141,41 @@ def run_one(job: dict, idx: int, total: int, make_cfg: Callable[[], Config],
              f"{len(clips)} at this clip length." if asked and len(clips) < asked else "")
     return True, len(clips), (
         f"✅ <b>Link {idx}/{total} done</b> — {len(clips)} clip(s) in {took}\n{title}{short}\n"
+        + _metadata_lines(manifest, job)
         + (f"➡️ Moving to the next link ({left} left)." if left else "That was the last one."))
+
+
+def _metadata_lines(manifest: dict, job: dict) -> str:
+    """Per-clip title/description for the phone, when they were asked for.
+
+    Requesting them from ntfy did nothing at all before: "metadata" was not on
+    the `queue.JOB_SETTINGS` whitelist, so the request was parsed and dropped
+    without a word, and the run produced none. Now that it is reachable, the
+    results have to actually arrive — the operator wants to post from their
+    phone, and a title sitting in a manifest file on the PC is no use there.
+    """
+    if not (job.get("settings") or {}).get("metadata"):
+        return ""
+    out = []
+    for c in manifest.get("clips", []):
+        md = c.get("metadata") or {}
+        t, d = (md.get("title") or "").strip(), (md.get("description") or "").strip()
+        if not (t or d):
+            continue
+        block = f"\n📝 <b>Clip {c.get('clip_id', '?')}</b>"
+        if t:
+            block += f"\n<b>{t[:110]}</b>"
+        if d:
+            block += f"\n{d[:300]}"
+        tags = md.get("hashtags") or md.get("tags") or []
+        if tags:
+            block += "\n" + " ".join(str(x) for x in tags[:8])
+        out.append(block)
+    if not out:
+        # Asked for, but nothing came back — say so rather than staying silent.
+        return ("\n⚠️ Titles/descriptions were requested but none were produced "
+                "(check that an LLM is configured under Settings → Task routing).\n")
+    return "".join(out) + "\n"
 
 
 def drain_queue(make_cfg: Callable[[], Config], work_dir: str,

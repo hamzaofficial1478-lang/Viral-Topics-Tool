@@ -114,7 +114,14 @@ _ALIASES = {
     "language": "language", "lang": "language",
     "template": "caption_template", "captions": "caption_template",
     "label": "_label",
+    "metadata": "metadata", "seo": "metadata", "title": "metadata",
+    "titles": "metadata", "description": "metadata", "descriptions": "metadata",
+    "thumbnail": "thumbnail", "thumb": "thumbnail", "cover": "thumbnail",
 }
+
+# "yes"/"on"/"true"/"1" -> True, and the negatives -> False.
+_TRUTHY = {"1", "true", "yes", "y", "on", "please"}
+_FALSY = {"0", "false", "no", "n", "off", "none"}
 
 _ASPECTS = {"9:16", "16:9", "1:1", "4:5", "portrait", "landscape", "square"}
 _ASPECT_WORDS = {"portrait": "9:16", "vertical": "9:16",
@@ -267,6 +274,12 @@ def parse_settings(text: str) -> dict:
         elif key == "caption_template":
             if re.fullmatch(r"[A-Za-z_]{2,32}", val):
                 out[key] = val.lower()
+        elif key in ("metadata", "thumbnail"):
+            v = val.strip().lower()
+            if v in _TRUTHY:
+                out[key] = True
+            elif v in _FALSY:
+                out[key] = False
         elif key == "_label":
             out[key] = re.sub(r"[^A-Za-z0-9 _-]", "", val)[:32]
     _parse_loose(text, out)
@@ -303,6 +316,15 @@ def _parse_loose(text: str, out: dict) -> None:
         if n is not None and "num_clips" not in out:
             out["num_clips"] = n
         t = t[:m.start()] + " " + t[m.end():]
+
+    # "3 clips with title and description" — the way it actually gets typed.
+    low_t = t.lower()
+    if "metadata" not in out and re.search(
+            r"\b(title|titles|description|descriptions|seo|metadata)\b", low_t):
+        out["metadata"] = not re.search(
+            r"\bno\s+(title|description|seo|metadata)\b", low_t)
+    if "thumbnail" not in out and re.search(r"\b(thumbnail|thumb|cover)\b", low_t):
+        out["thumbnail"] = not re.search(r"\bno\s+(thumbnail|thumb|cover)\b", low_t)
 
     if "duration" not in out:
         m = _MMSS_RE.search(t)

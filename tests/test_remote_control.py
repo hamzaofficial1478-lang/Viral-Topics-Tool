@@ -543,3 +543,66 @@ def test_the_reply_lists_what_it_understood_for_each_link(tmp_path):
                            "https://youtu.be/IIIIIIIIIII 7 clips", str(tmp_path))
     assert "3 clip(s)" in reply and "7 clip(s)" in reply
     assert "HHHHHHHHHHH" in reply and "IIIIIIIIIII" in reply
+
+
+# --- asking for titles/descriptions from the phone ---------------------------- #
+# "metadata" was not on the queue.JOB_SETTINGS whitelist, so the request was
+# parsed and then dropped without a word: no metadata was produced and nothing
+# said why. Silently ignoring what the operator asked for is the failure mode
+# this project exists to avoid.
+
+@pytest.mark.parametrize("phrase", [
+    "with title and description", "metadata=on", "seo=yes", "titles please",
+])
+def test_asking_for_titles_is_accepted(tmp_path, phrase):
+    work = str(tmp_path)
+    RC.handle_text(f"https://youtu.be/AAAAAAAAAAA 3 clips {phrase}", work)
+    assert Q.load_queue(work)["jobs"][0]["settings"].get("metadata") is True
+
+
+def test_declining_titles_is_also_understood(tmp_path):
+    work = str(tmp_path)
+    RC.handle_text("https://youtu.be/BBBBBBBBBBB 3 clips no title", work)
+    assert Q.load_queue(work)["jobs"][0]["settings"].get("metadata") is False
+
+
+def test_the_reply_confirms_titles_were_understood(tmp_path):
+    reply = RC.handle_text("https://youtu.be/CCCCCCCCCCC 2 clips with title and description",
+                           str(tmp_path))
+    assert "title/description" in reply
+
+
+def test_metadata_reaches_the_pipeline_config(tmp_path):
+    """On the whitelist means apply_job_settings actually turns the stage on."""
+    from shortforge.config import Config
+    work = str(tmp_path)
+    RC.handle_text("https://youtu.be/DDDDDDDDDDD 2 clips with title and description", work)
+    cfg = Config.load()
+    assert cfg.get("metadata.enabled") is False           # off by default
+    Q.apply_job_settings(cfg, Q.load_queue(work)["jobs"][0])
+    assert cfg.get("metadata.enabled") is True
+
+
+def test_titles_are_sent_to_the_phone_when_they_were_asked_for():
+    """A title sitting in a manifest on the PC is no use to someone posting
+    from their phone."""
+    from shortforge import runner
+    job = {"settings": {"metadata": True}}
+    manifest = {"clips": [{"clip_id": "01", "metadata": {
+        "title": "The Pirate Captain", "description": "How a slave became captain.",
+        "hashtags": ["#pirates"]}}]}
+    out = runner._metadata_lines(manifest, job)
+    assert "The Pirate Captain" in out and "How a slave became captain." in out
+    assert "#pirates" in out
+
+
+def test_nothing_extra_is_sent_when_titles_were_not_asked_for():
+    from shortforge import runner
+    assert runner._metadata_lines({"clips": [{"metadata": {"title": "x"}}]},
+                                  {"settings": {}}) == ""
+
+
+def test_asking_for_titles_and_getting_none_is_reported_not_hidden():
+    from shortforge import runner
+    out = runner._metadata_lines({"clips": [{"clip_id": "01"}]}, {"settings": {"metadata": True}})
+    assert "requested but none were produced" in out

@@ -598,10 +598,22 @@ def cmd_listen(args: argparse.Namespace) -> int:
         otherwise make the dashboard's "is a worker running?" check, and the
         duplicate-instance guard above, go stale and wrongly say no.
         """
+        last_clean = 0.0
         while not stop.is_set():
             _q = Q.load_queue(work_dir)
             if Q.is_paused(_q) or Q.next_pending(_q) is None:
                 lifecycle.heartbeat(work_dir)
+                # Auto-clean also runs between jobs, but a machine that sits
+                # idle for days would never reach that path — and idle is
+                # exactly when the cache has stopped being useful. Hourly, and
+                # a no-op unless the operator switched it on.
+                if time.time() - last_clean > 3600:
+                    last_clean = time.time()
+                    try:
+                        from shortforge import maintenance
+                        maintenance.autoclean(work_dir)
+                    except Exception as e:  # noqa: BLE001
+                        log.debug("auto-clean skipped: %s", e)
                 stop.wait(5)
                 continue
             s = drain_queue(lambda: _cfg_for_queue(args), work_dir,

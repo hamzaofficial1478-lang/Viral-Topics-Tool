@@ -96,6 +96,48 @@ _RULES = [
 ]
 
 
+# Where the fault actually lies. The operator's question every time a job fails
+# is "is this the video, or is this the program?" — those need completely
+# different responses, and lumping them together was why a failure message read
+# the same whether a video was undownloadable or ShortForge had a bug.
+LINK, MACHINE, PIPELINE = "link", "machine", "pipeline"
+
+_LINK_SIGNS = (
+    r"drm|private video|members-only|removed|deleted|does not exist|is not available|"
+    r"unavailable|not a bot|sign in to confirm|age.?restricted|no video formats|"
+    r"requested format is not available|no detectable speech|transcript is empty|"
+    r"copyright|blocked in your country|404"
+)
+_MACHINE_SIGNS = (
+    r"no space left|not enough space|errno 28|disk full|not found on path|"
+    r"is not installed|no such file or directory: 'ffmpeg|winerror 2|"
+    r"10054|forcibly closed|reset by peer|timed out|connection aborted|"
+    r"temporarily unavailable|getaddrinfo|unable to extract|player response|"
+    r"nsig extraction|memory|cuda|out of memory"
+)
+
+
+def origin(error: str) -> str:
+    """Is this the LINK's fault, the MACHINE's, or ShortForge's own code?
+
+    * ``LINK`` — this particular video cannot be processed (DRM, private,
+      removed, no speech). Nothing to repair; the program is working correctly.
+    * ``MACHINE`` — the environment needs attention (disk full, ffmpeg missing,
+      network dropped, extractor out of date). Repairable, and safe to repair.
+    * ``PIPELINE`` — an unrecognised failure, i.e. most likely a bug in
+      ShortForge itself. **Never** auto-repaired: changing the program's own
+      behaviour unattended is the one thing the operator asked to stay in
+      their hands, and a wrong "fix" to working code is far more expensive
+      than a failed job.
+    """
+    low = (error or "").lower()
+    if re.search(_LINK_SIGNS, low):
+        return LINK
+    if re.search(_MACHINE_SIGNS, low):
+        return MACHINE
+    return PIPELINE
+
+
 def classify(error: str) -> tuple[str, str, object]:
     """(kind, human summary, remedy|None) for an error message."""
     low = (error or "").lower()
@@ -167,12 +209,42 @@ def ask_first() -> bool:
         return True
 
 
+def where_and_what(error: str, url: str = "") -> str:
+    """The part the operator actually reads: whose fault, and what to do.
+
+    Every failure used to look the same, so "this video is DRM-protected" and
+    "ShortForge has a bug" were indistinguishable at a glance — and the
+    operator had no way to tell whether to skip the link or look at the code.
+    """
+    place = origin(error)
+    if place == LINK:
+        return ("📼 <b>The problem is this video, not the program.</b>\n"
+                "ShortForge is working correctly — this particular link can't be "
+                "processed (DRM, private/removed, age-restricted, or no speech).\n"
+                "👉 Nothing to fix. Skip it and send a different link.")
+    if place == MACHINE:
+        return ("🖥️ <b>The problem is this machine's setup, not the program's logic.</b>\n"
+                "Something in the environment needs attention — disk space, a missing "
+                "tool, the network, or an out-of-date downloader.\n"
+                "👉 This is the kind of thing I can repair safely, if you allow it.")
+    return ("🧩 <b>The problem looks like it's inside ShortForge itself.</b>\n"
+            "This failure doesn't match any known video or machine problem, so it is "
+            "most likely a bug in the pipeline code.\n"
+            "👉 I will <b>not</b> change the program on my own. Reply <b>explain</b> and "
+            "I'll have the agent analyse it in detail for you to review, or fix it "
+            "yourself — the exact error is above.")
+
+
 def propose(error: str, job_id: str, url: str, work_dir: str) -> str:
     """Record a repair this failure would allow, for the operator to approve.
 
-    Returns a human description of what is being offered, or "" when this error
-    has no safe automatic remedy (a DRM block, say — nothing to retry).
+    Returns a human description of what is being offered, or "" when there is
+    nothing safe to offer — a DRM block (nothing to retry) or, crucially, a
+    suspected bug in ShortForge itself, which is never repaired automatically
+    no matter how confident any model is about the cause.
     """
+    if origin(error) != MACHINE:
+        return ""
     kind, summary, remedy = classify(error)
     if remedy is None:
         return ""

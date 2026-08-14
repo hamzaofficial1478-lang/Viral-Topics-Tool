@@ -189,6 +189,10 @@ _CANCEL_WORDS = {"cancel", "cancel all", "cancel pending", "drop pending"}
 _FIX_WORDS = {"fix", "fix it", "yes fix", "apply fix", "repair", "go fix",
               "try the fix", "yes please fix"}
 _SKIP_WORDS = {"skip", "skip it", "no fix", "leave it", "don't fix", "dont fix"}
+# For a suspected bug in ShortForge itself: analysis for the operator to read,
+# never an automatic change to the program.
+_EXPLAIN_WORDS = {"explain", "explain it", "why", "diagnose", "analyse", "analyze",
+                  "what happened", "details"}
 _CLEAR_WORDS = {"clear", "clean", "clear finished", "clean up"}
 
 
@@ -462,6 +466,35 @@ def _apply_fix(work_dir: str) -> str:
     return f"🔧 <b>Fixed.</b> {detail}{tail}"
 
 
+def _explain_last_failure(work_dir: str) -> str:
+    """Have the agent analyse the most recent failure — read-only.
+
+    For the case the operator drew a line around: a fault that looks like it is
+    in ShortForge's own code. They get the analysis to review and decide on;
+    the agent does not touch the program. Point Settings → Task routing at a
+    stronger model and this is where its reasoning shows up.
+    """
+    from . import selfheal
+
+    q = Q.load_queue(work_dir)
+    failed = [j for j in q.get("jobs", []) if j["status"] == Q.FAILED and j.get("error")]
+    if not failed:
+        return "No failed link to explain — nothing has gone wrong recently."
+    job = failed[-1]
+    err = job.get("error") or ""
+    place = selfheal.origin(err)
+    why = selfheal.diagnose(err, context=job["url"][:120])
+    head = (f"🔎 <b>Analysis</b> — {job['url'][:60]}\n"
+            f"{selfheal.where_and_what(err, job['url'])}\n")
+    if not why:
+        return (head + f"\n<code>{err[:400]}</code>\n"
+                "(No LLM is configured for analysis — set one under "
+                "Settings → Task routing for a fuller explanation.)")
+    tail = ("\n\n<i>This is analysis only — I have not changed anything.</i>"
+            if place == selfheal.PIPELINE else "")
+    return f"{head}\n{why}\n\n<i>Actual error:</i> <code>{err[:300]}</code>{tail}"
+
+
 def _skip_fix(work_dir: str) -> str:
     from . import selfheal
     if not selfheal.pending(work_dir):
@@ -573,6 +606,8 @@ def handle_text(text: str, work_dir: str) -> str:
             return _apply_fix(work_dir)
         if norm in _SKIP_WORDS:
             return _skip_fix(work_dir)
+        if norm in _EXPLAIN_WORDS:
+            return _explain_last_failure(work_dir)
 
     # "/start" STARTS. It used to return the help text — a leftover of the
     # Telegram convention where /start is the bot's intro — so an operator

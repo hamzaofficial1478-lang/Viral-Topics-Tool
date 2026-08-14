@@ -111,3 +111,65 @@ def test_the_raw_error_is_kept_alongside_the_llm_reading(monkeypatch):
     assert "DRM protected" in msg                      # the reading is shown
     assert "not a bot" in msg                          # and so is the evidence
     assert "Actual error" in msg
+
+
+# --- whose fault is it: the link, the machine, or ShortForge? ------------------ #
+# The operator's question on every failure. Lumping them together meant "this
+# video is undownloadable" and "the program has a bug" read identically, and
+# they need opposite responses.
+
+import pytest as _pt
+
+
+@_pt.mark.parametrize("err", [
+    "This video is DRM protected", "Private video. Sign in", "Video unavailable",
+    "Sign in to confirm you're not a bot", "no detectable speech in this source",
+    "ERROR: Requested format is not available",
+])
+def test_link_side_failures_are_named_as_the_video_not_the_program(err):
+    from shortforge import selfheal as SH
+    assert SH.origin(err) == SH.LINK
+    msg = SH.where_and_what(err)
+    assert "this video, not the program" in msg
+    assert "Nothing to fix" in msg
+
+
+@_pt.mark.parametrize("err", [
+    "[Errno 28] No space left on device", "ffmpeg: not found on PATH",
+    "WinError 10054 forcibly closed", "Unable to extract player response",
+])
+def test_machine_side_failures_are_named_as_setup(err):
+    from shortforge import selfheal as SH
+    assert SH.origin(err) == SH.MACHINE
+    assert "machine's setup" in SH.where_and_what(err)
+
+
+@_pt.mark.parametrize("err", [
+    "TypeError: 'NoneType' object is not subscriptable",
+    "KeyError: 'clips'", "IndexError: list index out of range",
+])
+def test_unrecognised_failures_are_treated_as_a_bug_in_shortforge(err):
+    from shortforge import selfheal as SH
+    assert SH.origin(err) == SH.PIPELINE
+    msg = SH.where_and_what(err)
+    assert "inside ShortForge itself" in msg
+    assert "will <b>not</b> change the program" in msg
+
+
+def test_a_suspected_program_bug_is_never_offered_an_automatic_repair(tmp_path):
+    """The line the operator drew: the agent must not touch pipeline code, no
+    matter how confident any model is about the cause."""
+    from shortforge import selfheal as SH
+    assert SH.propose("TypeError: 'NoneType' object is not subscriptable",
+                      "j", "u", str(tmp_path)) == ""
+    assert SH.pending(str(tmp_path)) is None
+
+
+def test_a_link_side_failure_is_never_offered_a_repair_either(tmp_path):
+    from shortforge import selfheal as SH
+    assert SH.propose("This video is DRM protected", "j", "u", str(tmp_path)) == ""
+
+
+def test_only_machine_problems_get_an_offer(tmp_path):
+    from shortforge import selfheal as SH
+    assert SH.propose("[Errno 28] No space left on device", "j", "u", str(tmp_path)) != ""

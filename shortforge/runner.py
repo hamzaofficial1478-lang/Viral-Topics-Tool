@@ -107,8 +107,12 @@ def run_one(job: dict, idx: int, total: int, make_cfg: Callable[[], Config],
             offer = selfheal.propose(str(e), job["id"], job["url"], work_dir)
             fixed, msg = False, selfheal.report(str(e), context=job["url"][:80],
                                                 try_fix=False)[1]
+            # Say WHOSE fault it is before offering anything. A repair is only
+            # ever offered for machine-setup problems; a suspected bug in
+            # ShortForge is reported and left alone.
+            msg += "\n\n" + selfheal.where_and_what(str(e), job["url"])
             if offer:
-                msg += (f"\n\n🤖 <b>I can try to fix this:</b> {offer}.\n"
+                msg += (f"\n\n🤖 <b>I can try:</b> {offer}.\n"
                         f"Reply <b>fix</b> to let me, or <b>skip</b> to leave it.")
         else:
             fixed, msg = selfheal.report(str(e), context=job["url"][:80])

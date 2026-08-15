@@ -45,6 +45,15 @@ Three steps — no command line needed after cloning:
    offers to import it automatically. That file contains your API keys in
    plaintext — keep it private; it's gitignored so it can't be committed.
 
+**Keeping more than one PC in step:** double-click **`update.bat`** on each. It
+pulls whichever branch that checkout is on, reinstalls anything new, updates
+yt-dlp, and prints the **build id** the PC is now running. Compare that id
+across your machines — if they differ, one is on older code, and a failure it
+reports may already be fixed on the other. Local edits to tracked files are
+stashed automatically (git otherwise refuses the pull outright); nothing is
+discarded, and the script tells you how to restore them. The same id is shown
+in the dashboard footer and at the top of `python cli.py doctor`.
+
 **Start automatically at logon:** double-click **`install_autostart.bat`** and pick
 Everything mode (UI + ntfy remote control) or Queue mode (option 3 turns it off
 again). It needs no admin rights and works out its own paths — it drops a small

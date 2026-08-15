@@ -408,3 +408,50 @@ def test_a_drm_failure_reads_as_the_link_not_a_program_bug():
     assert kind == "drm" and remedy is None
     assert SH.origin(err) == SH.LINK
     assert "this video, not the program" in SH.where_and_what(err)
+
+
+# --- HTTP 403 on the media URL ------------------------------------------------ #
+# A 403 arrives AFTER extraction succeeds: YouTube handed out a download URL and
+# then refused the fetch. Neither the cookie chain nor the format chain can help,
+# so both were burned through pointlessly and the job failed.
+
+def test_403_is_classified_separately_from_a_missing_format():
+    assert isinstance(
+        I._classify(Exception("unable to download video data: HTTP Error 403: Forbidden")),
+        I._Forbidden)
+
+
+def test_403_recovers_by_switching_player_client(tmp_path, monkeypatch, _stub_probe):
+    """The actual remedy: the URL was minted for a client YouTube then rejected,
+    so a different client is what works."""
+    tried = []
+
+    def fake(url, opts, cfg):
+        clients = opts["extractor_args"]["youtube"]["player_client"]
+        tried.append(",".join(clients))
+        if "ios" not in clients:
+            raise I._Forbidden("unable to download video data: HTTP Error 403: Forbidden")
+        d = tmp_path / "downloads"
+        d.mkdir(exist_ok=True)
+        (d / "v.mp4").write_bytes(b"x")
+        return ({"id": "v", "title": "Recovered", "duration": 12.0}, str(d / "v.mp4"))
+
+    monkeypatch.setattr(I, "_download_with_retries", fake)
+    cfg = Config.load()
+    cfg.override("paths.work_dir", str(tmp_path))
+
+    meta = I._ingest_url("https://youtu.be/x", cfg)
+
+    assert meta.title == "Recovered"
+    assert tried[0] == "default,tv" and "ios" in tried[-1]     # configured set first
+
+
+def test_403_on_every_client_still_fails_cleanly(tmp_path, monkeypatch, _stub_probe):
+    def always403(url, opts, cfg):
+        raise I._Forbidden("HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(I, "_download_with_retries", always403)
+    cfg = Config.load()
+    cfg.override("paths.work_dir", str(tmp_path))
+    with pytest.raises(ShortForgeError):
+        I._ingest_url("https://youtu.be/x", cfg)

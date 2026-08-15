@@ -66,6 +66,17 @@ class _NoFormat(Exception):
     """Auth worked, but no stream matched the format selector — loosen it."""
 
 
+class _Forbidden(Exception):
+    """HTTP 403 on the media URL itself, after metadata extraction succeeded.
+
+    YouTube handed out a download URL and then refused the fetch. That is
+    almost always the *player client* the URL was minted for being rejected
+    (PO-token / SABR enforcement), not an auth or format problem — so cookies
+    and looser selectors, the two things the chain already tries, cannot help.
+    Retrying with a different client is what actually works.
+    """
+
+
 class _DRMProtected(Exception):
     """The stream is encrypted. No cookie, client or format selector helps.
 
@@ -97,6 +108,8 @@ def _classify(e: Exception) -> Exception:
     # that with different cookies is a guaranteed waste of time.
     if "drm" in msg or ("encrypted" in msg and "stream" in msg):
         return _DRMProtected(str(e))
+    if "403" in msg and ("forbidden" in msg or "download video data" in msg):
+        return _Forbidden(str(e))
     if "requested format is not available" in msg or "no video formats found" in msg:
         return _NoFormat(str(e))
     if "not a bot" in msg or "confirm you" in msg or "sign in to confirm" in msg:
@@ -249,6 +262,37 @@ def _with_format_fallback(cfg: Config, attempt):
     raise _NoFormat("no format selectors configured")   # pragma: no cover - chain is never empty
 
 
+# Clients to fall back through on a 403. The configured set is tried first;
+# these are alternates whose media URLs are minted differently, so one of them
+# usually serves a stream the first could not.
+_CLIENT_FALLBACKS = ("android", "ios", "web_safari", "default")
+
+
+def _with_client_fallback(cfg: Config, attempt):
+    """Run ``attempt(extractor_args)``, retrying other player clients on a 403.
+
+    A 403 arrives *after* extraction succeeds — YouTube gave us a URL and then
+    refused it — so neither the cookie chain nor the format chain can do
+    anything about it, and both were being burned through pointlessly before
+    the job failed. Swapping the player client is the one thing that addresses
+    the actual cause.
+    """
+    tried = _extractor_args(cfg)
+    try:
+        return attempt(tried)
+    except _Forbidden as first:
+        already = set(tried.get("youtube", {}).get("player_client", []))
+        for client in _CLIENT_FALLBACKS:
+            if client in already:
+                continue
+            log.warning("download: HTTP 403 — retrying with the '%s' player client", client)
+            try:
+                return attempt({"youtube": {"player_client": [client]}})
+            except _Forbidden:
+                continue
+        raise first
+
+
 def _base_opts(cfg: Config, dl_dir: str) -> dict:
     return {
         "format": cfg.get("ingest.format"),
@@ -369,7 +413,9 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
             log.info("download: trying auth strategy '%s'", label)
             (info, file_path), fmt, fell_back = _with_format_fallback(
                 cfg,
-                lambda f: _download_with_retries(url, {**base, **overlay, "format": f}, cfg))
+                lambda f: _with_client_fallback(
+                    cfg, lambda ex: _download_with_retries(
+                        url, {**base, **overlay, "format": f, "extractor_args": ex}, cfg)))
             if fell_back:
                 log.info("download: format '%s' worked (the preferred one wasn't "
                          "offered for this video)", fmt)
@@ -391,6 +437,11 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
                 f"itself — not a problem with ShortForge, your cookies or your "
                 f"connection. Nothing can fix it; use a different source."
             ) from e
+        except _Forbidden as e:
+            last_err = e
+            log.warning("auth strategy '%s': YouTube returned 403 for every player "
+                        "client tried (%.1fs)", label, time.time() - t0)
+            continue
         except _Unavailable as e:
             raise ShortForgeError(
                 f"'{url}' is unavailable or not a valid video URL ({e}). "

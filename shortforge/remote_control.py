@@ -141,7 +141,9 @@ _MMSS_RE = re.compile(r"\b(\d{1,2}):([0-5]\d)\b")
 _CLIPS_RE = re.compile(r"\b(\d{1,3})\s*(?:x\s*)?(?:clips?|shorts?|videos?)\b", re.I)
 _ASPECT_RE = re.compile(r"\b(9:16|16:9|1:1|4:5|portrait|landscape|square|vertical|horizontal)\b",
                         re.I)
-_RES_RE = re.compile(r"\b(1080p|720p|480p|360p)\b", re.I)
+# The trailing "p" is optional: "landscape 1080" is how it gets typed, and
+# requiring "1080p" silently dropped the resolution with no hint it had.
+_RES_RE = re.compile(r"\b(1080|720|480|360)p?\b", re.I)
 
 # Plain-English equivalents of /resume and /pause — a reply to the "should I
 # start?" permission prompt is exactly the kind of message nobody wants to
@@ -315,7 +317,7 @@ def _parse_loose(text: str, out: dict) -> None:
 
     m = _RES_RE.search(t)
     if m:
-        out.setdefault("resolution", m.group(1).lower())
+        out.setdefault("resolution", m.group(1).lower().rstrip("p") + "p")
         t = t[:m.start()] + " " + t[m.end():]
 
     # Clips before duration, and consumed, so "5 clips of 2 min" doesn't read the

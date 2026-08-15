@@ -233,6 +233,7 @@ def _resource_footer() -> None:
     never be able to break the thing it monitors.
     """
     from shortforge import resources as R
+    from shortforge.version import build_id
     from shortforge.config import Config as _C
 
     work_dir = _C.load().get("paths.work_dir", ".shortforge")
@@ -241,6 +242,9 @@ def _resource_footer() -> None:
 
     cpu = s.get("proc_cpu_pct")
     parts = [
+        # First, because it is the one thing that tells the operator whether
+        # this PC actually has the code they pulled on the other one.
+        f"build <b>{build_id()}</b>",
         f"ShortForge <b>{R.human_bytes(s.get('proc_mem'))}</b> RAM",
         f"<b>{cpu:.0f}%</b> CPU" if cpu is not None else "CPU <b>?</b>",
         f"RAM <b>{R.human_bytes(s.get('mem_used'))}</b>/{R.human_bytes(s.get('mem_total'))}",

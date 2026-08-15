@@ -27,6 +27,12 @@ DEFAULTS: dict[str, Any] = {
         # its formats get merged into the same response, so this alone often
         # fixes "signed in OK but no usable high-res format".
         "player_client": "default,tv",
+        # Clients to rotate through when the configured ones are offered no
+        # usable format, or hand out a URL YouTube then 403s. Both symptoms
+        # have the same cause, and neither the cookie chain nor the format
+        # chain can touch it. None -> ingest._CLIENT_FALLBACKS; set it here to
+        # react to YouTube without a code change. Unknown names are dropped.
+        "client_fallbacks": None,
         "socket_timeout": 120,           # per-read timeout (s); 20 was too short on slow links
         "retries": 4,                    # network retries per auth strategy (exponential backoff)
         # yt-dlp's default is 1 — every DASH/HLS fragment (i.e. any format above

@@ -455,3 +455,94 @@ def test_403_on_every_client_still_fails_cleanly(tmp_path, monkeypatch, _stub_pr
     cfg.override("paths.work_dir", str(tmp_path))
     with pytest.raises(ShortForgeError):
         I._ingest_url("https://youtu.be/x", cfg)
+
+
+# --- the operator's real failure: no client rotation on "no formats" ---------- #
+# Their log, verbatim:
+#   format 'bv*[height<=1080]+ba/b[height<=1080]/b' not offered ... trying looser
+#   format 'bv*+ba/b' not offered ... trying looser
+#   format 'best[ext=mp4]/best' not offered ... trying looser
+#   auth strategy 'firefox browser cookies': signed in fine, but YouTube offered
+#     no usable video format for this link (47.5s)
+#   auth strategy 'no cookies' ... HTTP Error 403: Forbidden
+#
+# Four format selectors were tried against ONE set of player clients, and the
+# client was never rotated -- because rotation only triggered on 403. But "no
+# formats offered" and "403 on the media URL" are two faces of one cause: the
+# player client YouTube is willing to serve. Rotating the format fixes neither.
+
+def test_no_formats_offered_rotates_the_player_client(tmp_path, monkeypatch, _stub_probe):
+    tried = []
+
+    def fake(url, opts, cfg):
+        clients = opts["extractor_args"]["youtube"]["player_client"]
+        tried.append(",".join(clients))
+        # Exactly the operator's video: the default set is offered nothing at
+        # all, whatever format selector is asked for.
+        if not ({"mweb", "tv_simply", "android_vr", "android", "ios"} & set(clients)):
+            raise I._NoFormat("Requested format is not available")
+        d = tmp_path / "downloads"
+        d.mkdir(exist_ok=True)
+        (d / "v.mp4").write_bytes(b"x")
+        return ({"id": "v", "title": "Recovered", "duration": 12.0}, str(d / "v.mp4"))
+
+    monkeypatch.setattr(I, "_download_with_retries", fake)
+    cfg = Config.load()
+    cfg.override("paths.work_dir", str(tmp_path))
+
+    meta = I._ingest_url("https://youtu.be/03n11GA5_oo", cfg)
+    assert meta.title == "Recovered"
+    assert tried[0] == "default,tv", "the configured clients must still go first"
+    assert len(set(tried)) > 1, "the player client was never rotated"
+
+
+def test_client_is_the_outer_loop_not_the_format(tmp_path, monkeypatch, _stub_probe):
+    """Nesting matters: the client decides which formats EXIST, so asking a
+    dead client for four different selectors is four wasted round-trips."""
+    order = []
+
+    def fake(url, opts, cfg):
+        clients = ",".join(opts["extractor_args"]["youtube"]["player_client"])
+        order.append((clients, opts["format"]))
+        if "ios" not in clients:
+            raise I._NoFormat("Requested format is not available")
+        d = tmp_path / "downloads"
+        d.mkdir(exist_ok=True)
+        (d / "v.mp4").write_bytes(b"x")
+        return ({"id": "v", "title": "ok", "duration": 1.0}, str(d / "v.mp4"))
+
+    monkeypatch.setattr(I, "_download_with_retries", fake)
+    cfg = Config.load()
+    cfg.override("paths.work_dir", str(tmp_path))
+    I._ingest_url("https://youtu.be/x", cfg)
+
+    # The first client must exhaust its formats before the next client starts.
+    first = order[0][0]
+    assert all(c == first for c, _ in order[:len(I._format_chain(cfg))])
+
+
+def test_only_player_clients_this_ytdlp_knows_are_sent():
+    """An unknown client name is rejected by yt-dlp outright, which would turn
+    a recoverable failure into a hard one."""
+    known = I._known_clients()
+    if not known:                      # yt-dlp absent or its table moved
+        return
+    assert set(I._client_fallbacks(Config.load())) <= known
+
+
+def test_every_client_refusing_says_so_and_points_at_ytdlp(tmp_path, monkeypatch, _stub_probe):
+    """The old wording -- 're-run to resume the partial download; if it's a
+    network problem this often clears on retry' -- described neither the cause
+    nor the cure, and sent the operator to retry a link that could not work."""
+    def refuse(url, opts, cfg):
+        raise I._NoFormat("Requested format is not available")
+
+    monkeypatch.setattr(I, "_download_with_retries", refuse)
+    cfg = Config.load()
+    cfg.override("paths.work_dir", str(tmp_path))
+    with pytest.raises(ShortForgeError) as ei:
+        I._ingest_url("https://youtu.be/x", cfg)
+    msg = str(ei.value).lower()
+    assert "player client" in msg
+    assert "yt-dlp" in msg
+    assert "network problem" not in msg

@@ -53,7 +53,16 @@ _REMEDY_LABELS = {
     "ytdlp_stale": "update yt-dlp to the latest version (YouTube changed something)",
     "disk_full": "clear old cached downloads to free disk space",
     "http_403": "update yt-dlp (YouTube is refusing the download as unauthorised)",
+    "youtube_client_gate": "update yt-dlp (YouTube won't serve this video to any "
+                           "player client this version knows)",
 }
+
+# Every player client was refused. Kept as its own sign because the message
+# necessarily contains "no usable video format", which reads as a LINK problem
+# — and it is not: the video is fine, this yt-dlp just can't ask for it in a
+# way YouTube will honour. Misfiling it as LINK tells the operator "nothing to
+# repair" for the one failure that a one-click yt-dlp update usually fixes.
+_CLIENT_GATE = r"to any player client|no player client was offered"
 
 _RULES = [
     (
@@ -61,6 +70,13 @@ _RULES = [
         r"unable to extract|unsupported url|player response|nsig extraction|"
         r"failed to parse json|precondition check failed",
         "YouTube changed something and the downloader is out of date.",
+        _update_ytdlp,
+    ),
+    (
+        "youtube_client_gate",
+        _CLIENT_GATE,
+        "YouTube would not serve this video to any player client ShortForge "
+        "knows — it is gating streams in a way this yt-dlp can't answer yet.",
         _update_ytdlp,
     ),
     (
@@ -146,6 +162,9 @@ def origin(error: str) -> str:
       than a failed job.
     """
     low = (error or "").lower()
+    # Checked before LINK on purpose — see _CLIENT_GATE.
+    if re.search(_CLIENT_GATE, low):
+        return MACHINE
     if re.search(_LINK_SIGNS, low):
         return LINK
     if re.search(_MACHINE_SIGNS, low):

@@ -188,3 +188,33 @@ def test_http_403_is_not_blamed_on_shortforge():
     assert SH.origin(err) == SH.MACHINE
     assert "machine's setup" in SH.where_and_what(err)
     assert "inside ShortForge itself" not in SH.where_and_what(err)
+
+
+# --- every player client refused: machine-side, not the video's fault -------- #
+
+def _client_gate_error():
+    """The message _ingest_url now raises when no client could be served."""
+    return ("YouTube would not serve https://youtu.be/03n11GA5_oo to any player "
+            "client (default, tv_simply, mweb, android_vr, android, ios, "
+            "web_safari) — it either offered no usable video format or returned "
+            "403 for the one it gave.")
+
+
+def test_client_gate_is_machine_side_despite_saying_no_usable_format():
+    """It necessarily contains "no usable video format", which _LINK_SIGNS
+    matches — and LINK is checked first. Misfiled, the operator is told
+    "nothing to repair" for the failure a yt-dlp update usually fixes."""
+    assert SH.origin(_client_gate_error()) == SH.MACHINE
+
+
+def test_client_gate_offers_the_ytdlp_update():
+    kind, summary, remedy = SH.classify(_client_gate_error())
+    assert kind == "youtube_client_gate"
+    assert remedy is not None, "MACHINE failures are the only ones that may offer a fix"
+    assert "yt-dlp" in SH._REMEDY_LABELS[kind]
+
+
+def test_a_genuinely_dead_link_is_still_the_links_fault():
+    """The new rule must not swallow real LINK failures."""
+    assert SH.origin("Private video. Sign in if you've been granted access") == SH.LINK
+    assert SH.origin("This video's stream is DRM-protected") == SH.LINK

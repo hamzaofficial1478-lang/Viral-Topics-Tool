@@ -258,37 +258,82 @@ def _with_format_fallback(cfg: Config, attempt):
         except _NoFormat:
             if i + 1 >= len(formats):
                 raise
-            log.warning("format '%s' not offered for this video; trying a looser one", fmt)
+            # DEBUG, not WARNING: the whole chain is now re-walked for every
+            # player client, so at warning level this buried the one line that
+            # matters (which client finally worked) under a dozen that don't.
+            log.debug("format '%s' not offered for this video; trying a looser one", fmt)
     raise _NoFormat("no format selectors configured")   # pragma: no cover - chain is never empty
 
 
-# Clients to fall back through on a 403. The configured set is tried first;
-# these are alternates whose media URLs are minted differently, so one of them
-# usually serves a stream the first could not.
-_CLIENT_FALLBACKS = ("android", "ios", "web_safari", "default")
+# Player clients to fall back through. Ordered so the ones that do NOT share
+# the default web/tv infrastructure come first, since that is the whole point
+# of switching. Overridable via `ingest.client_fallbacks` — YouTube changes
+# which clients it will serve often enough that the operator should not need a
+# code change to react.
+_CLIENT_FALLBACKS = ("tv_simply", "mweb", "android_vr", "android", "ios", "web_safari")
+
+
+def _known_clients() -> set[str]:
+    """Player clients the *installed* yt-dlp understands.
+
+    Sending one it doesn't know is not a soft failure — it aborts the download —
+    so an unrecognised name is dropped rather than tried. Returns an empty set
+    if the table can't be located, which means "don't filter": a moved import
+    path must not disable the fallback chain entirely.
+    """
+    try:
+        from yt_dlp.extractor.youtube._base import INNERTUBE_CLIENTS
+        return set(INNERTUBE_CLIENTS)
+    except Exception:      # noqa: BLE001 - yt-dlp absent, or its table moved
+        return set()
+
+
+def _client_fallbacks(cfg: Config) -> list[str]:
+    raw = cfg.get("ingest.client_fallbacks")
+    names = ([c.strip() for c in str(raw).split(",") if c.strip()] if raw
+             else list(_CLIENT_FALLBACKS))
+    known = _known_clients()
+    return [c for c in names if not known or c in known]
 
 
 def _with_client_fallback(cfg: Config, attempt):
-    """Run ``attempt(extractor_args)``, retrying other player clients on a 403.
+    """Run ``attempt(extractor_args)``, rotating player clients when the current
+    one cannot serve the video.
 
-    A 403 arrives *after* extraction succeeds — YouTube gave us a URL and then
-    refused it — so neither the cookie chain nor the format chain can do
-    anything about it, and both were being burned through pointlessly before
-    the job failed. Swapping the player client is the one thing that addresses
-    the actual cause.
+    Two symptoms, one cause. YouTube either strips the formats out of the
+    response (`_NoFormat` — "signed in fine, but no usable format") or hands out
+    a media URL and then refuses the fetch (`_Forbidden` — a 403 *after*
+    extraction succeeded). Both mean: this player client is not one YouTube is
+    willing to serve this video to. Neither the cookie chain nor the format
+    chain can do anything about that — and both were being burned through
+    pointlessly, 90 seconds at a time, before the job failed.
+
+    Rotating the client is the only thing that addresses the actual cause, so
+    it is the OUTER loop: the client decides which formats exist, which makes
+    asking a dead client for four different selectors four wasted round-trips.
     """
     tried = _extractor_args(cfg)
+    configured = ",".join(tried.get("youtube", {}).get("player_client", [])) or "default"
     try:
         return attempt(tried)
-    except _Forbidden as first:
+    except (_Forbidden, _NoFormat) as first:
+        why = ("HTTP 403 on the media URL" if isinstance(first, _Forbidden)
+               else "no usable format offered")
         already = set(tried.get("youtube", {}).get("player_client", []))
-        for client in _CLIENT_FALLBACKS:
+        for client in _client_fallbacks(cfg):
             if client in already:
                 continue
-            log.warning("download: HTTP 403 — retrying with the '%s' player client", client)
+            log.warning("player client '%s': %s — retrying with '%s'",
+                        configured, why, client)
             try:
-                return attempt({"youtube": {"player_client": [client]}})
-            except _Forbidden:
+                result = attempt({"youtube": {"player_client": [client]}})
+                log.info("download: the '%s' player client worked where '%s' could not",
+                         client, configured)
+                return result
+            except (_Forbidden, _NoFormat) as e:
+                why = ("HTTP 403 on the media URL" if isinstance(e, _Forbidden)
+                       else "no usable format offered")
+                configured = client
                 continue
         raise first
 
@@ -406,15 +451,18 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
     strategies = _auth_strategies(cfg)
     info = file_path = None
     saw_bot = False
+    refused_every_client = False
     last_err: Exception | None = None
     for label, overlay in strategies:
         t0 = time.time()
         try:
             log.info("download: trying auth strategy '%s'", label)
-            (info, file_path), fmt, fell_back = _with_format_fallback(
+            # Client outermost, format innermost: the player client determines
+            # which formats exist at all, so each client gets the full chain.
+            (info, file_path), fmt, fell_back = _with_client_fallback(
                 cfg,
-                lambda f: _with_client_fallback(
-                    cfg, lambda ex: _download_with_retries(
+                lambda ex: _with_format_fallback(
+                    cfg, lambda f: _download_with_retries(
                         url, {**base, **overlay, "format": f, "extractor_args": ex}, cfg)))
             if fell_back:
                 log.info("download: format '%s' worked (the preferred one wasn't "
@@ -439,8 +487,9 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
             ) from e
         except _Forbidden as e:
             last_err = e
-            log.warning("auth strategy '%s': YouTube returned 403 for every player "
-                        "client tried (%.1fs)", label, time.time() - t0)
+            refused_every_client = True
+            log.warning("auth strategy '%s': every player client was refused with a "
+                        "403 (%.1fs)", label, time.time() - t0)
             continue
         except _Unavailable as e:
             raise ShortForgeError(
@@ -449,7 +498,8 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
             ) from e
         except _NoFormat as e:
             last_err = e
-            log.warning("auth strategy '%s': signed in fine, but YouTube offered no usable "
+            refused_every_client = True
+            log.warning("auth strategy '%s': no player client was offered a usable "
                         "video format for this link (%.1fs)", label, time.time() - t0)
             continue
         except _Transient as e:
@@ -466,6 +516,26 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
     if info is None or file_path is None:
         if saw_bot:
             raise ShortForgeError(BOT_AUTH_MESSAGE) from last_err
+        if refused_every_client:
+            # Naming the real cause matters: the old wording ("re-run to resume
+            # the partial download; if it's a network problem this often clears
+            # on retry") described neither, and sent the operator to retry a
+            # link that could not work no matter how many times they tried.
+            configured = _extractor_args(cfg).get("youtube", {}).get(
+                "player_client", ["default"])
+            tried = ", ".join(list(configured)
+                              + [c for c in _client_fallbacks(cfg)
+                                 if c not in set(configured)])
+            raise ShortForgeError(
+                f"YouTube would not serve {url} to any player client "
+                f"({tried}) — it either offered no usable video format or "
+                f"returned 403 for the one it gave. This is YouTube changing "
+                f"how it hands out streams, not a problem with the link or "
+                f"your cookies, and retrying will not clear it. The fix is "
+                f"almost always a newer yt-dlp: Settings → 📺 YouTube "
+                f"authentication → Update yt-dlp, or `pip install -U yt-dlp`. "
+                f"Last error: {_clean_err(last_err) if last_err else 'unknown'}"
+            ) from last_err
         raise ShortForgeError(
             f"Download failed for {url} after trying {len(strategies)} auth "
             f"strategy(ies): {last_err}. Re-run to resume the partial download; "

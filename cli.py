@@ -317,6 +317,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     load_env_file(getattr(args, "env_file", None) or ".env")
     cfg = Config.load(args.config)
     from shortforge.doctor import run_checks, format_report, FAIL
+    from shortforge.version import build_id
+    # First line, so a pasted doctor report says which build produced it —
+    # two PCs pulled by hand drift, and that drift has cost real rounds.
+    print(f"ShortForge build {build_id()}\n")
     checks = run_checks(cfg)
     print(format_report(checks))
     return 1 if any(c.status == FAIL for c in checks) else 0

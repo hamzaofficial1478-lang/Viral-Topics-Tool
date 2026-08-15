@@ -21,10 +21,20 @@ def _store_with_vision(*, free=False, paid=False):
     return store, cred
 
 
-def test_all_14_tasks_defined():
+def test_every_routable_task_is_defined_once():
+    """Asserts identity, not a count: the number changes whenever a genuinely
+    new routable capability is added (error_agent was the latest), and a bare
+    "== 14" fails for that healthy reason as loudly as for a deleted task."""
     keys = [t["key"] for t in S.TASKS]
-    assert len(keys) == 14 and len(set(keys)) == 14
-    assert "hook_detection" in keys and "vision_scoring" in keys and "ocr" in keys
+    assert len(keys) == len(set(keys)), "a task key is defined twice"
+    required = {
+        "asr", "hook_detection", "clip_completeness", "emotion_labelling",
+        "dub_translation", "caption_translation", "vision_scoring", "ocr",
+        "metadata", "tts_quality", "tts_volume", "voice_cloning", "lip_sync",
+        "audio_enhance",
+        "error_agent",   # failure analysis gets its own binding, not metadata's
+    }
+    assert required <= set(keys), f"missing: {sorted(required - set(keys))}"
 
 
 def test_free_only_tasks_cannot_be_made_paid():

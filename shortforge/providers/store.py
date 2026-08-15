@@ -346,6 +346,12 @@ TASKS = (
     {"key": "vision_scoring",      "label": "Vision / frame scoring",     "cats": ("vision",),             "free_only": True,  "on": True,  "timeout": 300},
     {"key": "ocr",                 "label": "OCR / burned-in captions",   "cats": ("ocr", "vision"),       "free_only": True,  "on": True,  "timeout": 300},
     {"key": "metadata",            "label": "Metadata (title/desc/tags)", "cats": ("llm",),                "free_only": False, "on": True,  "timeout": 180},
+    # Failure analysis. Its own binding rather than borrowing the metadata
+    # model: this is reasoning over a stack trace, wants the strongest model
+    # available, and runs a handful of times a week — nothing like the
+    # per-clip copywriting metadata does. Read-only by construction; whatever
+    # is bound here explains, it never acts.
+    {"key": "error_agent",         "label": "Error analysis agent 🤖",     "cats": ("llm",),                "free_only": False, "on": True,  "timeout": 300},
     {"key": "tts_quality",         "label": "TTS — quality tier",         "cats": ("tts",),                "free_only": False, "on": True},
     {"key": "tts_volume",          "label": "TTS — volume tier",          "cats": ("tts",),                "free_only": False, "on": True},
     {"key": "voice_cloning",       "label": "Voice cloning",              "cats": ("tts",),                "free_only": False, "on": True},

@@ -186,15 +186,19 @@ def diagnose(error: str, context: str = "") -> str:
     """
     try:
         from .providers import call_task_chat
-        from .providers.store import load_store
+        from .providers.store import load_store, resolve_task
         prompt = (
             "A video-processing pipeline failed. In at most 4 short lines, plain "
             "English, no code blocks: (1) what went wrong, (2) the single most "
             "likely cause, (3) the one action the operator should take. Be concrete.\n\n"
             f"Context: {context[:300]}\nError: {error[:1200]}"
         )
+        # Prefer the dedicated agent binding; fall back to metadata's model so
+        # existing setups keep working without reconfiguration.
+        store = load_store()
+        task = "error_agent" if resolve_task(store, "error_agent") else "metadata"
         content, _model, _fails = call_task_chat(
-            load_store(), "metadata", [{"role": "user", "content": prompt}],
+            store, task, [{"role": "user", "content": prompt}],
             max_tokens=250, timeout=60, retries=0)
         return (content or "").strip()[:900]
     except Exception as e:  # noqa: BLE001 - diagnosis is a nicety, never a blocker

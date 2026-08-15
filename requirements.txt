@@ -38,3 +38,7 @@ streamlit>=1.49
 # --- Optional: lip-sync for cross-language dubs (GPU strongly recommended) ---
 #   clone https://github.com/Rudrabha/Wav2Lip and download wav2lip_gan.pth,
 #   then set --wav2lip-repo / --wav2lip-checkpoint (or the lipsync: config block).
+
+# Live CPU/RAM readings for the dashboard footer. Optional at runtime:
+# shortforge/resources.py degrades to stdlib values if it is missing.
+psutil>=5.9

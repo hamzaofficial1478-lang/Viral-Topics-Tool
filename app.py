@@ -153,6 +153,43 @@ h1, h2, h3 { font-weight: 600; letter-spacing: -.01em; }
 """
 
 
+@st.fragment(run_every="10s")
+def _resource_footer() -> None:
+    """What ShortForge is costing the machine, live.
+
+    Answers "is it stuck or just slow?" the only way a message can't: CPU
+    moving means work is happening. Its own 10s fragment so it never forces a
+    page rerun, and every value degrades to "?" rather than raising — a
+    monitoring panel must not be able to break the thing it monitors.
+    """
+    from shortforge import resources as R
+    from shortforge.config import Config as _C
+
+    work_dir = _C.load().get("paths.work_dir", ".shortforge")
+    s = R.snapshot(work_dir)
+    st.divider()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("ShortForge RAM", R.human_bytes(s.get("proc_mem")),
+              help=f"Across {s.get('proc_count', 1)} process(es) — the dashboard plus "
+                   "any worker and ffmpeg it has running.")
+    cpu = s.get("proc_cpu_pct")
+    c2.metric("ShortForge CPU", f"{cpu:.0f}%" if cpu is not None else "?",
+              help=f"Sum across {s.get('cores') or '?'} cores, so 100% is one core "
+                   "fully busy. Moving means work is genuinely happening.")
+    total, used, pct = s.get("mem_total"), s.get("mem_used"), s.get("mem_pct")
+    c3.metric("Machine RAM", f"{R.human_bytes(used)} / {R.human_bytes(total)}",
+              delta=f"{pct:.0f}% in use" if pct is not None else None, delta_color="off")
+    c4.metric("Disk free", R.human_bytes(s.get("disk_free")))
+
+    bits = [f"{s.get('cores') or '?'} CPU cores", f"GPU: {R.gpu_name()}"]
+    speed = R.render_speed(work_dir)
+    if speed:
+        bits.append(f"⏱ {speed}")
+    if not s.get("has_psutil"):
+        bits.append("install `psutil` for per-process figures")
+    st.caption(" · ".join(bits))
+
+
 def _inject_theme() -> None:
     """Apply the soft/minimal styling. Pure presentation — no behaviour."""
     st.markdown(_THEME_CSS, unsafe_allow_html=True)
@@ -1135,15 +1172,19 @@ def main() -> None:
     if screen == "Settings":
         from shortforge.ui.settings import render as render_settings
         render_settings()
+        _resource_footer()
         return
     if screen == "History":
         _render_history()
+        _resource_footer()
         return
     if screen == "Chat":
         _render_chat()
+        _resource_footer()
         return
     if screen == "Queue":
         _render_queue()
+        _resource_footer()
         return
 
     # New job — one of three states, all persisted in session_state so results

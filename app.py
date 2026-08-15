@@ -77,6 +77,87 @@ def _save_upload(uploaded, suffix: str) -> str:
     return path
 
 
+_THEME_CSS = """
+<style>
+/* Soft, minimal surface treatment. Panels separate by tone and a hairline,
+   never by heavy borders or saturated fills; corners are generously rounded
+   and shadows are barely-there, so nothing in a long working session is
+   visually loud. Colours come from .streamlit/config.toml -- this only
+   handles shape, weight and spacing. */
+:root {
+  --sf-line:   #E3E7EC;
+  --sf-muted:  #6B7684;
+  --sf-accent: #5B7C99;
+  --sf-radius: 10px;
+}
+.block-container { padding-top: 2.2rem; max-width: 1180px; }
+
+/* Buttons: quiet by default, accent only for the primary action. */
+.stButton > button {
+  border-radius: var(--sf-radius);
+  border: 1px solid var(--sf-line);
+  background: #FFFFFF;
+  color: #2E3440;
+  font-weight: 500;
+  padding: 0.45rem 0.9rem;
+  box-shadow: none;
+  transition: background .15s ease, border-color .15s ease;
+}
+.stButton > button:hover:enabled {
+  background: #F5F7FA;
+  border-color: #CFD6DE;
+  color: #2E3440;
+}
+.stButton > button[kind="primary"] {
+  background: var(--sf-accent);
+  border-color: var(--sf-accent);
+  color: #FFFFFF;
+}
+.stButton > button[kind="primary"]:hover:enabled { background: #4E6C86; }
+.stButton > button:disabled { opacity: .45; }
+
+/* Inputs: hairline, rounded, soft focus ring instead of a hard outline. */
+.stTextInput input, .stNumberInput input, .stTextArea textarea,
+.stSelectbox div[data-baseweb="select"] > div {
+  border-radius: var(--sf-radius) !important;
+  border-color: var(--sf-line) !important;
+}
+.stTextInput input:focus, .stNumberInput input:focus, .stTextArea textarea:focus {
+  box-shadow: 0 0 0 3px rgba(91,124,153,.14) !important;
+  border-color: var(--sf-accent) !important;
+}
+
+/* Panels: metrics, expanders, code, alerts -- one consistent soft card. */
+div[data-testid="stMetric"], .stExpander, .stAlert, .stDataFrame {
+  border: 1px solid var(--sf-line);
+  border-radius: var(--sf-radius);
+  background: #FFFFFF;
+}
+div[data-testid="stMetric"] { padding: .7rem .9rem; }
+div[data-testid="stMetricLabel"] { color: var(--sf-muted); font-size: .78rem; }
+.stExpander { box-shadow: none; }
+.stAlert { border-left: 3px solid var(--sf-accent); }
+.stCodeBlock, pre { border-radius: var(--sf-radius) !important; font-size: .82rem; }
+hr { border-color: var(--sf-line); }
+
+/* Sidebar: a calm rail, no hard divider. */
+section[data-testid="stSidebar"] {
+  background: #F7F8FA;
+  border-right: 1px solid var(--sf-line);
+}
+/* Progress bar in the accent, slimmer than default. */
+.stProgress > div > div > div > div { background-color: var(--sf-accent); }
+.stProgress > div > div > div { height: 6px; border-radius: 6px; }
+h1, h2, h3 { font-weight: 600; letter-spacing: -.01em; }
+</style>
+"""
+
+
+def _inject_theme() -> None:
+    """Apply the soft/minimal styling. Pure presentation — no behaviour."""
+    st.markdown(_THEME_CSS, unsafe_allow_html=True)
+
+
 def _open_folder(path: str) -> tuple[bool, str]:
     """Open a folder in the OS file manager (Explorer on Windows). The app runs
     on the operator's own machine, so this opens it locally."""
@@ -1041,6 +1122,7 @@ def _render_new_job_form() -> None:
 
 def main() -> None:
     st.set_page_config(page_title="ShortForge", page_icon="🎬", layout="wide")
+    _inject_theme()
     setup_logging(False)
     load_env_file(".env")
 

@@ -352,7 +352,11 @@ def parse_links(text: str) -> list[str]:
     """http(s) links only, de-duplicated, capped per message."""
     seen, links = set(), []
     for m in _URL_RE.findall(text or ""):
-        url = m.rstrip(".,;)")
+        # Cut at a comma/semicolon: typing "<link>,title and description" with
+        # no space glued the next word onto the URL ("…/AAA,title"), which then
+        # queued and failed to download. Neither character appears in a real
+        # video link, so truncating there is safe and fixes the whole class.
+        url = re.split(r"[,;]", m)[0].rstrip(".,;)")
         if url in seen:
             continue
         seen.add(url)

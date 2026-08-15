@@ -52,6 +52,7 @@ def _clear_cache() -> tuple[bool, str]:
 _REMEDY_LABELS = {
     "ytdlp_stale": "update yt-dlp to the latest version (YouTube changed something)",
     "disk_full": "clear old cached downloads to free disk space",
+    "http_403": "update yt-dlp (YouTube is refusing the download as unauthorised)",
 }
 
 _RULES = [
@@ -67,6 +68,13 @@ _RULES = [
         r"drm.?protected|protected by drm|\bdrm\b",
         "This video's stream is encrypted (DRM) — it cannot be downloaded.",
         None,   # nothing repairs DRM; the link itself is the limit
+    ),
+    (
+        "http_403",
+        r"403: forbidden|http error 403|403 forbidden",
+        "YouTube refused the download (HTTP 403) — the request looked "
+        "unauthorised to it, usually stale cookies or an out-of-date extractor.",
+        _update_ytdlp,
     ),
     (
         "bot_wall",
@@ -119,7 +127,8 @@ _MACHINE_SIGNS = (
     r"is not installed|no such file or directory: 'ffmpeg|winerror 2|"
     r"10054|forcibly closed|reset by peer|timed out|connection aborted|"
     r"temporarily unavailable|getaddrinfo|unable to extract|player response|"
-    r"nsig extraction|memory|cuda|out of memory"
+    r"nsig extraction|memory|cuda|out of memory|"
+    r"403|forbidden"
 )
 
 

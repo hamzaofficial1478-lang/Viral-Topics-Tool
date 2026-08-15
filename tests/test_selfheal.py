@@ -173,3 +173,18 @@ def test_a_link_side_failure_is_never_offered_a_repair_either(tmp_path):
 def test_only_machine_problems_get_an_offer(tmp_path):
     from shortforge import selfheal as SH
     assert SH.propose("[Errno 28] No space left on device", "j", "u", str(tmp_path)) != ""
+
+
+def test_http_403_is_not_blamed_on_shortforge():
+    """A 403 is YouTube refusing the request -- stale cookies or an out-of-date
+    extractor. It matched nothing, so it was reported as "most likely a bug in
+    the pipeline code", which sent the operator looking in the wrong place."""
+    from shortforge import selfheal as SH
+    err = ("Download failed after trying 2 auth strategy(ies): ERROR: unable to "
+           "download video data: HTTP Error 403: Forbidden.")
+    kind, _summary, remedy = SH.classify(err)
+    assert kind == "http_403"
+    assert remedy is not None                       # yt-dlp update is offerable
+    assert SH.origin(err) == SH.MACHINE
+    assert "machine's setup" in SH.where_and_what(err)
+    assert "inside ShortForge itself" not in SH.where_and_what(err)

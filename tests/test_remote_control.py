@@ -606,3 +606,15 @@ def test_asking_for_titles_and_getting_none_is_reported_not_hidden():
     from shortforge import runner
     out = runner._metadata_lines({"clips": [{"clip_id": "01"}]}, {"settings": {"metadata": True}})
     assert "requested but none were produced" in out
+
+
+@pytest.mark.parametrize("text,expected", [
+    # Text typed straight after the link with no space was swallowed INTO the
+    # url, so the job queued against a broken address and failed to download.
+    ("https://youtu.be/AAA,title and description", "https://youtu.be/AAA"),
+    ("https://youtu.be/AAA;3 clips", "https://youtu.be/AAA"),
+    ("https://youtu.be/AAA, 3 clips", "https://youtu.be/AAA"),
+    ("https://youtu.be/AAA?si=xY_1 with titles", "https://youtu.be/AAA?si=xY_1"),
+])
+def test_punctuation_after_a_link_is_not_glued_into_the_url(text, expected):
+    assert RC.parse_links(text) == [expected]

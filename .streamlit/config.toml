@@ -8,3 +8,15 @@ gatherUsageStats = false
 [server]
 headless = true
 port = 8501
+
+# Soft, minimal palette. Muted slate-blue accent rather than Streamlit's default
+# red, warm off-white ground instead of pure #FFF (less glare on a screen that
+# is watched for hours), and low-contrast surfaces so panels separate by tone
+# rather than by hard borders.
+[theme]
+base = "light"
+primaryColor = "#5B7C99"
+backgroundColor = "#FBFBFC"
+secondaryBackgroundColor = "#F2F4F7"
+textColor = "#2E3440"
+font = "sans serif"

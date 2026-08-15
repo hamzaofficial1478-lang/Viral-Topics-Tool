@@ -13,10 +13,16 @@ port = 8501
 # red, warm off-white ground instead of pure #FFF (less glare on a screen that
 # is watched for hours), and low-contrast surfaces so panels separate by tone
 # rather than by hard borders.
+
+# Branded palette: a rich indigo→violet accent against clean near-white
+# surfaces and near-black text. Minimal in the sense of "few elements, lots of
+# breathing room" — NOT desaturated. The first pass read minimal as grey and
+# came out lifeless; colour carries the brand, restraint comes from how little
+# of it is used.
 [theme]
 base = "light"
-primaryColor = "#5B7C99"
-backgroundColor = "#FBFBFC"
-secondaryBackgroundColor = "#F2F4F7"
-textColor = "#2E3440"
+primaryColor = "#6366F1"
+backgroundColor = "#FAFAFB"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#111827"
 font = "sans serif"

@@ -79,115 +79,184 @@ def _save_upload(uploaded, suffix: str) -> str:
 
 _THEME_CSS = """
 <style>
-/* Soft, minimal surface treatment. Panels separate by tone and a hairline,
-   never by heavy borders or saturated fills; corners are generously rounded
-   and shadows are barely-there, so nothing in a long working session is
-   visually loud. Colours come from .streamlit/config.toml -- this only
-   handles shape, weight and spacing. */
+/* ShortForge — branded, minimal. Minimal means few elements and generous
+   space, NOT desaturated: the first attempt read it as grey and came out
+   lifeless. Colour carries the brand (indigo -> violet), restraint comes from
+   using it in exactly two places: the primary action, and the rule under a
+   section heading. Everything else is ink, hairline and shadow. */
 :root {
-  --sf-line:   #E3E7EC;
-  --sf-muted:  #6B7684;
-  --sf-accent: #5B7C99;
-  --sf-radius: 10px;
+  --sf-ink:      #111827;
+  --sf-muted:    #6B7280;
+  --sf-faint:    #9CA3AF;
+  --sf-line:     #E9EAEF;
+  --sf-accent:   #6366F1;
+  --sf-accent-2: #8B5CF6;
+  --sf-grad:     linear-gradient(135deg, #6366F1 0%, #8B5CF6 100%);
+  --sf-glow:     0 6px 16px -4px rgba(99,102,241,.42);
+  --sf-card:     0 1px 2px rgba(16,24,40,.04), 0 4px 12px -6px rgba(16,24,40,.08);
+  --sf-r:        12px;
 }
-.block-container { padding-top: 2.2rem; max-width: 1180px; }
+.block-container { padding-top: 2rem; padding-bottom: 4rem; max-width: 1120px; }
+html, body, [class*="css"] { -webkit-font-smoothing: antialiased; }
 
-/* Buttons: quiet by default, accent only for the primary action. */
+/* ---- Typography: real hierarchy, tighter tracking on headings ---- */
+h1 { font-weight: 700 !important; letter-spacing: -.03em; font-size: 2rem !important; }
+h2 { font-weight: 650 !important; letter-spacing: -.02em; font-size: 1.35rem !important;
+     margin-top: 2rem !important; }
+h3 { font-weight: 600 !important; letter-spacing: -.01em; }
+/* Accent rule under section headings — the brand, used sparingly. */
+h2::after {
+  content: ""; display: block; width: 34px; height: 3px; margin-top: .5rem;
+  background: var(--sf-grad); border-radius: 3px;
+}
+
+/* ---- Buttons: gradient primary that lifts, crisp ghost secondary ---- */
 .stButton > button {
-  border-radius: var(--sf-radius);
+  border-radius: var(--sf-r);
   border: 1px solid var(--sf-line);
   background: #FFFFFF;
-  color: #2E3440;
-  font-weight: 500;
-  padding: 0.45rem 0.9rem;
-  box-shadow: none;
-  transition: background .15s ease, border-color .15s ease;
+  color: var(--sf-ink);
+  font-weight: 600;
+  font-size: .875rem;
+  letter-spacing: -.005em;
+  padding: .55rem 1.1rem;
+  box-shadow: var(--sf-card);
+  transition: transform .12s ease, box-shadow .18s ease,
+              border-color .18s ease, background .18s ease;
 }
 .stButton > button:hover:enabled {
-  background: #F5F7FA;
-  border-color: #CFD6DE;
-  color: #2E3440;
+  transform: translateY(-1px);
+  border-color: #D6D9E3;
+  box-shadow: 0 4px 14px -4px rgba(16,24,40,.16);
 }
+.stButton > button:active:enabled { transform: translateY(0); }
 .stButton > button[kind="primary"] {
-  background: var(--sf-accent);
-  border-color: var(--sf-accent);
+  background: var(--sf-grad);
+  border: none;
   color: #FFFFFF;
+  box-shadow: var(--sf-glow);
 }
-.stButton > button[kind="primary"]:hover:enabled { background: #4E6C86; }
-.stButton > button:disabled { opacity: .45; }
+.stButton > button[kind="primary"]:hover:enabled {
+  filter: brightness(1.06);
+  box-shadow: 0 10px 22px -6px rgba(99,102,241,.55);
+}
+.stButton > button:disabled { opacity: .4; box-shadow: none; }
+.stDownloadButton > button { border-radius: var(--sf-r); font-weight: 600; }
 
-/* Inputs: hairline, rounded, soft focus ring instead of a hard outline. */
+/* ---- Inputs: soft, with a branded focus ring ---- */
 .stTextInput input, .stNumberInput input, .stTextArea textarea,
-.stSelectbox div[data-baseweb="select"] > div {
-  border-radius: var(--sf-radius) !important;
+.stSelectbox div[data-baseweb="select"] > div,
+.stChatInput textarea {
+  border-radius: var(--sf-r) !important;
   border-color: var(--sf-line) !important;
+  background: #FFFFFF !important;
 }
-.stTextInput input:focus, .stNumberInput input:focus, .stTextArea textarea:focus {
-  box-shadow: 0 0 0 3px rgba(91,124,153,.14) !important;
+.stTextInput input:focus, .stNumberInput input:focus,
+.stTextArea textarea:focus, .stChatInput textarea:focus {
   border-color: var(--sf-accent) !important;
+  box-shadow: 0 0 0 3px rgba(99,102,241,.13) !important;
 }
+label, .stCheckbox label { font-weight: 500 !important; color: #374151; }
 
-/* Panels: metrics, expanders, code, alerts -- one consistent soft card. */
-div[data-testid="stMetric"], .stExpander, .stAlert, .stDataFrame {
-  border: 1px solid var(--sf-line);
-  border-radius: var(--sf-radius);
+/* ---- Cards: elevation instead of borders ---- */
+div[data-testid="stMetric"] {
   background: #FFFFFF;
+  border: 1px solid var(--sf-line);
+  border-radius: var(--sf-r);
+  padding: .85rem 1rem;
+  box-shadow: var(--sf-card);
 }
-div[data-testid="stMetric"] { padding: .7rem .9rem; }
-div[data-testid="stMetricLabel"] { color: var(--sf-muted); font-size: .78rem; }
-.stExpander { box-shadow: none; }
-.stAlert { border-left: 3px solid var(--sf-accent); }
-.stCodeBlock, pre { border-radius: var(--sf-radius) !important; font-size: .82rem; }
-hr { border-color: var(--sf-line); }
+div[data-testid="stMetricLabel"] {
+  color: var(--sf-faint); font-size: .72rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+div[data-testid="stMetricValue"] { font-weight: 680; letter-spacing: -.02em; }
+.stExpander {
+  border: 1px solid var(--sf-line); border-radius: var(--sf-r);
+  background: #FFFFFF; box-shadow: var(--sf-card);
+}
+.stDataFrame { border-radius: var(--sf-r); overflow: hidden; border: 1px solid var(--sf-line); }
+.stCodeBlock, pre {
+  border-radius: var(--sf-r) !important; font-size: .8rem;
+  background: #F7F8FA !important; border: 1px solid var(--sf-line) !important;
+}
 
-/* Sidebar: a calm rail, no hard divider. */
-section[data-testid="stSidebar"] {
-  background: #F7F8FA;
-  border-right: 1px solid var(--sf-line);
+/* ---- Alerts: tinted, accent-led, no heavy chrome ---- */
+.stAlert {
+  border: none !important; border-left: 3px solid var(--sf-accent) !important;
+  border-radius: 10px !important; box-shadow: var(--sf-card);
 }
-/* Progress bar in the accent, slimmer than default. */
-.stProgress > div > div > div > div { background-color: var(--sf-accent); }
-.stProgress > div > div > div { height: 6px; border-radius: 6px; }
-h1, h2, h3 { font-weight: 600; letter-spacing: -.01em; }
+
+/* ---- Sidebar: the branded rail; active screen carries the gradient ---- */
+section[data-testid="stSidebar"] {
+  background: #FFFFFF; border-right: 1px solid var(--sf-line);
+}
+section[data-testid="stSidebar"] .stRadio label {
+  padding: .4rem .6rem; border-radius: 9px; font-weight: 550;
+  transition: background .15s ease;
+}
+section[data-testid="stSidebar"] .stRadio label:hover { background: #F4F4F8; }
+
+/* ---- Progress: gradient, slim ---- */
+.stProgress > div > div > div > div {
+  background-image: var(--sf-grad); border-radius: 99px;
+}
+.stProgress > div > div > div { height: 7px; border-radius: 99px; background: #EEF0F4; }
+
+hr { border-color: var(--sf-line); margin: 1.6rem 0; }
+/* Hide the "Made with Streamlit" badge, but keep the hamburger: its Rerun and
+   Clear-cache entries are the escape hatch when the page wedges. */
+footer { visibility: hidden; }
+
+/* ---- Resource strip: small, right-aligned, out of the way ---- */
+.sf-res {
+  text-align: right; color: var(--sf-faint);
+  font-size: .74rem; line-height: 1.6; font-variant-numeric: tabular-nums;
+  padding-top: .4rem; border-top: 1px solid var(--sf-line); margin-top: 2rem;
+}
+.sf-res b { color: var(--sf-muted); font-weight: 600; }
+.sf-dot { color: var(--sf-line); padding: 0 .35rem; }
 </style>
 """
 
 
 @st.fragment(run_every="10s")
 def _resource_footer() -> None:
-    """What ShortForge is costing the machine, live.
+    """One small right-aligned line of what ShortForge is costing the machine.
 
-    Answers "is it stuck or just slow?" the only way a message can't: CPU
-    moving means work is happening. Its own 10s fragment so it never forces a
-    page rerun, and every value degrades to "?" rather than raising — a
-    monitoring panel must not be able to break the thing it monitors.
+    Deliberately NOT metric cards: this is reference information you glance at,
+    not a headline, and four big boxes gave it the same visual weight as the
+    queue itself. It still answers the recurring "is it stuck or just slow?" —
+    CPU moving means work is happening — but from the corner of the eye.
+
+    Every value degrades to "?" rather than raising: a monitoring line must
+    never be able to break the thing it monitors.
     """
     from shortforge import resources as R
     from shortforge.config import Config as _C
 
     work_dir = _C.load().get("paths.work_dir", ".shortforge")
     s = R.snapshot(work_dir)
-    st.divider()
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("ShortForge RAM", R.human_bytes(s.get("proc_mem")),
-              help=f"Across {s.get('proc_count', 1)} process(es) — the dashboard plus "
-                   "any worker and ffmpeg it has running.")
-    cpu = s.get("proc_cpu_pct")
-    c2.metric("ShortForge CPU", f"{cpu:.0f}%" if cpu is not None else "?",
-              help=f"Sum across {s.get('cores') or '?'} cores, so 100% is one core "
-                   "fully busy. Moving means work is genuinely happening.")
-    total, used, pct = s.get("mem_total"), s.get("mem_used"), s.get("mem_pct")
-    c3.metric("Machine RAM", f"{R.human_bytes(used)} / {R.human_bytes(total)}",
-              delta=f"{pct:.0f}% in use" if pct is not None else None, delta_color="off")
-    c4.metric("Disk free", R.human_bytes(s.get("disk_free")))
+    dot = '<span class="sf-dot">•</span>'
 
-    bits = [f"{s.get('cores') or '?'} CPU cores", f"GPU: {R.gpu_name()}"]
+    cpu = s.get("proc_cpu_pct")
+    parts = [
+        f"ShortForge <b>{R.human_bytes(s.get('proc_mem'))}</b> RAM",
+        f"<b>{cpu:.0f}%</b> CPU" if cpu is not None else "CPU <b>?</b>",
+        f"RAM <b>{R.human_bytes(s.get('mem_used'))}</b>/{R.human_bytes(s.get('mem_total'))}",
+        f"<b>{s.get('cores') or '?'}</b> cores",
+        f"disk <b>{R.human_bytes(s.get('disk_free'))}</b> free",
+    ]
+    gpu = R.gpu_name()
+    if gpu and gpu != "not detected":
+        parts.append(f"GPU <b>{gpu[:28]}</b>")
     speed = R.render_speed(work_dir)
     if speed:
-        bits.append(f"⏱ {speed}")
+        parts.append(f"⏱ <b>{speed}</b>")
     if not s.get("has_psutil"):
-        bits.append("install `psutil` for per-process figures")
-    st.caption(" · ".join(bits))
+        parts.append("<i>pip install psutil for per-process figures</i>")
+
+    st.markdown(f'<div class="sf-res">{dot.join(parts)}</div>', unsafe_allow_html=True)
 
 
 def _inject_theme() -> None:

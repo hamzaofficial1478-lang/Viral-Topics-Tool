@@ -143,20 +143,29 @@ def run_pipeline(
         if _asr_cached:
             timing.note("asr", "cached")
 
-    if not transcript.segments:
-        raise ShortForgeError(
-            "This source has no detectable speech (transcript is empty). ShortForge "
-            "selects clips from spoken content, so a music-only or sports source "
-            "with no narration won't work here — try a source with clear speech."
-        )
+    # A source with no speech (music, sports, drone footage, a silent capture) is
+    # still a source: "cut this into clips of N seconds" is a complete instruction
+    # on its own. Hook detection has nothing to bite on, so the timeline is used
+    # instead — loudly, never as a silent substitution.
+    from .select import nospeech
+    speechless = not nospeech.has_speech(transcript)
 
-    # --- M3 detect (transcript + visual signals) -------------------------- #
-    with timing.stage("hook-scoring"):
-        candidates = detect_hooks(transcript, cfg, meta.file_path)
+    candidates: list = []
+    if speechless:
+        timing.note("hook-scoring", "no speech")
+    else:
+        # --- M3 detect (transcript + visual signals) ---------------------- #
+        with timing.stage("hook-scoring"):
+            candidates = detect_hooks(transcript, cfg, meta.file_path)
 
     # --- M4 select (with recommendation) ---------------------------------- #
-    n_rec, rationale = recommend_clip_count(transcript, candidates, cfg)
     requested = int(cfg.get("select.num_clips", 0) or 0)
+    if speechless:
+        n_rec = requested or 3
+        rationale = ("No speech in this source, so there are no spoken hooks to rank; "
+                     "clips are cut from the timeline at the requested length.")
+    else:
+        n_rec, rationale = recommend_clip_count(transcript, candidates, cfg)
     log.info("recommendation: %s", rationale)
     if requested:
         log.info("operator requested %d clip%s", requested, "s" if requested != 1 else "")
@@ -173,8 +182,12 @@ def run_pipeline(
     cfg.override("reframe.width", out_w)
     cfg.override("reframe.height", out_h)
 
+    selection_basis = "speech"
     with timing.stage("select"):
-        clips = build_clips(transcript, candidates, cfg, meta.hash)
+        if speechless:
+            clips, selection_basis = nospeech.build_clips(meta, cfg, meta.hash)
+        else:
+            clips = build_clips(transcript, candidates, cfg, meta.hash)
     if not clips:
         raise ShortForgeError("No clips could be selected from this source.")
     log.info("selected %d clip%s", len(clips), "s" if len(clips) != 1 else "")
@@ -222,6 +235,18 @@ def run_pipeline(
     src_lang = transcript.language or "en"
     localize_on = bool(target_lang) and str(target_lang).split("-")[0] != src_lang
     dub_on = localize_on and bool(cfg.get("localize.dub", False))
+
+    # Cutting a silent video is fine; *translating* or *dubbing* one is not — there
+    # are no words to translate and no voice to replace. Emitting a silent clip and
+    # calling it a French dub is exactly the failure this project forbids, so say so
+    # instead. (Captions need no such guard: with no words there is nothing to draw,
+    # which is honest and visible.)
+    if speechless and localize_on:
+        raise ShortForgeError(nospeech.unsupported_with_speech_only(
+            f"{'Dubbing' if dub_on else 'Caption translation'} to '{target_lang}'",
+            "This source is music/ambience only. "))
+    if speechless and bool(cfg.get("captions.enabled", True)):
+        log.warning("no speech: clips will have no captions (there are no words to show).")
 
     # A1: dubbing must REMOVE the original voice (keep music/SFX). Resolve stem
     # separation up front and abort *before* any rendering rather than laying a
@@ -330,6 +355,11 @@ def run_pipeline(
         jumpcuts_on = False
     if jumpcuts_on and not probe.has_audio:
         log.info("jump cuts need audio; source has none — skipping")
+        jumpcuts_on = False
+    if jumpcuts_on and speechless:
+        # Jump cuts trim the gaps *between words*. With no words every frame is a
+        # gap, so the plan would cut the clip down to nothing.
+        log.info("jump cuts need speech to find the gaps; this source has none — skipping")
         jumpcuts_on = False
     if jumpcuts_on:
         log.info("jump cuts on: trimming silences > %.2fs",
@@ -619,9 +649,12 @@ def run_pipeline(
                  if localize_on else f"lang {src_lang}")
     summary = " | ".join([
         f"done: {len(rendered)} clip(s)",
+        # B: the summary line must name the path actually taken. "no speech" is a
+        # materially different selection, so it can never be read as a hook run.
+        f"selection {selection_basis}" if speechless else "selection hooks",
         lang_desc,
         dub_desc,
-        f"captions {clip_lang if captions_on else 'off'}",
+        f"captions {'none (no speech)' if speechless else clip_lang if captions_on else 'off'}",
         f"reframe {'track' if use_track else 'center'}",
         f"encoder {resolve_encoder(cfg)}",
         f"metadata {'on' if do_meta else 'off'}",
@@ -653,7 +686,9 @@ def run_pipeline(
             "loudnorm": bool(cfg.get("render.loudnorm", True)),
             "jumpcuts": jumpcuts_on,
             "logo": bool(logo),
-            "hook_backend": cfg.get("detect.backend"),
+            "hook_backend": cfg.get("detect.backend") if not speechless else None,
+            "has_speech": not speechless,
+            "selection_basis": selection_basis,
             "output_language": clip_lang,
             "localized": localize_on,
             "dubbed": dub_on,

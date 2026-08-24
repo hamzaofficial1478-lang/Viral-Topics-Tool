@@ -395,9 +395,12 @@ def _ingest_local(path: str) -> SourceMeta:
         raise ShortForgeError(f"Source file not found: {path}")
     info = ffprobe_info(path)
     if not info.has_audio:
-        raise ShortForgeError(
-            f"{path} has no audio stream — cannot transcribe or clip on speech."
-        )
+        # Not an error any more. A drone reel or a silent screen capture has no
+        # audio track at all; clips are cut from the timeline instead of the
+        # transcript (see select/nospeech.py). Announced, never silent.
+        log.warning("%s has no audio track — no transcript, so clips will be cut "
+                    "from the timeline at the requested length.",
+                    os.path.basename(path))
     return SourceMeta(
         source=path,
         file_path=os.path.abspath(path),

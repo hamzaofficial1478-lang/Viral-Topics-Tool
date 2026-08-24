@@ -123,7 +123,7 @@ import pytest as _pt
 
 @_pt.mark.parametrize("err", [
     "This video is DRM protected", "Private video. Sign in", "Video unavailable",
-    "Sign in to confirm you're not a bot", "no detectable speech in this source",
+    "Sign in to confirm you're not a bot",
     "ERROR: Requested format is not available",
 ])
 def test_link_side_failures_are_named_as_the_video_not_the_program(err):
@@ -132,6 +132,18 @@ def test_link_side_failures_are_named_as_the_video_not_the_program(err):
     msg = SH.where_and_what(err)
     assert "this video, not the program" in msg
     assert "Nothing to fix" in msg
+
+
+def test_a_silent_source_is_not_told_to_skip_the_video():
+    """A silent video used to be a dead end. Now only translation and dubbing
+    are impossible, so the advice must be 'drop that option', not 'skip it'."""
+    from shortforge import selfheal as SH
+    err = "Dubbing to 'fr' needs speech, and this source has none (transcript is empty)."
+    assert SH.origin(err) == SH.LINK          # still the video's property, not a bug
+    msg = SH.where_and_what(err)
+    assert "no speech" in msg.lower()
+    assert "Clips can still be cut" in msg
+    assert "Nothing to fix" not in msg and "send a different link" not in msg
 
 
 @_pt.mark.parametrize("err", [

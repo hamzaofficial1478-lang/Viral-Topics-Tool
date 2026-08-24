@@ -14,7 +14,7 @@ import re
 from ..cache import Cache
 from ..config import Config
 from ..models import Segment, Transcript, Word
-from ..utils import ShortForgeError, require_binary, run, log
+from ..utils import ShortForgeError, ffprobe_info, require_binary, run, log
 
 _CACHE_NAME = "transcript.json"
 
@@ -67,6 +67,16 @@ def transcribe(meta, cfg: Config, cache: Cache) -> Transcript:
     if cached is not None:
         log.info("using cached transcript (%d segments)", len(cached.get("segments", [])))
         return Transcript.from_dict(cached)
+
+    # No audio track at all (drone reel, silent screen capture): there is nothing
+    # to extract, let alone transcribe. Return an empty transcript so the pipeline
+    # takes the no-speech path instead of dying inside ffmpeg — and so the run
+    # doesn't need an ASR model installed just to discover there's no sound.
+    if not ffprobe_info(meta.file_path).has_audio:
+        log.info("no audio track — skipping transcription entirely")
+        empty = Transcript(language="", duration=float(meta.duration or 0.0), segments=[])
+        cache.save_json(_CACHE_NAME, empty.to_dict())
+        return empty
 
     wav = extract_audio(meta.file_path, cache.path("audio16k.wav"))
     language = cfg.get("transcribe.language")

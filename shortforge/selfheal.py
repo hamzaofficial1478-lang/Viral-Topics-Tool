@@ -120,7 +120,11 @@ _RULES = [
     (
         "no_speech",
         r"no detectable speech|transcript is empty",
-        "That source has no speech to cut clips from.",
+        # Clips CAN now be cut from a silent source (select/nospeech.py); only
+        # translating or dubbing one is impossible, so the advice is to drop that
+        # option rather than to abandon the video.
+        "That source has no speech, so it can't be translated or dubbed — but it "
+        "can still be cut into clips.",
         None,
     ),
 ]
@@ -255,10 +259,17 @@ def where_and_what(error: str, url: str = "") -> str:
     operator had no way to tell whether to skip the link or look at the code.
     """
     place = origin(error)
+    # A silent source is a LINK property, but the advice is the opposite of the
+    # generic one: don't skip the video, drop the option that needs speech.
+    if re.search(r"no detectable speech|transcript is empty", (error or "").lower()):
+        return ("🔇 <b>This video has no speech — that's the only problem.</b>\n"
+                "Clips can still be cut from it at whatever length you asked for; "
+                "only translating and dubbing need words.\n"
+                "👉 Send the link again without the language/dub option.")
     if place == LINK:
         return ("📼 <b>The problem is this video, not the program.</b>\n"
                 "ShortForge is working correctly — this particular link can't be "
-                "processed (DRM, private/removed, age-restricted, or no speech).\n"
+                "processed (DRM, private/removed, age-restricted).\n"
                 "👉 Nothing to fix. Skip it and send a different link.")
     if place == MACHINE:
         return ("🖥️ <b>The problem is this machine's setup, not the program's logic.</b>\n"

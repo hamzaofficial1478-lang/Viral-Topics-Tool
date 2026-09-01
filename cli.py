@@ -738,7 +738,7 @@ def cmd_encode_sample(args: argparse.Namespace) -> int:
         cfg.override("reframe.resolution", args.resolution)
     meta = ingest(args.source, cfg, owner_confirmed=args.owner_confirmed)
     apply_resolution(cfg)
-    out_w, out_h = parse_aspect(cfg.get("reframe.aspect", "9:16"),
+    out_w, out_h = parse_aspect(cfg.get("reframe.aspect", "16:9"),
                                 int(cfg.get("reframe.width", 1080)),
                                 int(cfg.get("reframe.height", 1920)))
     probe = ffprobe_info(meta.file_path)
@@ -1115,7 +1115,7 @@ def cmd_wizard(args: argparse.Namespace) -> int:
         log.error("Ownership is required — ShortForge only processes your own content.")
         return 2
 
-    aspect = _ask("2. Aspect / shape (9:16 / 1:1 / 16:9 / WxH)", "9:16")
+    aspect = _ask("2. Aspect / shape (16:9 / 9:16 / 1:1 / WxH)", "16:9")
     resolution = _ask("   Resolution / pixel size (1080p / 720p / 480p / WxH)", "1080p")
     duration = _ask("3. Target clip duration seconds (30/45/60)", "45")
     from shortforge.reframe import estimate_export

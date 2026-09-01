@@ -28,7 +28,7 @@ def parse_aspect(aspect: str, width: int, height: int) -> tuple[int, int]:
     Accepts ``"9:16"`` / ``"1:1"`` / ``"16:9"`` (use configured width, derive
     the other side), or an explicit ``"WxH"`` (e.g. ``"1080x1920"``).
     """
-    aspect = (aspect or "9:16").strip().lower()
+    aspect = (aspect or "16:9").strip().lower()
     if "x" in aspect:
         w_s, _, h_s = aspect.partition("x")
         try:

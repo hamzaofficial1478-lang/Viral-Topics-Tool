@@ -839,7 +839,10 @@ def _render_queue() -> None:
                                   "Portrait can follow the speaker.")
     c4, c5 = st.columns(2)
     with c4:
-        res = st.selectbox("Resolution", ["1080p", "720p", "480p"], 0)
+        from shortforge.reframe.resolution import CHOICES as _RC
+        _rk = [k for k, _ in _RC]
+        res = st.selectbox("Resolution", _rk, _rk.index("1080p"),
+                           format_func=lambda k: dict(_RC)[k])
     with c5:
         label = st.text_input("Label (optional)", placeholder="podcast",
                               help="Tags this batch's output files so you can tell them apart.")
@@ -902,7 +905,8 @@ def _render_queue() -> None:
             cur_shape = j["settings"].get("aspect", "16:9")
             es = e3.selectbox("Shape", shapes, key="q_e_shape",
                               index=shapes.index(cur_shape) if cur_shape in shapes else 0)
-            resl = ["1080p", "720p", "480p"]
+            from shortforge.reframe.resolution import CHOICES as _RC2
+            resl = [k for k, _ in _RC2]
             cur_res = j["settings"].get("resolution", "1080p")
             er = e4.selectbox("Res", resl, key="q_e_res",
                               index=resl.index(cur_res) if cur_res in resl else 0)
@@ -1036,8 +1040,14 @@ def _render_history() -> None:
     st.caption("Every finished run and its clips — review earlier work without hunting "
                "through the out/ folder.")
     out_dir = os.path.abspath("out")
-    manifests = sorted(glob.glob(os.path.join(out_dir, _MANIFEST_GLOB)),
-                       key=os.path.getmtime, reverse=True)
+    # Recursive: runs now write into out/<uploader>/<video_id>/, and a
+    # non-recursive glob would have made every past run vanish from this screen
+    # the moment that landed. The flat pattern stays so runs from before the
+    # per-source folders — and any run with output_template cleared — still show.
+    manifests = sorted(
+        set(glob.glob(os.path.join(out_dir, _MANIFEST_GLOB))
+            + glob.glob(os.path.join(out_dir, "**", _MANIFEST_GLOB), recursive=True)),
+        key=os.path.getmtime, reverse=True)
     if not manifests:
         st.info("No runs yet. Finished jobs will appear here.")
         return
@@ -1122,7 +1132,7 @@ def _render_new_job_form() -> None:
                 help="How far a clip may stray from the target length so it can end on a "
                      "natural pause instead of mid-sentence.")
             aspect = st.text_input(
-                "Aspect / shape", value="9:16",
+                "Aspect / shape", value="16:9",
                 help="9:16 (vertical), 1:1 (square), 16:9 (wide), or an exact WxH such as "
                      "1080x1920. This is the SHAPE — pixel size is set separately below.")
             from shortforge.reframe.resolution import (
@@ -1223,7 +1233,7 @@ def _render_new_job_form() -> None:
         source = _save_upload(up, os.path.splitext(up.name)[1] or ".mp4")
 
     cfg = Config.load()
-    cfg.override("reframe.aspect", aspect.strip() or "9:16")
+    cfg.override("reframe.aspect", aspect.strip() or "16:9")
     cfg.override("reframe.resolution", resolution)
     cfg.override("render.quality", quality)
     cfg.override("select.target_duration", int(duration))

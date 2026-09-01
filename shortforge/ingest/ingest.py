@@ -244,7 +244,7 @@ def source_ceiling(cfg: Config) -> int:
     cap = int(cfg.get("ingest.max_height", 2160) or 2160)
     try:
         need = source_height_needed(cfg.get("reframe.resolution", "1080p"),
-                                    cfg.get("reframe.aspect", "9:16"))
+                                    cfg.get("reframe.aspect", "16:9"))
     except Exception:      # noqa: BLE001 - a bad aspect must not block ingest
         need = 1920
     # Round up to the next standard tier: asking for exactly 1920 would reject

@@ -127,6 +127,12 @@ def run_pipeline(
         meta = ingest(source, cfg, owner_confirmed=owner_confirmed)
     cache = Cache(work_dir, meta.hash)
 
+    # One folder per source, reused whenever the same link comes back, so a
+    # year of runs stays navigable instead of piling into one directory.
+    from .outputs import resolve_output_dir
+    out_dir = resolve_output_dir(meta, cfg)
+    log.info("output folder: %s", out_dir)
+
     # --- M2 transcribe (or use supplied transcript) ----------------------- #
     if transcript_path:
         with timing.stage("asr", note="supplied"):
@@ -175,7 +181,7 @@ def run_pipeline(
     from .reframe import apply_resolution
     apply_resolution(cfg)
     out_w, out_h = parse_aspect(
-        cfg.get("reframe.aspect", "9:16"),
+        cfg.get("reframe.aspect", "16:9"),
         int(cfg.get("reframe.width", 1080)),
         int(cfg.get("reframe.height", 1920)),
     )
@@ -208,7 +214,7 @@ def run_pipeline(
     # letting the operator discover it on Facebook.
     from .reframe.resolution import upscale_factor, source_height_needed
     _res = cfg.get("reframe.resolution", "1080p")
-    _asp = cfg.get("reframe.aspect", "9:16")
+    _asp = cfg.get("reframe.aspect", "16:9")
     upscale = upscale_factor(probe.width, probe.height, _res, _asp)
     sharpen_cfg = cfg.get("render.sharpen")
     sharpen = bool(upscale > 1.02) if sharpen_cfg is None else bool(sharpen_cfg)

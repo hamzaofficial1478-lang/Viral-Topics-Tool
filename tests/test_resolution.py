@@ -22,11 +22,15 @@ def test_dims_for_combines_resolution_and_aspect():
 
 
 def test_apply_resolution_sets_width_height():
+    """Resolution anchors the SHORT side; the aspect decides which side that is.
+    Stated for both shapes so this can't silently encode whichever orientation
+    happens to be the current default."""
     cfg = Config.load()
     cfg.override("reframe.resolution", "720p")
     R.apply_resolution(cfg)
     assert int(cfg.get("reframe.width")) == 720 and int(cfg.get("reframe.height")) == 720
-    assert parse_aspect(cfg.get("reframe.aspect", "9:16"), 720, 720) == (720, 1280)
+    assert parse_aspect("9:16", 720, 720) == (720, 1280)    # portrait: tall
+    assert parse_aspect("16:9", 720, 720) == (1280, 720)    # landscape: wide
 
 
 def test_apply_resolution_custom_wxh_routes_to_aspect():

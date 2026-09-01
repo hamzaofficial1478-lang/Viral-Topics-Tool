@@ -48,7 +48,7 @@ def dims_for(resolution: str, aspect: str) -> tuple[int, int]:
     if "x" in str(resolution).lower():
         return parse_aspect(str(resolution), 1080, 1920)
     s = short_side(resolution) or 1080
-    return parse_aspect(aspect or "9:16", s, s)
+    return parse_aspect(aspect or "16:9", s, s)
 
 
 def source_height_needed(resolution: str, aspect: str) -> int:

@@ -16,7 +16,16 @@ import yaml
 # Baked-in defaults so the pipeline runs even without a settings file present.
 DEFAULTS: dict[str, Any] = {
     # output_prefix tags each rendered file with the queue link it came from.
-    "paths": {"work_dir": ".shortforge", "output_dir": "out", "output_prefix": ""},
+    "paths": {
+        "work_dir": ".shortforge",
+        "output_dir": "out",
+        "output_prefix": "",
+        # One folder per source under output_dir, reused when the same link is
+        # added again. Uses BOTH identifiers a YouTube link carries, so clips
+        # from one channel group together and each video keeps its own folder.
+        # "{video_id}" alone = flat per video; "" = the old single folder.
+        "output_template": "{uploader}/{video_id}",
+    },
     "ingest": {
         # None => built from what the chosen export actually needs, capped by
         # max_height (see ingest.source_ceiling). The old hard-coded
@@ -108,7 +117,10 @@ DEFAULTS: dict[str, Any] = {
         "max_backup": 2,          # max segments to back up from a hook anchor (keep hook early)
     },
     "reframe": {
-        "aspect": "9:16",           # SHAPE (9:16 / 1:1 / 16:9 / WxH)
+        # Landscape by default, at the operator's request. Note this also makes
+        # exports SHARPER for free: 16:9 out of a 16:9 source needs no crop, so
+        # nothing is enlarged and a 1080p download already fills 1920x1080.
+        "aspect": "16:9",           # SHAPE (9:16 / 1:1 / 16:9 / WxH)
         "resolution": "1080p",      # SIZE — short side px (1080p/720p/480p) or WxH; separate from aspect
         "width": 1080,
         "height": 1920,

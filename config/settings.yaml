@@ -4,6 +4,9 @@
 paths:
   work_dir: .shortforge          # cache + intermediate files (per source hash)
   output_dir: out                # rendered clips land here
+  # A folder per source under output_dir, reused when the same link comes back.
+  # "{video_id}" alone = one flat folder per video; "" = everything in out/.
+  output_template: "{uploader}/{video_id}"
 
 ingest:
   # yt-dlp format selector. null = build it from what the chosen export needs
@@ -66,7 +69,7 @@ select:
   pause_threshold: 0.5           # gap (s) that marks a thought/topic boundary
 
 reframe:
-  aspect: "9:16"                 # 9:16 | 1:1 | 16:9 | WxH (e.g. 1080x1920)
+  aspect: "16:9"                 # 9:16 | 1:1 | 16:9 | WxH (e.g. 1080x1920)
   width: 1080
   height: 1920
   fill: crop                     # crop (center smart-crop) | blur (fit + blurred bg)

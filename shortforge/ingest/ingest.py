@@ -227,11 +227,41 @@ def _extractor_args(cfg: Config) -> dict:
     return {"youtube": {"player_client": clients}} if clients else {}
 
 
-# Progressively looser selectors. YouTube does not always offer a <=1080p
-# video+audio pair (SABR / per-client format restrictions), so falling back to
-# "whatever plays" beats failing the download.
+def source_ceiling(cfg: Config) -> int:
+    """Tallest source worth downloading, in pixels.
+
+    The old hard-coded ``height<=1080`` was the single biggest cause of soft,
+    pixelated output: a 1920x1080 download cropped to 9:16 leaves a 608 px-wide
+    strip, which then has to be blown up 1.78x to reach 1080x1920. The detail
+    was never on disk to begin with.
+
+    So ask for what the chosen output actually needs (see
+    ``reframe.resolution.source_height_needed``) rather than a fixed cap —
+    a 720p export does not need a 4K download — bounded by
+    ``ingest.max_height`` so an 8K source can't be pulled by accident.
+    """
+    from ..reframe.resolution import source_height_needed
+    cap = int(cfg.get("ingest.max_height", 2160) or 2160)
+    try:
+        need = source_height_needed(cfg.get("reframe.resolution", "1080p"),
+                                    cfg.get("reframe.aspect", "9:16"))
+    except Exception:      # noqa: BLE001 - a bad aspect must not block ingest
+        need = 1920
+    # Round up to the next standard tier: asking for exactly 1920 would reject
+    # the 2160p upload that is the only thing tall enough on offer.
+    for tier in (1080, 1440, 2160, 4320):
+        if tier >= need:
+            return min(tier, cap)
+    return cap
+
+
+# Progressively looser selectors. YouTube does not always offer a video+audio
+# pair at the height we want (SABR / per-client format restrictions), so
+# falling back to "whatever plays" beats failing the download.
 def _format_chain(cfg: Config) -> list[str]:
-    configured = cfg.get("ingest.format") or "bv*[height<=1080]+ba/b[height<=1080]/b"
+    h = source_ceiling(cfg)
+    configured = (cfg.get("ingest.format")
+                  or f"bv*[height<={h}]+ba/b[height<={h}]/b")
     chain = [configured, "bv*+ba/b", "best[ext=mp4]/best", "best"]
     out: list[str] = []
     for f in chain:                      # de-dup, keep order

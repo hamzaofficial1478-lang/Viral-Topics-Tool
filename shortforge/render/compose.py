@@ -18,6 +18,24 @@ def _esc(path: str) -> str:
     return path.replace("\\", "\\\\").replace("'", r"\'").replace(":", r"\:")
 
 
+# ffmpeg's scale filter defaults to bicubic. Lanczos resolves noticeably more
+# fine detail on the enlargement this pipeline nearly always has to do, for a
+# few percent of render time.
+SCALE_FLAGS = "lanczos"
+
+# Applied only when the crop is being enlarged. Upscaling cannot add detail,
+# but it does soften every edge that was there; a mild unsharp mask restores
+# the apparent crispness without the halos a heavier setting produces.
+# luma 5x5, amount 0.8 -- deliberately conservative, since these clips get
+# re-encoded again by the platform and over-sharpening turns into ringing.
+SHARPEN = "unsharp=5:5:0.8:3:3:0.4"
+
+
+def _scale(out_w: int, out_h: int, sharpen: bool) -> str:
+    s = f"scale={out_w}:{out_h}:flags={SCALE_FLAGS}"
+    return f"{s},{SHARPEN}" if sharpen else s
+
+
 def build_filtergraph(
     src_w: int,
     src_h: int,
@@ -31,6 +49,7 @@ def build_filtergraph(
     video_select: str | None = None,
     burned_band: dict | None = None,
     burned_mode: str = "cover",
+    sharpen: bool = False,
 ) -> str:
     nodes: list[str] = []
     vin = "0:v"
@@ -53,17 +72,24 @@ def build_filtergraph(
         if fill == "blur":
             nodes.append(
                 f"[{vin}]split=2[bg][fg];"
-                f"[bg]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
-                f"crop={out_w}:{out_h},gblur=sigma=20[bgb];"
-                f"[fg]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease[fgs];"
+                f"[bg]scale={out_w}:{out_h}:force_original_aspect_ratio=increase:"
+                f"flags={SCALE_FLAGS},crop={out_w}:{out_h},gblur=sigma=20[bgb];"
+                f"[fg]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:"
+                f"flags={SCALE_FLAGS}[fgs];"
                 f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2,setsar=1[ref]"
             )
         else:
             cw, ch, x, y = compute_crop(src_w, src_h, out_w, out_h)
             nodes.append(
-                f"[{vin}]crop={cw}:{ch}:{x}:{y},scale={out_w}:{out_h},setsar=1[ref]"
+                f"[{vin}]crop={cw}:{ch}:{x}:{y},"
+                f"{_scale(out_w, out_h, sharpen)},setsar=1[ref]"
             )
         cur = "ref"
+    elif sharpen:
+        # Tracked path: OpenCV already cropped and resized, so the softening
+        # has happened upstream -- sharpen here instead of skipping it.
+        nodes.append(f"[{cur}]{SHARPEN}[shp]")
+        cur = "shp"
 
     if subtitles:
         nodes.append(f"[{cur}]{subtitles}[cap]")

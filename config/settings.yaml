@@ -6,8 +6,12 @@ paths:
   output_dir: out                # rendered clips land here
 
 ingest:
-  # yt-dlp format selector. Prefers <=1080p mp4, falls back to best.
-  format: "bv*[height<=1080]+ba/b[height<=1080]/b"
+  # yt-dlp format selector. null = build it from what the chosen export needs
+  # (ingest.source_ceiling), capped by max_height. A fixed <=1080p cap was the
+  # root cause of soft output: cropping 1920x1080 to 9:16 leaves 608 px of
+  # width, which then has to be enlarged to 1080. Set a string here to pin it.
+  format: null
+  max_height: 2160               # tallest source worth downloading (4K)
   # Path to a cookies.txt for private/unlisted videos (M1 auth). Optional.
   cookies: null
   # yt-dlp player client(s) to query (comma-separated). The "default" (web)
@@ -206,9 +210,14 @@ review:                          # M12 QC review gate
   enabled: true
 
 render:
-  crf: 20                        # H.264 quality (lower = better)
-  preset: veryfast
-  audio_bitrate: 128k
+  # Quality tier sets crf+preset together: maximum | high | balanced | fast.
+  # "high" (CRF 18 / medium) is clean enough to survive the re-encode that
+  # Facebook, Instagram and YouTube apply to every upload.
+  quality: high
+  crf: null                      # null = from `quality`; a number overrides it
+  preset: null                   # null = from `quality`
+  sharpen: null                  # null = only when the crop is being enlarged
+  audio_bitrate: 192k
   fps: null                      # null = keep source fps
   loudnorm: true                 # M9: normalize to ~-14 LUFS (social standard)
   loudnorm_i: -14.0

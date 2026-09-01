@@ -68,23 +68,74 @@ def resolve_encoder(cfg: Config) -> str:
     return "libx264"
 
 
+# Quality tiers. The operator's brief was explicit -- "no matter if it will
+# take time on crafting" -- and the old defaults (CRF 20 at preset *veryfast*)
+# were a speed compromise applied to the finished deliverable.
+#
+# The destination matters too: Facebook, Instagram and YouTube all RE-ENCODE
+# whatever you upload. Your file is the *input* to their encoder, so any
+# artefact you ship gets compounded by theirs. Sending a visually-clean file
+# (CRF 16-18) is what survives that second pass; sending CRF 23 does not.
+_QUALITY_TIERS = {
+    "maximum":  {"crf": 16, "preset": "slow",     "hw": 18},
+    "high":     {"crf": 18, "preset": "medium",   "hw": 20},
+    "balanced": {"crf": 20, "preset": "fast",     "hw": 23},
+    "fast":     {"crf": 23, "preset": "veryfast", "hw": 26},
+}
+QUALITY_CHOICES = [
+    ("maximum", "Maximum — visually lossless, slowest render"),
+    ("high", "High — recommended for Facebook/Instagram/YouTube"),
+    ("balanced", "Balanced"),
+    ("fast", "Fast — draft quality"),
+]
+
+
+def quality_tier(cfg: Config) -> dict:
+    name = str(cfg.get("render.quality", "high") or "high").lower()
+    return _QUALITY_TIERS.get(name, _QUALITY_TIERS["high"])
+
+
+def _q(cfg: Config, key: str, tier_key: str):
+    """Explicit ``render.crf``/``render.preset`` win when set; otherwise the
+    value comes from the quality tier. Keeps the fine-grained knobs working as
+    an escape hatch without making the tier meaningless."""
+    v = cfg.get(f"render.{key}")
+    return v if v not in (None, "") else quality_tier(cfg)[tier_key]
+
+
+# Rec.709 is what H.264 SDR content is, but ffmpeg does not tag it unless told.
+# Untagged files leave the player -- and Facebook's transcoder -- to guess,
+# which is where "washed out after upload" comes from.
+_COLOR_TAGS = ["-color_primaries", "bt709", "-color_trc", "bt709",
+               "-colorspace", "bt709", "-color_range", "tv"]
+
+
 def video_encode_args(cfg: Config, encoder: str | None = None) -> list[str]:
     """``-c:v …`` args for the chosen encoder. Hardware encoders are tuned for
     quality-equivalence to the x264 CRF (raise the bitrate/quality knob rather
     than accept visible loss); software x264 keeps CRF + preset + -threads."""
     enc = encoder or resolve_encoder(cfg)
+    hw_q = quality_tier(cfg)["hw"]
     if enc == "h264_qsv":
-        gq = str(cfg.get("render.qsv_quality", 23))   # like CRF: lower = better
-        return ["-c:v", "h264_qsv", "-global_quality", gq, "-pix_fmt", "nv12"]
+        gq = str(cfg.get("render.qsv_quality") or hw_q)   # like CRF: lower = better
+        return ["-c:v", "h264_qsv", "-global_quality", gq,
+                "-pix_fmt", "nv12"] + _COLOR_TAGS
     if enc == "h264_nvenc":
-        cq = str(cfg.get("render.nvenc_cq", 23))
-        return ["-c:v", "h264_nvenc", "-rc", "vbr", "-cq", cq, "-pix_fmt", "yuv420p"]
+        cq = str(cfg.get("render.nvenc_cq") or hw_q)
+        return ["-c:v", "h264_nvenc", "-rc", "vbr", "-cq", cq,
+                "-pix_fmt", "yuv420p"] + _COLOR_TAGS
     if enc == "h264_amf":
-        qp = str(cfg.get("render.amf_qp", 22))
-        return ["-c:v", "h264_amf", "-rc", "cqp", "-qp_i", qp, "-qp_p", qp, "-pix_fmt", "yuv420p"]
+        qp = str(cfg.get("render.amf_qp") or hw_q)
+        return ["-c:v", "h264_amf", "-rc", "cqp", "-qp_i", qp, "-qp_p", qp,
+                "-pix_fmt", "yuv420p"] + _COLOR_TAGS
     # libx264 (software, default)
-    return (["-c:v", "libx264", "-preset", str(cfg.get("render.preset", "veryfast")),
-             "-crf", str(cfg.get("render.crf", 20)), "-pix_fmt", "yuv420p"]
+    return (["-c:v", "libx264",
+             "-preset", str(_q(cfg, "preset", "preset")),
+             "-crf", str(_q(cfg, "crf", "crf")),
+             # High profile enables CABAC + 8x8 transform: better quality at the
+             # same bitrate, and universally supported by social platforms.
+             "-profile:v", "high", "-level", "4.2",
+             "-pix_fmt", "yuv420p"] + _COLOR_TAGS
             + _threads_args(cfg))
 
 
@@ -129,7 +180,7 @@ def render_clip(
     ffmpeg = require_binary("ffmpeg")
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    abr = str(cfg.get("render.audio_bitrate", "128k"))
+    abr = str(cfg.get("render.audio_bitrate", "192k"))
     fps = cfg.get("render.fps")
     af = loudnorm_filter(cfg)
 
@@ -226,7 +277,13 @@ def render_clip_tracked(
     if fps <= 0:
         fps = 30.0
 
-    abr = str(cfg.get("render.audio_bitrate", "128k"))
+    # INTER_AREA is the right choice for SHRINKING and, per OpenCV's own docs,
+    # degenerates to nearest-neighbour when ENLARGING -- which is what this
+    # path nearly always does (a 9:16 crop of a 16:9 source is narrower than
+    # the output). It was quietly adding blockiness to every tracked clip.
+    _interp = cv2.INTER_AREA if track.cw >= out_w else cv2.INTER_LANCZOS4
+
+    abr = str(cfg.get("render.audio_bitrate", "192k"))
     af = loudnorm_filter(cfg)
     encoder = _encoder or resolve_encoder(cfg)
 
@@ -301,8 +358,8 @@ def render_clip_tracked(
             x, y = track.topleft_at(t)
             crop = frame[y : y + track.ch, x : x + track.cw]
             if crop.shape[0] != track.ch or crop.shape[1] != track.cw:
-                crop = cv2.resize(crop, (track.cw, track.ch))
-            resized = cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_AREA)
+                crop = cv2.resize(crop, (track.cw, track.ch), interpolation=_interp)
+            resized = cv2.resize(crop, (out_w, out_h), interpolation=_interp)
             try:
                 proc.stdin.write(resized.tobytes())
             except BrokenPipeError:

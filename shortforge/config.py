@@ -18,7 +18,12 @@ DEFAULTS: dict[str, Any] = {
     # output_prefix tags each rendered file with the queue link it came from.
     "paths": {"work_dir": ".shortforge", "output_dir": "out", "output_prefix": ""},
     "ingest": {
-        "format": "bv*[height<=1080]+ba/b[height<=1080]/b",
+        # None => built from what the chosen export actually needs, capped by
+        # max_height (see ingest.source_ceiling). The old hard-coded
+        # height<=1080 was THE cause of soft output: cropping a 1920x1080
+        # download to 9:16 leaves 608 px of width to blow up to 1080.
+        "format": None,
+        "max_height": 2160,         # never pull an 8K source by accident
         "cookies": None,                 # path to a cookies.txt (Netscape format)
         "cookies_from_browser": None,    # firefox | chrome | edge | brave (read the browser's cookies)
         # yt-dlp player client(s) to query (comma-separated). "default" (the
@@ -225,9 +230,18 @@ DEFAULTS: dict[str, Any] = {
     },
     "review": {"enabled": True},     # M12 QC review gate
     "render": {
-        "crf": 20,
-        "preset": "veryfast",
-        "audio_bitrate": "128k",
+        # Quality tier drives crf+preset together (see render.render._QUALITY_TIERS).
+        # "high" = CRF 18 / preset medium: visually clean enough to survive the
+        # re-encode Facebook/Instagram/YouTube apply to every upload. The old
+        # default (CRF 20 / veryfast) was a speed compromise on the deliverable.
+        "quality": "high",          # maximum | high | balanced | fast
+        # None => derive from `quality`. Set either one to override the tier.
+        "crf": None,
+        "preset": None,
+        # Sharpen when the crop has to be enlarged. None = automatic (only when
+        # actually upscaling); True/False force it.
+        "sharpen": None,
+        "audio_bitrate": "192k",
         "fps": None,
         "resume": False,            # skip clips whose output already exists
         # STEP 5 parallel render: run clips concurrently (each ffmpeg is CPU-bound).
@@ -236,9 +250,10 @@ DEFAULTS: dict[str, Any] = {
         # STEP 1 hardware encoding. Default x264 (software) until the operator
         # confirms QSV quality via `encode-sample`; then set 'auto' or 'qsv'.
         "encoder": "x264",          # auto | qsv | nvenc | amf | x264
-        "qsv_quality": 23,          # h264_qsv -global_quality (CRF-like; lower = better)
-        "nvenc_cq": 23,             # h264_nvenc -cq
-        "amf_qp": 22,               # h264_amf -qp_i/-qp_p
+        # None => derive from the quality tier, same as crf/preset above.
+        "qsv_quality": None,        # h264_qsv -global_quality (CRF-like; lower = better)
+        "nvenc_cq": None,           # h264_nvenc -cq
+        "amf_qp": None,             # h264_amf -qp_i/-qp_p
 
         "loudnorm": True,           # M9: normalise to ~-14 LUFS
         "loudnorm_i": -14.0,

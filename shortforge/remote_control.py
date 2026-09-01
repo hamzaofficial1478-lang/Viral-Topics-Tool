@@ -110,7 +110,10 @@ _ALIASES = {
     "duration": "duration", "dur": "duration", "len": "duration", "length": "duration",
     "tolerance": "tolerance", "tol": "tolerance",
     "aspect": "aspect", "orientation": "aspect",
-    "resolution": "resolution", "res": "resolution", "quality": "resolution",
+    "resolution": "resolution", "res": "resolution", "size": "resolution",
+    # "quality" used to alias to RESOLUTION, which was wrong even then and is
+    # now ambiguous: there is a real encode-quality setting. It means quality.
+    "quality": "quality", "q": "quality",
     "language": "language", "lang": "language",
     "template": "caption_template", "captions": "caption_template",
     "label": "_label",
@@ -126,7 +129,14 @@ _FALSY = {"0", "false", "no", "n", "off", "none"}
 _ASPECTS = {"9:16", "16:9", "1:1", "4:5", "portrait", "landscape", "square"}
 _ASPECT_WORDS = {"portrait": "9:16", "vertical": "9:16",
                  "landscape": "16:9", "horizontal": "16:9", "square": "1:1"}
-_RESOLUTIONS = {"1080p", "720p", "480p", "360p"}
+_RESOLUTIONS = {"2160p", "1440p", "1080p", "720p", "480p", "360p"}
+_QUALITIES = {"maximum", "high", "balanced", "fast"}
+# How the operator actually types these from a phone.
+_QUALITY_WORDS = {"max": "maximum", "maximum": "maximum", "best": "maximum",
+                  "highest": "maximum", "sharpest": "maximum",
+                  "high": "high", "hq": "high",
+                  "balanced": "balanced", "normal": "balanced",
+                  "fast": "fast", "draft": "fast", "quick": "fast"}
 
 # Bounds. Refusing an absurd value beats clamping it into something the operator
 # did not ask for — they'd never know the number changed.
@@ -143,7 +153,19 @@ _ASPECT_RE = re.compile(r"\b(9:16|16:9|1:1|4:5|portrait|landscape|square|vertica
                         re.I)
 # The trailing "p" is optional: "landscape 1080" is how it gets typed, and
 # requiring "1080p" silently dropped the resolution with no hint it had.
-_RES_RE = re.compile(r"\b(1080|720|480|360)p?\b", re.I)
+_RES_RE = re.compile(r"\b(2160|1440|1080|720|480|360)p?\b", re.I)
+# "4k" / "2k" are what people say out loud; accept both spellings.
+_RES_WORDS = {"4k": "2160p", "uhd": "2160p", "2k": "1440p", "qhd": "1440p",
+              "fhd": "1080p", "hd": "720p"}
+_RES_WORD_RE = re.compile(r"\b(4k|uhd|2k|qhd|fhd)\b", re.I)
+# Two shapes, because bare adjectives are ambiguous. "<word> quality" is
+# unmistakable; standalone, only words that cannot mean anything else here are
+# accepted -- "fast" and "high" alone are far more likely to be describing the
+# footage ("fast paced", "high energy") than the encoder.
+_QUALITY_RE = re.compile(
+    r"\b(max|maximum|best|highest|sharpest|high|hq|balanced|normal|fast|quick|draft)"
+    r"\s+quality\b"
+    r"|\b(maximum|sharpest|highest)\b", re.I)
 
 # Plain-English equivalents of /resume and /pause — a reply to the "should I
 # start?" permission prompt is exactly the kind of message nobody wants to
@@ -278,7 +300,14 @@ def parse_settings(text: str) -> dict:
                 out[key] = v
         elif key == "resolution":
             v = val.lower()
+            v = _RES_WORDS.get(v, v)
+            if v.isdigit():
+                v += "p"
             if v in _RESOLUTIONS or re.fullmatch(r"\d{2,5}x\d{2,5}", v):
+                out[key] = v
+        elif key == "quality":
+            v = _QUALITY_WORDS.get(val.lower(), val.lower())
+            if v in _QUALITIES:
                 out[key] = v
         elif key == "language":
             if re.fullmatch(r"[A-Za-z]{2,5}(-[A-Za-z]{2,5})?", val):
@@ -315,9 +344,23 @@ def _parse_loose(text: str, out: dict) -> None:
         t = t[:m.start()] + " " + t[m.end():]
     t = _ASPECT_RE.sub(" ", t)
 
+    # "4k"/"2k" before the numeric form, and consumed, so the digit in "4k"
+    # cannot later be read as a clip count.
+    m = _RES_WORD_RE.search(t)
+    if m:
+        out.setdefault("resolution", _RES_WORDS[m.group(1).lower()])
+        t = t[:m.start()] + " " + t[m.end():]
+
     m = _RES_RE.search(t)
     if m:
         out.setdefault("resolution", m.group(1).lower().rstrip("p") + "p")
+        t = t[:m.start()] + " " + t[m.end():]
+
+    m = _QUALITY_RE.search(t)
+    if m:
+        w = _QUALITY_WORDS.get((m.group(1) or m.group(2)).lower())
+        if w:
+            out.setdefault("quality", w)
         t = t[:m.start()] + " " + t[m.end():]
 
     # Clips before duration, and consumed, so "5 clips of 2 min" doesn't read the

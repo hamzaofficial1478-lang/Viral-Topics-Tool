@@ -31,6 +31,7 @@ def _apply_common_overrides(cfg: Config, args: argparse.Namespace) -> None:
     cfg.override("reframe.aspect", getattr(args, "aspect", None))
     cfg.override("reframe.resolution", getattr(args, "resolution", None))
     cfg.override("render.encoder", getattr(args, "encoder", None))
+    cfg.override("render.quality", getattr(args, "quality", None))
     cfg.override("brand.size", getattr(args, "logo_size", None))
     cfg.override("reframe.fill", getattr(args, "fill", None))
     cfg.override("transcribe.model", getattr(args, "whisper_model", None))
@@ -1298,7 +1299,11 @@ def build_parser() -> argparse.ArgumentParser:
     qadd.add_argument("--duration", type=int, dest="duration", help="Clip seconds for THIS link")
     qadd.add_argument("--tolerance", type=int, dest="tolerance")
     qadd.add_argument("--aspect", dest="aspect", help="9:16 | 1:1 | 16:9 | WxH")
-    qadd.add_argument("--resolution", dest="resolution", help="1080p | 720p | 480p | WxH")
+    qadd.add_argument("--resolution", dest="resolution",
+                      help="2160p | 1440p | 1080p | 720p | 480p | WxH")
+    qadd.add_argument("--quality", dest="quality",
+                      choices=["maximum", "high", "balanced", "fast"],
+                      help="Encode quality (default high)")
     qadd.add_argument("--language", dest="language")
     qadd.add_argument("--caption-template", dest="caption_template")
     qsub.add_parser("list", help="Show the queue and each job's status")
@@ -1392,8 +1397,13 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
                    help="legacy shorthand (maps to --caption-animation)")
     r.add_argument("--burned-in", choices=["none", "cover", "blur", "crop"],
                    help="Treat captions baked into the source pixels (A3)")
-    r.add_argument("--resolution", help="Export size (short side): 1080p | 720p | 480p | WxH. "
-                   "Separate from --aspect. Default 1080p; lower renders faster on CPU.")
+    r.add_argument("--resolution", help="Export size (short side): 2160p (4K) | 1440p (2K) | "
+                   "1080p | 720p | 480p | WxH. Separate from --aspect. Default 1080p. "
+                   "Going above what the source can fill cannot add detail.")
+    r.add_argument("--quality", choices=["maximum", "high", "balanced", "fast"],
+                   help="Encode quality: sets CRF + x264 preset together. Default 'high' "
+                       "(CRF 18/medium) -- clean enough to survive the re-encode Facebook, "
+                       "Instagram and YouTube apply to every upload. 'maximum' is slowest.")
     r.add_argument("--encoder", choices=["auto", "qsv", "nvenc", "amf", "x264"],
                    help="Video encoder. x264 (default, software) | qsv (Intel Quick Sync, much "
                         "faster) | nvenc | amf | auto (best hardware available). Compare quality "

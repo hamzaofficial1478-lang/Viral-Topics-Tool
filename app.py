@@ -1125,15 +1125,37 @@ def _render_new_job_form() -> None:
                 "Aspect / shape", value="9:16",
                 help="9:16 (vertical), 1:1 (square), 16:9 (wide), or an exact WxH such as "
                      "1080x1920. This is the SHAPE — pixel size is set separately below.")
+            from shortforge.reframe.resolution import (
+                CHOICES as _RES_CHOICES, source_height_needed)
+            _res_keys = [k for k, _ in _RES_CHOICES]
             resolution = st.selectbox(
-                "Resolution (pixel size)", ["1080p", "720p", "480p"], 0,
-                help="The short side in pixels — separate from aspect. Lower renders "
-                     "meaningfully faster on CPU; 720p is fine for most social destinations.")
+                "Resolution (pixel size)", _res_keys,
+                _res_keys.index("1080p"),
+                format_func=lambda k: dict(_RES_CHOICES)[k],
+                help="The short side in pixels — separate from aspect. Going above the "
+                     "source's own resolution cannot add detail, so check the note below: "
+                     "it says whether your source can actually fill this size.")
+            from shortforge.render.render import QUALITY_CHOICES
+            _q_keys = [k for k, _ in QUALITY_CHOICES]
+            quality = st.selectbox(
+                "Encode quality", _q_keys, _q_keys.index("high"),
+                format_func=lambda k: dict(QUALITY_CHOICES)[k],
+                help="Facebook, Instagram and YouTube re-encode everything you upload, so "
+                     "your file is the INPUT to their encoder. A visually-clean file "
+                     "survives that second pass; a compressed one gets compounded. "
+                     "'Maximum' is slowest to render and best to upload.")
             from shortforge.reframe import estimate_export
             try:
                 _est = estimate_export(resolution, aspect, float(duration), int(num) or 1)
                 st.caption(f"→ {_est['width']}×{_est['height']} · ~{_est['mb_per_clip']} MB/clip "
                            f"· render {_est['render_speed']}")
+                _need = source_height_needed(resolution, aspect)
+                st.caption(
+                    f"For a genuinely sharp {_est['width']}×{_est['height']}, the source "
+                    f"needs to be at least **{_need}px tall**. A 1080p source cropped to "
+                    f"{aspect} only has ~{int(1080 * _est['width'] / _est['height'])}px of "
+                    f"width left, which then has to be enlarged — that is what makes clips "
+                    f"look pixelated. ShortForge now downloads up to 4K automatically.")
             except Exception:  # noqa: BLE001
                 pass
             reframe = st.selectbox(
@@ -1203,6 +1225,7 @@ def _render_new_job_form() -> None:
     cfg = Config.load()
     cfg.override("reframe.aspect", aspect.strip() or "9:16")
     cfg.override("reframe.resolution", resolution)
+    cfg.override("render.quality", quality)
     cfg.override("select.target_duration", int(duration))
     cfg.override("select.tolerance", int(tolerance))
     cfg.override("select.num_clips", int(num))

@@ -143,6 +143,8 @@ JOB_SETTINGS = {
     # produced no metadata with no error anywhere. These make it reachable.
     "metadata": "metadata.enabled",
     "thumbnail": "thumbnail.enabled",
+    # Encode quality, so "4k maximum quality" from the phone actually lands.
+    "quality": "render.quality",
 }
 
 

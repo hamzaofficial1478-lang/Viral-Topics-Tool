@@ -15,6 +15,12 @@ from __future__ import annotations
 
 from ..utils import ShortForgeError
 
+# Kept identical to render.compose.SCALE_FLAGS on purpose. `encode-sample` --
+# the tool the operator uses to JUDGE quality -- builds its graph here, so if
+# this scaler differed from production the comparison would be measuring the
+# wrong thing. (Engineering rule 6: probe and production share one path.)
+_FLAGS = "lanczos"
+
 
 def parse_aspect(aspect: str, width: int, height: int) -> tuple[int, int]:
     """Resolve an aspect spec to an (out_w, out_h) pixel size.
@@ -95,9 +101,10 @@ def build_filtergraph(
         # Fit the whole frame, centered, over a zoomed + blurred copy of itself.
         return (
             f"[0:v]split=2[bg][fg];"
-            f"[bg]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
-            f"crop={out_w}:{out_h},gblur=sigma=20[bgb];"
-            f"[fg]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease[fgs];"
+            f"[bg]scale={out_w}:{out_h}:force_original_aspect_ratio=increase:"
+            f"flags={_FLAGS},crop={out_w}:{out_h},gblur=sigma=20[bgb];"
+            f"[fg]scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:"
+            f"flags={_FLAGS}[fgs];"
             f"[bgb][fgs]overlay=(W-w)/2:(H-h)/2,setsar=1{tail}[v]"
         )
 
@@ -107,5 +114,5 @@ def build_filtergraph(
     cw, ch, x, y = compute_crop(src_w, src_h, out_w, out_h)
     return (
         f"[0:v]crop={cw}:{ch}:{x}:{y},"
-        f"scale={out_w}:{out_h},setsar=1{tail}[v]"
+        f"scale={out_w}:{out_h}:flags={_FLAGS},setsar=1{tail}[v]"
     )

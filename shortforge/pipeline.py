@@ -200,6 +200,35 @@ def run_pipeline(
     mode = cfg.get("reframe.mode", "center")
     fontsdir = _find_fontsdir()
 
+    # Sharpness accounting. Cropping a 16:9 source to a vertical shape throws
+    # away most of the width, and whatever is left gets enlarged to the export
+    # size. Beyond ~1.15x that is visible as softness no encoder setting can
+    # undo, so say it plainly (engineering rule 1: never silently degrade) and
+    # record it in the manifest (rule 3) instead of shipping a soft clip and
+    # letting the operator discover it on Facebook.
+    from .reframe.resolution import upscale_factor, source_height_needed
+    _res = cfg.get("reframe.resolution", "1080p")
+    _asp = cfg.get("reframe.aspect", "9:16")
+    upscale = upscale_factor(probe.width, probe.height, _res, _asp)
+    sharpen_cfg = cfg.get("render.sharpen")
+    sharpen = bool(upscale > 1.02) if sharpen_cfg is None else bool(sharpen_cfg)
+    quality_note = None
+    if upscale > 1.15:
+        need = source_height_needed(_res, _asp)
+        quality_note = (
+            f"source is {probe.width}x{probe.height}; a {_asp} crop of it must be "
+            f"enlarged {upscale:.2f}x to reach {out_w}x{out_h}, so these clips will "
+            f"look soft. For a sharp {out_w}x{out_h} the source needs to be at least "
+            f"{need}px tall (a 4K/2160p upload). Either pick a higher-resolution "
+            f"source, or export at a size this source can actually fill."
+        )
+        log.warning("QUALITY: %s", quality_note)
+    elif upscale > 1.02:
+        log.info("source crop is being enlarged %.2fx; sharpening enabled", upscale)
+    else:
+        log.info("source is large enough for %dx%d (crop downscales %.2fx) — no upscaling",
+                 out_w, out_h, 1.0 / max(upscale, 1e-6))
+
     # A3: detect captions baked into the source pixels; treat the band so our
     # target-language captions are the only text on screen.
     burned_mode = str(cfg.get("captions.burned_in", "none"))
@@ -514,7 +543,7 @@ def run_pipeline(
             if track is not None:
                 fg = build_filtergraph(
                     probe.width, probe.height, out_w, out_h,
-                    pre_cropped=True, subtitles=subs, logo=logo,
+                    pre_cropped=True, subtitles=subs, logo=logo, sharpen=sharpen,
                 )
 
                 def _do_render(clip=clip, track=track, fg=fg, out_path=out_path,
@@ -528,7 +557,7 @@ def run_pipeline(
                 fg = build_filtergraph(
                     probe.width, probe.height, out_w, out_h,
                     fill=fill, subtitles=subs, logo=logo, video_select=video_select,
-                    burned_band=burned_band, burned_mode=burned_mode,
+                    burned_band=burned_band, burned_mode=burned_mode, sharpen=sharpen,
                 )
 
                 def _do_render(clip=clip, fg=fg, out_path=out_path,
@@ -656,7 +685,9 @@ def run_pipeline(
         dub_desc,
         f"captions {'none (no speech)' if speechless else clip_lang if captions_on else 'off'}",
         f"reframe {'track' if use_track else 'center'}",
-        f"encoder {resolve_encoder(cfg)}",
+        f"encoder {resolve_encoder(cfg)} q={cfg.get('render.quality', 'high')}",
+        (f"source {probe.width}x{probe.height} (upscaled {upscale:.2f}x)"
+         if upscale > 1.02 else f"source {probe.width}x{probe.height}"),
         f"metadata {'on' if do_meta else 'off'}",
         f"thumbnail {'on' if do_thumb else 'off'}",
     ] + (["jumpcuts"] if jumpcuts_on else [])
@@ -677,6 +708,13 @@ def run_pipeline(
         "settings": {
             "resolution": f"{out_w}x{out_h}",
             "aspect": cfg.get("reframe.aspect"),
+            # Sharpness provenance: what the source could actually supply, and
+            # whether the export had to invent pixels to reach the chosen size.
+            "source_resolution": f"{probe.width}x{probe.height}",
+            "upscale_factor": round(upscale, 3),
+            "sharpened": bool(sharpen),
+            "quality": cfg.get("render.quality", "high"),
+            "quality_warning": quality_note,
             "reframe_mode": "track" if use_track else "center",
             "fill": fill,
             "target_duration": cfg.get("select.target_duration"),

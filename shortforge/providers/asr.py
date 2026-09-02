@@ -16,6 +16,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import re
 import os
 import urllib.request
 import uuid
@@ -24,6 +25,59 @@ from ..config import Config
 from ..models import Segment, Transcript, Word
 from ..utils import log
 from .base import ASRProvider
+
+
+_SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
+
+
+def _spread_text(text: str, duration: float, target: float = 8.0) -> list[Segment]:
+    """Turn an untimed transcript into sentence-sized segments over ``duration``.
+
+    A single whole-file segment cannot be cut into clips of a requested length,
+    so an ASR that gives no timings gets approximate ones: sentences, grouped to
+    roughly ``target`` seconds each, with each segment's span proportional to its
+    share of the characters. Rough, but it makes the transcript usable — and the
+    caller logs that the boundaries are approximate.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    if duration <= 0:
+        return [Segment(0.0, 0.0, text)]
+
+    sentences = [s.strip() for s in _SENTENCE_END.split(text) if s.strip()] or [text]
+    total = sum(len(s) for s in sentences) or 1
+    # Group sentences until each chunk is about `target` seconds' worth of text.
+    per_char = duration / total
+    chunks: list[str] = []
+    buf = ""
+    for s in sentences:
+        buf = f"{buf} {s}".strip() if buf else s
+        if len(buf) * per_char >= target:
+            chunks.append(buf)
+            buf = ""
+    if buf:
+        chunks.append(buf)
+
+    out: list[Segment] = []
+    t = 0.0
+    for i, chunk in enumerate(chunks):
+        span = duration - t if i == len(chunks) - 1 else len(chunk) * per_char
+        end = min(duration, t + span)
+        out.append(Segment(start=round(t, 3), end=round(end, 3), text=chunk,
+                           words=_even_words(chunk, t, end)))
+        t = end
+    return out
+
+
+def _even_words(text: str, start: float, end: float) -> list[Word]:
+    """Word timings spread evenly across a span — enough for karaoke captions."""
+    parts = text.split()
+    if not parts or end <= start:
+        return []
+    step = (end - start) / len(parts)
+    return [Word(round(start + i * step, 3), round(start + (i + 1) * step, 3), w)
+            for i, w in enumerate(parts)]
 
 
 def _confidence(avg_logprob, no_speech_prob) -> float | None:
@@ -142,7 +196,17 @@ class OpenAICompatibleASR(ASRProvider):
                 float(s.get("start", 0)), float(s.get("end", 0)), str(s.get("text", "")).strip(),
                 words, confidence=_confidence(s.get("avg_logprob"), s.get("no_speech_prob"))))
         if not segments and data.get("text"):
-            segments = [Segment(0.0, duration or 0.0, data["text"].strip())]
+            # Some endpoints answer with `text` only (no `segments`), even for
+            # verbose_json. One segment spanning the whole file then reaches the
+            # selector as a single unsplittable block, which is how a request for
+            # 2-minute clips produced one 15-minute clip. Spread the text over
+            # sentence-sized pseudo-segments instead; timings are approximate and
+            # said so in the log, but the shape is usable.
+            segments = _spread_text(data["text"].strip(), duration or 0.0)
+            log.warning("ASR: %s returned no per-segment timings — text was spread "
+                        "evenly over %.0fs, so clip boundaries are approximate. "
+                        "A backend with segment timings gives better cuts.",
+                        self.name, duration or 0.0)
         return Transcript(language=data.get("language") or (language or "en"),
                           duration=duration, segments=segments)
 

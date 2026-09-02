@@ -181,3 +181,43 @@ def test_run_transcribe_markdown_and_cost(monkeypatch):
     assert res["backends"][0]["cost"] == round(2.0 * 0.006, 4)     # 120s = 2 min
     md = B.render_markdown(res)
     assert "ASR benchmark" in md and "Divergence" in md and "bonjour le monde" in md
+
+
+# --- an untimed transcript must not become one whole-file segment ------------ #
+# Some /audio/transcriptions endpoints answer with `text` only, even for
+# verbose_json. Wrapping that in a single Segment(0, duration) reached the
+# selector as one unsplittable block — the "asked for 2 minutes, got 15" bug.
+
+def test_text_only_response_is_spread_into_usable_segments():
+    from shortforge.providers.asr import _spread_text
+
+    text = ("First thing happens here. Second thing happens next. Third thing "
+            "follows on. Fourth thing wraps it up. Fifth thing is the payoff.")
+    segs = _spread_text(text, duration=120.0, target=20.0)
+
+    assert len(segs) > 1                                  # not one giant block
+    assert segs[0].start == 0.0
+    assert segs[-1].end == pytest.approx(120.0)
+    for a, b in zip(segs, segs[1:]):                      # contiguous, in order
+        assert b.start == pytest.approx(a.end)
+    joined = " ".join(s.text for s in segs)
+    for word in text.split():
+        assert word in joined                             # nothing dropped
+
+
+def test_spread_text_gives_words_timings_for_captions():
+    from shortforge.providers.asr import _spread_text
+
+    segs = _spread_text("alpha beta gamma delta.", duration=8.0, target=20.0)
+    words = [w for s in segs for w in s.words]
+    assert [w.text for w in words] == ["alpha", "beta", "gamma", "delta."]
+    assert words[0].start == 0.0 and words[-1].end == pytest.approx(8.0)
+    for a, b in zip(words, words[1:]):
+        assert b.start >= a.start
+
+
+def test_spread_text_handles_empty_and_unknown_duration():
+    from shortforge.providers.asr import _spread_text
+
+    assert _spread_text("", 60.0) == []
+    assert len(_spread_text("some text with no duration", 0.0)) == 1

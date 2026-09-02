@@ -10,7 +10,7 @@ payoff, playing as a complete little story rather than an arbitrary window.
 from __future__ import annotations
 
 from ..config import Config
-from ..models import Candidate, Clip, Transcript
+from ..models import Candidate, Clip, Segment, Transcript
 from ..utils import log
 
 _STRONG = 0.5   # candidate score considered a "strong standalone moment"
@@ -59,6 +59,55 @@ def _score_by_segment(transcript: Transcript, candidates: list[Candidate]) -> di
     return out
 
 
+def split_long_segments(segments: list[Segment], max_len: float,
+                        piece: float) -> list[Segment]:
+    """Break segments longer than ``max_len`` into ~``piece``-second pieces.
+
+    Clips are grown by whole segments and a segment is never split, so ONE
+    over-long segment became one over-long clip: an ASR that returns a single
+    block for the whole file (an API answering with ``text`` and no ``segments``,
+    or a long uninterrupted passage) turned "3 clips of 2 minutes" into one
+    15-minute clip. Splitting first means the ordinary growth logic — anchors,
+    pauses, tolerance — applies to material it can actually work with, so both
+    the requested LENGTH and the requested COUNT become reachable.
+
+    Word timings are preserved by assigning each word to the piece containing its
+    midpoint; wordless segments (no per-word timing) have their text divided in
+    proportion to each piece's share of the duration.
+    """
+    if max_len <= 0 or piece <= 0:
+        return list(segments)
+    out: list[Segment] = []
+    for seg in segments:
+        dur = seg.end - seg.start
+        if dur <= max_len:
+            out.append(seg)
+            continue
+        parts = max(2, int(round(dur / piece)))
+        step = dur / parts
+        words = list(seg.words or [])
+        tokens = (seg.text or "").split()
+        for i in range(parts):
+            lo = seg.start + i * step
+            hi = seg.end if i == parts - 1 else seg.start + (i + 1) * step
+            mine = [w for w in words if lo <= (w.start + w.end) / 2.0 < hi]
+            if mine:
+                text = " ".join(w.text for w in mine).strip()
+            else:
+                # No word timings: hand each piece its share of the words. The
+                # text is only used for captions/metadata, and the alternative —
+                # repeating the whole block on every piece — is worse.
+                a = round(len(tokens) * i / parts)
+                b = round(len(tokens) * (i + 1) / parts)
+                text = " ".join(tokens[a:b]).strip()
+            out.append(Segment(start=lo, end=hi, text=text, words=mine,
+                               confidence=seg.confidence))
+    if len(out) != len(segments):
+        log.info("split %d over-long ASR segment(s) into %d pieces of ~%.0fs so clips "
+                 "can honour the requested length", len(segments), len(out), piece)
+    return out
+
+
 def build_clips(
     transcript: Transcript,
     candidates: list[Candidate],
@@ -66,12 +115,20 @@ def build_clips(
     source_hash: str,
 ) -> list[Clip]:
     """Select up to N clips, snapped to sentence boundaries."""
-    segments = transcript.segments
-    if not segments:
-        return []
-
     target = float(cfg.get("select.target_duration", 45))
     tol = float(cfg.get("select.tolerance", 12))
+
+    # Do this BEFORE anything reads `segments`: a segment longer than the
+    # tolerance window can never be trimmed later, only avoided.
+    segments = split_long_segments(transcript.segments,
+                                   max_len=max(target + tol, _MIN_CLIP_SECONDS),
+                                   piece=target)
+    if not segments:
+        return []
+    if len(segments) != len(transcript.segments):
+        transcript = Transcript(language=transcript.language,
+                                duration=transcript.duration, segments=segments)
+
     width = int(cfg.get("reframe.width", 1080))
     height = int(cfg.get("reframe.height", 1920))
     resolution = f"{width}x{height}"
@@ -190,6 +247,13 @@ def build_clips(
     for idx, (lo, hi, anchor) in enumerate(chosen):
         start = segments[lo].start
         end = min(segments[hi].end, transcript.duration or segments[hi].end)
+        # Last line of defence on the operator's actual instruction. Splitting
+        # above should make this unreachable, but "I asked for 2 minutes and got
+        # 15" must be impossible by construction, not by argument.
+        if end - start > upper + 0.5:
+            log.warning("clip at %.0fs came out %.0fs long against a requested ~%.0fs "
+                        "— trimming it to the requested length.", start, end - start, target)
+            end = start + target
         text = " ".join(s.text.strip() for s in segments[lo : hi + 1]).strip()
         clips.append(
             Clip(

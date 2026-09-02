@@ -98,6 +98,44 @@ def audio_energy(path: str, duration: float, timeout: float = 900.0) -> list[flo
     return [float(v) for v in rms]
 
 
+def _spread(duration: float, target: float, n: int,
+            energy: list[float] | None) -> list[tuple[float, float, float]]:
+    """``n`` evenly spread spans covering the whole source.
+
+    Each span gets its own slot; when there is audio the span is nudged to the
+    liveliest moment *inside its slot*, which keeps the clips distinct and in
+    order while still honouring the requested count. Slots overlap when more
+    clips were asked for than fit end-to-end — that is the point.
+    """
+    if n == 1:
+        start = max(0.0, (duration - target) / 2.0)
+        return [(start, min(duration, start + target), 0.0)]
+
+    last_start = max(0.0, duration - target)
+    stride = last_start / (n - 1)
+    picks: list[tuple[float, float]] = []       # (start, raw score)
+    for i in range(n):
+        base = min(i * stride, last_start)
+        if energy is None or stride <= 0:
+            picks.append((base, 0.0))
+            continue
+        lo = max(0.0, base - stride / 2.0)
+        hi = min(last_start, base + stride / 2.0)
+        step = max(1.0, stride / 8.0)
+        best_start, best_score = base, -1.0
+        t = lo
+        while t <= hi + 1e-6:
+            score = _window_score(energy, t, t + target)
+            if score > best_score:
+                best_start, best_score = t, score
+            t += step
+        picks.append((best_start, max(0.0, best_score)))
+
+    peak = max((s for _, s in picks), default=0.0) or 1.0
+    return [(start, min(duration, start + target), round(min(1.0, score / peak), 3))
+            for start, score in picks]
+
+
 def _window_score(energy: list[float], start: float, end: float) -> float:
     lo = int(start / SLOT_SECONDS)
     hi = max(lo + 1, int(end / SLOT_SECONDS))
@@ -116,18 +154,15 @@ def plan_spans(duration: float, target: float, n: int,
         return []
     target = max(MIN_CLIP_SECONDS, min(float(target), duration))
 
-    if energy is None:
-        # No audio to rank on: spread across the WHOLE source, so 5 clips of a
-        # 30-min video sample the whole thing rather than only its first 5 min.
-        if n == 1:
-            start = max(0.0, (duration - target) / 2.0)
-            return [(start, min(duration, start + target), 0.0)]
-        stride = (duration - target) / (n - 1)
-        out = []
-        for i in range(n):
-            start = min(max(0.0, i * stride), max(0.0, duration - target))
-            out.append((start, min(duration, start + target), 0.0))
-        return out
+    fits = int(duration // target) if duration >= target else 0
+
+    if energy is None or n > fits:
+        # Either nothing to rank on, or more clips were asked for than fit
+        # end-to-end. Spread them across the WHOLE source: 5 clips of a 30-min
+        # video should sample the whole thing, not just its first 5 minutes —
+        # and when more are asked for than fit, they share footage rather than
+        # going missing. The caller says so out loud.
+        return _spread(duration, target, n, energy)
 
     # Ranked by loudness: score every candidate window, take the best, then
     # forbid anything that would overlap it, and repeat.
@@ -173,22 +208,30 @@ def build_clips(meta, cfg: Config, source_hash: str) -> tuple[list[Clip], str]:
     if duration < MIN_CLIP_SECONDS:
         raise _too_short(duration)
 
-    # How many whole clips of this length the source can actually give.
+    # How many whole clips of this length fit end-to-end without sharing footage.
     fits = max(1, int(duration // target)) if duration >= target else 1
     n = requested if requested > 0 else min(fits, 3)
 
-    # Never silently hand back fewer than asked without saying why.
-    if requested > 0 and requested > fits:
+    # The count and the length are both instructions, so both are honoured. When
+    # more clips are asked for than fit end-to-end the only way to deliver them
+    # is to let them share footage — which is said plainly rather than being
+    # resolved by quietly handing back fewer clips.
+    if requested > fits and duration >= target:
         log.warning(
-            "asked for %d clip(s) of %.0fs but this %.0fs source only fits %d without "
-            "overlapping — emitting %d. Ask for shorter clips, or a longer source.",
+            "asked for %d clip(s) of %.0fs from a %.0fs source — that is more than the "
+            "%d that fit end-to-end, so clips will overlap and share some footage. "
+            "Ask for %d or fewer (or shorter clips) if you want them all distinct.",
             requested, target, duration, fits, fits)
-        n = fits
 
     if duration < target:
+        # Overlapping clips are still different from each other; copies of the
+        # whole video are not. Emitting the requested count here would just hand
+        # back N identical files, so this is the one case that returns fewer.
+        n = 1
         log.warning(
             "source is %.0fs, shorter than the requested %.0fs clip — emitting one clip "
-            "of the whole video rather than padding it.", duration, target)
+            "of the whole video rather than %d identical copies of it (or padding it).",
+            duration, target, requested or 1)
 
     energy = audio_energy(meta.file_path, duration)
     spans = plan_spans(duration, target, n, energy)

@@ -127,23 +127,40 @@ def test_build_clips_honours_the_requested_count_and_duration(monkeypatch):
     assert all("no speech" in c.reason for c in clips)     # provenance on every clip
 
 
-def test_asking_for_more_clips_than_fit_is_reported_not_silently_trimmed(
+def test_the_requested_count_is_delivered_even_when_clips_must_share_footage(
         monkeypatch, caplog):
+    """Operator: "I asked for 10 clips and got 4 to 5 — do not miss the clips
+    count and duration count." 10x120s from a 10-min source only exists if the
+    clips overlap, so they overlap, and the log says so."""
     monkeypatch.setattr(NS, "audio_energy", lambda *a, **k: None)
     with caplog.at_level("WARNING"):
-        clips, _ = NS.build_clips(_Meta(120), _cfg(**{"select.num_clips": 10,
-                                                      "select.target_duration": 60}), "h")
-    assert len(clips) == 2                                  # 120s / 60s
-    assert "only fits 2" in caplog.text and "10 clip" in caplog.text
+        clips, _ = NS.build_clips(_Meta(600), _cfg(**{"select.num_clips": 10,
+                                                      "select.target_duration": 120}), "h")
+    assert len(clips) == 10                                  # the count is honoured
+    assert all(c.duration == pytest.approx(120) for c in clips)   # and the length
+    assert "overlap and share some footage" in caplog.text   # never silently
+    assert len({round(c.start) for c in clips}) == 10        # 10 distinct positions
+
+
+def test_overlapping_clips_are_spread_over_the_whole_source(monkeypatch):
+    monkeypatch.setattr(NS, "audio_energy", lambda *a, **k: None)
+    clips, _ = NS.build_clips(_Meta(600), _cfg(**{"select.num_clips": 10,
+                                                  "select.target_duration": 120}), "h")
+    assert clips[0].start == 0.0
+    assert clips[-1].end == pytest.approx(600, abs=1)        # reaches the end
+    starts = [c.start for c in clips]
+    assert starts == sorted(starts)
 
 
 def test_a_source_shorter_than_the_target_yields_one_whole_clip(monkeypatch, caplog):
+    """The one case that returns fewer than asked: overlapping clips still differ
+    from each other, but N copies of the whole video are identical files."""
     monkeypatch.setattr(NS, "audio_energy", lambda *a, **k: None)
     with caplog.at_level("WARNING"):
         clips, _ = NS.build_clips(_Meta(25), _cfg(**{"select.num_clips": 3,
                                                      "select.target_duration": 60}), "h")
     assert len(clips) == 1 and clips[0].duration == pytest.approx(25)
-    assert "shorter than the requested" in caplog.text      # never padded silently
+    assert "identical copies" in caplog.text                 # says why, not silent
 
 
 def test_a_truncated_download_is_refused_rather_than_clipped(monkeypatch):

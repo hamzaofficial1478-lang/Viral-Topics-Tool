@@ -179,3 +179,79 @@ def test_never_emits_a_sub_minimum_clip():
     assert clips
     for c in clips:
         assert (c.end - c.start) >= _MIN_CLIP_SECONDS - 1e-6
+
+
+# --- "I asked for 2 minutes and got 15" -------------------------------------- #
+# Clips are grown by whole ASR segments and a segment was never split, so ONE
+# over-long segment became one over-long clip. An ASR that returns a single block
+# for the whole file (an API answering with `text` and no `segments`) turned
+# "3 clips of 2 minutes" into a single 15-minute clip — and only one of them.
+
+def _blob(duration, words=3000):
+    from shortforge.models import Segment, Transcript
+    text = " ".join(f"w{i}" for i in range(words))
+    return Transcript(language="en", duration=duration,
+                      segments=[Segment(0.0, duration, text)])
+
+
+def test_one_giant_segment_does_not_become_one_giant_clip():
+    from shortforge.config import Config
+    from shortforge.select.select import build_clips
+
+    cfg = Config.load()
+    cfg.override("select.target_duration", 120)
+    cfg.override("select.num_clips", 3)
+    clips = build_clips(_blob(900.0), [], cfg, "h")
+
+    assert len(clips) == 3                               # the count is delivered
+    tol = float(cfg.get("select.tolerance", 12))
+    for c in clips:
+        assert c.duration <= 120 + tol + 0.5, f"clip {c.clip_id} is {c.duration:.0f}s"
+        assert c.duration >= 60                          # and not a scrap either
+
+
+def test_clips_from_a_split_segment_do_not_overlap():
+    from shortforge.config import Config
+    from shortforge.select.select import build_clips
+
+    cfg = Config.load()
+    cfg.override("select.target_duration", 60)
+    cfg.override("select.num_clips", 5)
+    clips = build_clips(_blob(900.0), [], cfg, "h")
+    for a, b in zip(clips, clips[1:]):
+        assert b.start >= a.end - 0.001
+
+
+def test_splitting_keeps_word_timings_in_the_right_piece():
+    from shortforge.models import Segment, Word
+    from shortforge.select.select import split_long_segments
+
+    words = [Word(float(i), float(i) + 0.9, f"w{i}") for i in range(120)]
+    seg = Segment(0.0, 120.0, " ".join(w.text for w in words), words)
+    pieces = split_long_segments([seg], max_len=40.0, piece=30.0)
+
+    assert len(pieces) == 4
+    assert sum(len(p.words) for p in pieces) == 120       # no word lost or duplicated
+    for p in pieces:
+        for w in p.words:
+            mid = (w.start + w.end) / 2.0
+            assert p.start <= mid < p.end                 # each word in its own piece
+
+
+def test_a_normal_transcript_is_left_completely_alone():
+    """Splitting must not disturb sources that were already fine."""
+    from shortforge.models import Segment
+    from shortforge.select.select import split_long_segments
+
+    segs = [Segment(float(i * 5), float(i * 5 + 4), f"line {i}") for i in range(20)]
+    assert split_long_segments(segs, max_len=60.0, piece=45.0) == segs
+
+
+def test_wordless_text_is_divided_not_repeated_on_every_piece():
+    from shortforge.models import Segment
+    from shortforge.select.select import split_long_segments
+
+    seg = Segment(0.0, 100.0, " ".join(f"t{i}" for i in range(100)))
+    pieces = split_long_segments([seg], max_len=30.0, piece=25.0)
+    joined = " ".join(p.text for p in pieces).split()
+    assert joined == seg.text.split()                    # exactly once, in order

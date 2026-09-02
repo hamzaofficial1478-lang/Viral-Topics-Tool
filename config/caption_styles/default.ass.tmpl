@@ -1,0 +1,20 @@
+; Reference ASS caption style for ShortForge (M7).
+; This is a template; the render pipeline generates the real .ass per clip from
+; word-level timing and the values in config/settings.yaml (captions.*).
+; PlayResX/PlayResY are set to the OUTPUT resolution so MarginV maps to output
+; pixels and text clears the platform UI safe zone.
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,DejaVu Sans,54,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,320,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+; Dialogue lines are generated at render time, e.g.:
+; Dialogue: 0,0:00:00.00,0:00:02.20,Default,,0,0,0,,here is the hook

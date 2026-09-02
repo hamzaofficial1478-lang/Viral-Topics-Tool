@@ -1,0 +1,24 @@
+# Secrets — API keys live here, never in git (copy .env.example -> .env)
+.env
+# Provider config written by the settings UI (contains API keys)
+config/providers.local.json
+*.local.json
+# Exported settings backup (contains API keys in plaintext) — never commit it
+shortforge-settings.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# ShortForge runtime artifacts
+# (git ignore patterns can't have inline comments — keep notes on their own line)
+# cache + downloads, keyed by source hash:
+.shortforge/
+# rendered clips + manifests:
+out/
+*.mp4
+*.wav

@@ -1,0 +1,228 @@
+# ShortForge configuration (Phase 1).
+# Every value here can also be overridden on the CLI. See `shortforge --help`.
+
+paths:
+  work_dir: .shortforge          # cache + intermediate files (per source hash)
+  output_dir: out                # rendered clips land here
+  # A folder per source under output_dir, reused when the same link comes back.
+  # "{video_id}" alone = one flat folder per video; "" = everything in out/.
+  output_template: "{uploader}/{video_id}"
+
+ingest:
+  # yt-dlp format selector. null = build it from what the chosen export needs
+  # (ingest.source_ceiling), capped by max_height. A fixed <=1080p cap was the
+  # root cause of soft output: cropping 1920x1080 to 9:16 leaves 608 px of
+  # width, which then has to be enlarged to 1080. Set a string here to pin it.
+  format: null
+  max_height: 2160               # tallest source worth downloading (4K)
+  # Path to a cookies.txt for private/unlisted videos (M1 auth). Optional.
+  cookies: null
+  # yt-dlp player client(s) to query (comma-separated). The "default" (web)
+  # client is the one most restricted by YouTube's PO-token check — it can
+  # report a signed-in success and still withhold every format above ~360p.
+  # Adding "tv" queries a client that isn't gated the same way and merges its
+  # formats into the same request, so this is usually the fix for "signed in
+  # OK but no usable high-res format" without touching cookies at all.
+  player_client: "default,tv"
+  # Not set here on purpose (null = "unset", not "1") -- yt-dlp downloads
+  # fragments (DASH/HLS -- any format above ~360p) strictly one at a time by
+  # default. Raising it is the biggest lever for download speed on a fast
+  # connection; set it from Settings -> YouTube authentication instead (it
+  # persists to config/providers.local.json, which this operator CAN reach
+  # without hand-editing a file). Falls back to 4 if never set anywhere.
+  concurrent_fragments: null
+
+transcribe:
+  # 'base' garbles hard sources; 'small' is the sane CPU default. 'medium'/'large-v3'
+  # are more accurate but much slower on CPU.
+  model: small                   # tiny | base | small | medium | large-v3
+  device: auto                   # auto | cpu | cuda
+  compute_type: auto             # auto | int8 | int8_float16 | float16 | float32
+  language: null                 # null = autodetect; else ISO code e.g. "fr" (forces source language)
+  min_confidence: 0.0            # >0 drops low-confidence segments from clip selection (STEP 3.5)
+
+detect:
+  backend: heuristic             # FAST default: transcript-only. auto = LLM hook scorer
+  #   auto      -> use Claude if ANTHROPIC_API_KEY is set, else heuristic
+  llm_model: claude-opus-4-8
+  min_segment_score: 0.35        # candidates below this are dropped
+  # M3++ visual hook signals (local, no API): score what's SHOWN, not just said.
+  visual: false                  # OFF: full-source CV pass (minutes on long videos)
+  visual_weight: 0.35            # final = (1-w)*transcript + w*visual
+  visual_sample_interval: 0.5    # seconds between sampled frames
+  visual_cut_threshold: 0.25     # frame-diff level counted as a scene cut
+  # Claude-vision multimodal scorer (claude-watch style; needs API key + vision):
+  vision_llm: false              # sends contact sheets + transcript to Claude
+  vision_hook_secs: 15
+  vision_hook_fps: 6
+  vision_body_interval: 3.5
+
+select:
+  target_duration: 45            # seconds (per Section 7 wizard)
+  tolerance: 12                  # +/- seconds a clip may deviate from target
+  num_clips: 0                   # 0 = use the tool's recommendation
+  min_gap: 1.5                   # seconds required between selected clips
+  # Each clip is one CONTINUOUS passage (never random splices). Coherent mode
+  # snaps start/end to natural thought boundaries (pauses) so every short is a
+  # complete idea (setup -> hook -> payoff), not an arbitrary window.
+  coherent: true
+  pause_threshold: 0.5           # gap (s) that marks a thought/topic boundary
+
+reframe:
+  aspect: "16:9"                 # 9:16 | 1:1 | 16:9 | WxH (e.g. 1080x1920)
+  width: 1080
+  height: 1920
+  fill: crop                     # crop (center smart-crop) | blur (fit + blurred bg)
+  mode: center                   # center (fast, no face detection) | track | static
+  face_score: 0.6                # YuNet detection confidence threshold
+  # A4 virtual camera — a crop path that follows the action, re-centers at scene
+  # cuts, and cuts (not sweeps) between subjects. Signals: face -> motion -> center.
+  sample_hz: 4                   # saliency samples/sec (interpolated between)
+  redetect_on_scene_cut: true    # discard tracking state at every cut (key fix)
+  scene_cut_threshold: 0.18      # mean frame-diff fraction that marks a cut
+  # Steady-camera defaults: a shaky auto-crop looks worse than a slightly late one.
+  motion_min_area_pct: 0.8       # min changed-area % to treat motion as salient
+  deadzone_pct: 12               # ignore camera moves under this % of frame width
+  max_pan_speed_pct_s: 22        # cap pan speed (% of width / second) — gentler sweep
+  min_dwell_s: 2.0               # min dwell before honoring a new target
+  snap_threshold_pct: 60         # displacement over this % of width => hard cut
+  face_switch_ratio: 1.4         # another face must be this much bigger to steal the camera
+  smoothing: one_euro            # planner eases + caps velocity
+  multi_subject: cut             # cut (follow speaker) | split | widen
+  punch_in_max_scale: 1.12       # (reserved) energy-driven punch-in ceiling
+  punch_in_min_gap_s: 6
+  # legacy tracker knobs (unused by the virtual camera):
+  track_sample_interval: 0.33
+  track_smooth_window: 5
+
+captions:
+  enabled: true
+  # Named template = consistent look across every clip on a page (M7).
+  template: clean                # clean | bold_pop | karaoke_amber | reveal_green | boxed | minimal
+  animation: null                # null = template default; none | fade | pop | karaoke | reveal
+  style: null                    # legacy shorthand: karaoke | simple (maps to animation)
+  # Any of these override the chosen template when set (null = use template):
+  font: null                     # text form, e.g. "DejaVu Sans" / "DejaVu Serif" / "FreeSans"
+  font_size: null
+  uppercase: null
+  primary_color: null            # ASS &HAABBGGRR, opaque white = &H00FFFFFF
+  highlight_color: null          # sung word colour
+  outline_color: null
+  outline: null
+  shadow: null
+  # Safe margin from the bottom edge (px at output resolution) so captions
+  # clear the platform action bar / right-side buttons.
+  bottom_margin: null
+  # A3 — handle captions BAKED into the source pixels so ours don't stack on top.
+  # none = off; cover = opaque box; blur = localized blur; crop = trim the band.
+  burned_in: none
+  burned_in_samples: 16          # frames sampled for text-density detection
+  burned_in_threshold: 0.025     # min edge-density floor (relative to baseline) for a band
+  # Line grouping (behaviour, not look):
+  max_line_chars: 30
+  max_line_duration: 2.5         # seconds per caption line
+
+edit:                            # M9 jump cuts — trim dead air (off by default)
+  # Wired into the render: video + audio are cut and captions remapped together
+  # so nothing desyncs. Automatically skipped when dubbing (a new voice would
+  # not line up). Turn on with --jumpcuts.
+  jumpcuts: false
+  min_silence: 0.8               # gaps longer than this are trimmed
+  max_gap: 0.35                  # kept breathing room after trimming
+  pad: 0.1                       # seconds of speech kept on each side of a run
+
+brand:                           # M8 logo overlay
+  logo: null                     # path to a PNG/logo image
+  corner: TR                     # TL | TR | BL | BR
+  size: 0.18                     # fraction of output width (<=1) or px (>1)
+  opacity: 0.85
+  margin: 40
+
+metadata:                        # M10 titles/description/hashtags
+  enabled: false                 # STEP 9: opt-in (--metadata / UI Extras). Costs an LLM call/clip.
+  backend: auto                  # auto | llm | heuristic
+
+publish:                         # M14 per-video publishing sidecar
+  # Writes a copy-paste-ready <video>.txt with the Title / Description / Tags
+  # next to each clip, so they travel with the video (only when metadata is on).
+  sidecar: true
+
+thumbnail:                       # M11 cover image
+  enabled: false                 # STEP 9: opt-in (--thumbnail / UI Extras)
+  text_hook: false               # draw the title on the cover
+
+page:                            # Section 8 per-page profile (optional)
+  niche: null
+  tone: null
+  hashtags: []
+
+localize:                        # M6 localization (Phase 3)
+  language: null                 # target lang code (en/de/it/es/ja/ar); null = keep source
+  dub: false                     # synthesize a voiceover (else captions-only in target lang)
+  tts_backend: auto              # auto | espeak (offline) | edge (natural) | xtts (clone, GPU)
+  espeak_speed: 165
+  edge_voice: null               # override the Edge neural voice
+  voice_sample: null             # reference clip of your voice for xtts cloning
+  translate_backend: auto        # auto | llm (Claude) | argos (offline)
+  allow_untranslated: false      # A2: proceed even if translation fails (loud warning)
+  # A1 — remove the ORIGINAL voice, keep music/SFX. Dubbing splits the source
+  # into vocals + accompaniment (Demucs), drops vocals, and ducks the
+  # accompaniment under the new voice. Without Demucs the run ABORTS (it will not
+  # play two voices) unless allow_voice_bleed is set.
+  stem_separation: auto          # auto | true | false
+  stem_model: htdemucs           # Demucs model; better: htdemucs_ft; lighter/faster: mdx_extra_q
+  demucs_model: htdemucs         # back-compat alias
+  # G1 — Demucs mis-routes some ambience/reverb into the VOCALS stem; discarding
+  # it (-inf) leaves some scenes dead-silent. 'partial' keeps the vocals stem low
+  # so that ambience survives (with a little original-voice bleed); 'full' drops
+  # it entirely (cleanest, but scenes may go silent). Use --debug-audio to listen.
+  vocal_removal_strength: partial   # partial | full | <dB e.g. -18>
+  vocal_retain_db: -18.0            # level to keep the vocals stem at (partial)
+  debug_audio: false                # --debug-audio: export vocals/accompaniment/bed WAVs
+  accompaniment_gain_db: 0.0     # music/SFX bed level
+  duck_db: -6.0                  # how far the bed dips under the dub voice
+  duck_attack_ms: 5
+  duck_release_ms: 250
+  allow_voice_bleed: false       # allow ducking the ORIGINAL instead (two voices)
+  bleed_duck_db: -12.0           # duck depth for the allow_voice_bleed path
+
+lipsync:                         # Optional Wav2Lip lip-sync — CROSS-LANGUAGE dubs only.
+  # When you dub into another language the on-screen lips no longer match the
+  # new voice. Wav2Lip re-renders the mouth so the lips track the dub. Same-
+  # language clips keep the original audio + real lips, so this never runs on
+  # them. Needs a GPU + a cloned Wav2Lip; missing/failed = original render kept.
+  enabled: false
+  backend: auto                  # auto | wav2lip
+  wav2lip_repo: null             # path to cloned github.com/Rudrabha/Wav2Lip (has inference.py)
+  checkpoint: null               # path to wav2lip_gan.pth
+  python: null                   # interpreter for Wav2Lip's venv (null = current)
+  pads: "0 10 0 0"               # face padding: top bottom left right
+  resize_factor: 1               # downscale before inference for speed
+  nosmooth: false                # disable temporal mouth smoothing
+
+cache:                           # A2 cache controls (also --no-cache / --refresh-translation)
+  disabled: false                # never read or write caches
+  refresh_translation: false     # recompute translation only, keep transcript/analysis
+
+cost:                            # STEP 1 — cost controls for paid TTS
+  max_usd_per_job: 0.0           # per-job ceiling; 0 = no limit. Run aborts if the estimate exceeds it.
+  confirm: true                  # CLI prompts for confirmation when the estimate is > $0
+  dry_run: false                 # --dry-run-cost: report projected spend, render nothing
+
+review:                          # M12 QC review gate
+  enabled: true
+
+render:
+  # Quality tier sets crf+preset together: maximum | high | balanced | fast.
+  # "high" (CRF 18 / medium) is clean enough to survive the re-encode that
+  # Facebook, Instagram and YouTube apply to every upload.
+  quality: high
+  crf: null                      # null = from `quality`; a number overrides it
+  preset: null                   # null = from `quality`
+  sharpen: null                  # null = only when the crop is being enlarged
+  audio_bitrate: 192k
+  fps: null                      # null = keep source fps
+  loudnorm: true                 # M9: normalize to ~-14 LUFS (social standard)
+  loudnorm_i: -14.0
+  loudnorm_tp: -1.5
+  loudnorm_lra: 11.0

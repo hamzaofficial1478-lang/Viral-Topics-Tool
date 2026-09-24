@@ -154,7 +154,21 @@ def run_pipeline(
     # on its own. Hook detection has nothing to bite on, so the timeline is used
     # instead — loudly, never as a silent substitution.
     from .select import nospeech
-    speechless = not nospeech.has_speech(transcript)
+    voiced, voice_why = nospeech.is_voiceover(
+        transcript, meta.duration,
+        float(cfg.get("select.min_speech_coverage", 0.25) or 0.0))
+    speechless = not voiced
+    if speechless and transcript.segments:
+        # Whisper invents text over music ("Thank you for watching!", "[Music]",
+        # stray lyrics). Once the source is judged to have no voice-over those
+        # words must not come back as burned-in captions either.
+        log.warning("no voice-over: %s — cutting clips from the timeline instead, "
+                    "and ignoring the stray recognised words.", voice_why)
+        from .models import Transcript as _T
+        transcript = _T(language=transcript.language, duration=transcript.duration,
+                        segments=[])
+    elif speechless:
+        log.info("no voice-over: %s", voice_why)
 
     candidates: list = []
     if speechless:
@@ -682,8 +696,13 @@ def run_pipeline(
         dub_desc = "dub: none (original audio)"
     lang_desc = (f"lang {src_lang}->{clip_lang} ({translation_backend})"
                  if localize_on else f"lang {src_lang}")
+    # A short count must be visible in the one line the operator actually reads
+    # (and the phone message built from it) — not only in a log line mid-run.
+    _asked = int(cfg.get("select.num_clips", 0) or 0)
+    _count = (f"done: {len(rendered)} of {_asked} requested clip(s)"
+              if _asked and len(rendered) < _asked else f"done: {len(rendered)} clip(s)")
     summary = " | ".join([
-        f"done: {len(rendered)} clip(s)",
+        _count,
         # B: the summary line must name the path actually taken. "no speech" is a
         # materially different selection, so it can never be read as a hook run.
         f"selection {selection_basis}" if speechless else "selection hooks",

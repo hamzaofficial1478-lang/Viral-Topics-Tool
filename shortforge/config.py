@@ -115,6 +115,11 @@ DEFAULTS: dict[str, Any] = {
         "coherent": True,
         "pause_threshold": 0.5,   # gap (s) that marks a thought/topic boundary
         "max_backup": 2,          # max segments to back up from a hook anchor (keep hook early)
+        # Below this share of the video being actual talk, the source is treated as
+        # having no voice-over and clips are cut from the timeline. Whisper invents
+        # words over music, so "any words at all" routed music videos to the speech
+        # selector, which then delivered 3 of 10 requested clips.
+        "min_speech_coverage": 0.25,
     },
     "reframe": {
         # Landscape by default, at the operator's request. Note this also makes

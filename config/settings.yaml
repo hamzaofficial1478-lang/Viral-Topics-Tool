@@ -67,6 +67,9 @@ select:
   # complete idea (setup -> hook -> payoff), not an arbitrary window.
   coherent: true
   pause_threshold: 0.5           # gap (s) that marks a thought/topic boundary
+  # Share of the video that must be actual talk to count as a voice-over. Below
+  # it, clips are cut from the timeline (Whisper invents words over music).
+  min_speech_coverage: 0.25
 
 reframe:
   aspect: "16:9"                 # 9:16 | 1:1 | 16:9 | WxH (e.g. 1080x1920)

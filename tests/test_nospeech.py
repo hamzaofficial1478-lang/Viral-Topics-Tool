@@ -281,3 +281,74 @@ def test_transcribe_skips_asr_entirely_when_there_is_no_audio(tmp_path, monkeypa
     tr = T.transcribe(meta, _cfg(), Cache(str(tmp_path), "h"))
     assert tr.segments == [] and tr.duration == 60.0
     assert NS.has_speech(tr) is False
+
+
+# --- "asked for 10, got 4 or 5" — the case the first fix never reached -------- #
+# Whisper does not return silence for music; it invents text. A music video came
+# back as a scatter of "[Music]" / "Thank you for watching!" / lyric fragments,
+# so has_speech() said True, the SPEECH selector ran, and — since it can only
+# grow clips from contiguous talk — it delivered 3 of 10 (one of them 87s).
+
+def _hallucinated_music_video():
+    return Transcript(language="en", duration=600, segments=[
+        Segment(12, 15, "[Music]"), Segment(95, 99, "Thank you for watching!"),
+        Segment(210, 216, "oh oh oh yeah"), Segment(330, 333, "[Music]"),
+        Segment(455, 461, "Thank you for watching!"), Segment(560, 564, "♪"),
+    ])
+
+
+@pytest.mark.parametrize("text", [
+    "[Music]", "(music)", "♪", "♪♪♪", "Thank you for watching!",
+    "Thanks for watching.", "Please subscribe", "you", "[Applause]",
+    "Subtitles by the Amara.org community", "【音楽】", "...",
+])
+def test_stock_whisper_hallucinations_are_not_speech(text):
+    t = Transcript(language="en", duration=60, segments=[Segment(0, 5, text)])
+    assert NS.has_speech(t) is False
+
+
+def test_a_real_sentence_containing_thank_you_is_still_speech():
+    """Only a segment that is NOTHING BUT a stock phrase is discarded."""
+    t = Transcript(language="en", duration=60,
+                   segments=[Segment(0, 5, "Thank you for watching my garden tour today")])
+    assert NS.has_speech(t) is True
+
+
+def test_a_music_video_is_not_a_voiceover():
+    ok, why = NS.is_voiceover(_hallucinated_music_video(), 600)
+    assert ok is False
+    assert "covers only" in why
+
+
+def test_sparse_lyrics_are_not_a_voiceover():
+    """A song has real words, but a few lines of lyrics over 10 minutes is not a
+    voice-over the speech selector can build 10 clips from."""
+    t = Transcript(language="en", duration=600, segments=[
+        Segment(float(i * 60), float(i * 60 + 6), "hold me closer tiny dancer")
+        for i in range(10)])                                   # 60s of 600s = 10%
+    assert NS.is_voiceover(t, 600)[0] is False
+
+
+def test_a_talking_head_is_a_voiceover():
+    t = Transcript(language="en", duration=600, segments=[
+        Segment(i * 6.0, i * 6.0 + 5.5, f"this is real sentence {i}") for i in range(100)])
+    ok, why = NS.is_voiceover(t, 600)
+    assert ok is True and "92%" in why
+
+
+def test_the_threshold_is_the_operators_to_move():
+    """0 means 'always use the speech selector if any real word exists'."""
+    t = Transcript(language="en", duration=600,
+                   segments=[Segment(0, 6, "hello there, welcome")])
+    assert NS.is_voiceover(t, 600, min_coverage=0.25)[0] is False
+    assert NS.is_voiceover(t, 600, min_coverage=0.0)[0] is True
+
+
+def test_threshold_default_is_in_both_config_files():
+    """settings.yaml silently overrode config.py three separate times; a key
+    present in only one of them is how that happens."""
+    import yaml
+    from shortforge import config as C
+    assert C.DEFAULTS["select"]["min_speech_coverage"] == 0.25
+    with open("config/settings.yaml", encoding="utf-8") as f:
+        assert yaml.safe_load(f)["select"]["min_speech_coverage"] == 0.25

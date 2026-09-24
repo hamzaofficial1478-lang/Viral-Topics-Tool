@@ -27,6 +27,7 @@ in the manifest, so a clip list can never be mistaken for a speech-based one.
 
 from __future__ import annotations
 
+import re
 import subprocess
 
 from ..config import Config
@@ -44,15 +45,85 @@ _RATE = 8000
 MIN_CLIP_SECONDS = 3.0
 
 
-def has_speech(transcript) -> bool:
-    """True if the ASR found anything worth cutting on.
+# Whisper does not return silence for music — it invents text. These are its
+# well-documented stock hallucinations (YouTube-trained outros, subtitle
+# credits) plus the sound-event tags some backends emit. A segment made only of
+# these is not speech. Matched against the whole normalised segment text, so a
+# real sentence that merely *contains* "thank you" is never discarded.
+_HALLUCINATIONS = {
+    "thank you", "thank you so much", "thank you very much", "thanks",
+    "thank you for watching", "thanks for watching", "thank you for watching this video",
+    "please subscribe", "subscribe", "like and subscribe", "please like and subscribe",
+    "don't forget to subscribe", "see you next time", "see you in the next video",
+    "bye", "bye bye", "you", "okay", "oh", "ah", "uh", "um", "hmm", "yeah",
+    "music", "applause", "laughter", "silence", "no audio", "blank audio",
+    "subtitles by the amara.org community", "amara.org",
+    "sous-titres réalisés par la communauté d'amara.org",
+    "sous-titrage st' 501", "sous-titrage société radio-canada",
+    "untertitel im auftrag des zdf", "untertitel der amara.org-community",
+    "merci", "merci d'avoir regardé", "gracias", "gracias por ver",
+}
+_TAG_RE = re.compile(r"[\[\(【（][^\]\)】）]*[\]\)】）]")      # [Music] (applause) 【音楽】
+_NOISE_RE = re.compile(r"[♪♫♬♩🎵🎶*~…\-–—.,!?¡¿'\"“”‘’:;]+")
 
-    A transcript can come back non-empty but wordless (ASR noise artefacts), so
-    check for actual text rather than just ``segments``.
+
+def _normalise(text: str) -> str:
+    t = _TAG_RE.sub(" ", text or "")
+    t = _NOISE_RE.sub(" ", t)
+    return " ".join(t.lower().split())
+
+
+# Normalised with the SAME function the segments go through, so an entry with
+# punctuation ("amara.org") can actually match.
+_HALLUCINATIONS_NORM = {_normalise(h) for h in _HALLUCINATIONS}
+
+
+def _real_words(text: str) -> str:
+    """Segment text with sound-event tags, music notes and punctuation removed,
+    lower-cased. Empty (or a stock hallucination) means 'not speech'."""
+    t = _normalise(text)
+    return "" if t in _HALLUCINATIONS_NORM else t
+
+
+def speech_seconds(transcript) -> tuple[float, int]:
+    """(seconds covered by real speech, number of real-speech segments)."""
+    total, n = 0.0, 0
+    for s in getattr(transcript, "segments", None) or []:
+        if _real_words(s.text):
+            total += max(0.0, float(s.end) - float(s.start))
+            n += 1
+    return total, n
+
+
+def has_speech(transcript) -> bool:
+    """True if the ASR found any real words — hallucinations and sound tags
+    ("[Music]", "Thank you for watching!", "♪") do not count."""
+    return speech_seconds(transcript)[1] > 0
+
+
+def is_voiceover(transcript, duration: float, min_coverage: float = 0.25) -> tuple[bool, str]:
+    """Does this source have a voice-over worth cutting on? Returns (yes, why).
+
+    "Any words at all" was the wrong test. Whisper transcribes a music video as
+    a scatter of hallucinations and lyric fragments, so a video with no voice-
+    over was routed to the speech selector — which can only grow clips out of
+    contiguous speech and so delivered 3 of 10 requested clips (one of them 87s
+    against a 120s request). What decides it is how much of the video is
+    actually talk: under ``min_coverage`` the timeline selector is the one that
+    can honour both the count and the length.
     """
-    if transcript is None or not getattr(transcript, "segments", None):
-        return False
-    return any((s.text or "").strip() for s in transcript.segments)
+    secs, n = speech_seconds(transcript)
+    if n == 0:
+        return False, "no words were recognised"
+    dur = float(duration or getattr(transcript, "duration", 0) or 0)
+    if dur <= 0:
+        return True, f"{n} spoken segment(s)"
+    cov = secs / dur
+    if cov < min_coverage:
+        return False, (f"speech covers only {cov:.0%} of the video ({n} short fragment(s) "
+                       f"— music lyrics or ASR noise), under the {min_coverage:.0%} needed "
+                       f"to count as a voice-over")
+    return True, f"speech covers {cov:.0%} of the video"
 
 
 def audio_energy(path: str, duration: float, timeout: float = 900.0) -> list[float] | None:

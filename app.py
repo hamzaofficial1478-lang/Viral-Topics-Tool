@@ -1131,6 +1131,14 @@ def _render_new_job_form() -> None:
                 "Length tolerance (± seconds)", min_value=1, value=12, step=1,
                 help="How far a clip may stray from the target length so it can end on a "
                      "natural pause instead of mid-sentence.")
+            min_speech_pct = st.slider(
+                "Treat as 'no voice-over' when talk covers less than",
+                min_value=0, max_value=80, value=25, step=5, format="%d%%",
+                help="Music, sports and b-roll videos have no voice-over, but the "
+                     "transcriber still 'hears' stray words in the music. Below this "
+                     "share of actual talk, clips are cut from the timeline instead — "
+                     "which always delivers the clip count and length you asked for. "
+                     "Set 0% to always use the speech-based hook finder.")
             aspect = st.text_input(
                 "Aspect / shape", value="16:9",
                 help="9:16 (vertical), 1:1 (square), 16:9 (wide), or an exact WxH such as "
@@ -1239,6 +1247,7 @@ def _render_new_job_form() -> None:
     cfg.override("select.target_duration", int(duration))
     cfg.override("select.tolerance", int(tolerance))
     cfg.override("select.num_clips", int(num))
+    cfg.override("select.min_speech_coverage", float(min_speech_pct) / 100.0)
     cfg.override("captions.template", template)
     if animation != "(style default)":
         cfg.override("captions.animation", animation)

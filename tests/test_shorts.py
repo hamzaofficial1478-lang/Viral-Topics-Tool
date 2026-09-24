@@ -210,16 +210,44 @@ def test_sidecar_says_when_shortforge_wrote_the_text(tmp_path):
 
 # --- quality ------------------------------------------------------------------ #
 
-def test_best_quality_has_no_height_cap():
-    assert YT.format_chain({"max_height": "best"}) == ["bv*+ba/b", "b"]
-    assert YT.format_chain({"max_height": "1080"})[0] == "bv*[height<=1080]+ba/b[height<=1080]"
+def test_quality_order_is_size_then_fps_then_bitrate():
+    assert YT.sort_order({"max_height": "best"}) == ["res", "fps", "vbr", "tbr"]
+    # compatible prefers H.264 only AFTER size and frame rate are decided
+    assert YT.sort_order({"codec": "compatible"})[:3] == ["res", "fps", "vcodec:h264"]
+
+
+def test_a_1080p_cap_keeps_vertical_1080x1920():
+    """The old cap filtered on height, so "Up to 1080p" turned a vertical
+    1080x1920 Short into its 608x1080 version. The cap is the SHORT side now."""
+    assert YT.sort_order({"max_height": "1080"})[0] == "res:1080"
+    fmts = [{"format_id": "a", "vcodec": "vp9", "width": 1080, "height": 1920, "url": "u"},
+            {"format_id": "b", "vcodec": "vp9", "width": 2160, "height": 3840, "url": "u"},
+            {"format_id": "c", "vcodec": "vp9", "width": 608, "height": 1080, "url": "u"}]
+    assert YT.best_offered(fmts, {"max_height": "1080"})["format_id"] == "a"
+    assert YT.best_offered(fmts, {"max_height": "best"})["format_id"] == "b"
+
+
+def test_best_offered_ignores_audio_and_unusable_formats():
+    fmts = [{"format_id": "aud", "vcodec": "none", "acodec": "opus", "url": "u"},
+            {"format_id": "sb", "vcodec": "none", "width": 90, "height": 160, "url": "u"},
+            {"format_id": "nourl", "vcodec": "vp9", "width": 2160, "height": 3840},
+            {"format_id": "18", "vcodec": "avc1", "width": 360, "height": 640, "url": "u"},
+            {"format_id": "137", "vcodec": "avc1", "width": 1080, "height": 1920, "url": "u"}]
+    b = YT.best_offered(fmts, {})
+    assert b["format_id"] == "137" and b["short"] == 1080
+
+
+def test_strict_selector_can_never_pick_a_smaller_picture():
+    sel = YT.strict_selector({"width": 1080, "height": 1920})
+    assert sel == "bv*[width>=1080][height>=1920]+ba/b[width>=1080][height>=1920]"
+    assert "/b" not in sel.replace("/b[", "")          # no bare "any file" fallback
 
 
 def test_compatible_codec_never_trades_resolution(tmp_path):
     opts = YT.base_opts(Config.load(), {"codec": "compatible", "container": "mp4"}, str(tmp_path))
     assert opts["format_sort"][:2] == ["res", "fps"]              # resolution decided first
     assert opts["outtmpl"].startswith(str(tmp_path))              # staging, not the output
-    assert "format_sort" not in YT.base_opts(Config.load(), {"codec": "best"}, str(tmp_path))
+    assert opts["skip_unavailable_fragments"] is False            # no holes in the video
 
 
 def test_empty_media_file_rotates_the_player_client():

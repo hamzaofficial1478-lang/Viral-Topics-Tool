@@ -114,6 +114,10 @@ def _classify(e: Exception) -> Exception:
     # returned nothing. Seen live on a Short with the default+tv clients.
     if "downloaded file is empty" in msg or "page needs to be reloaded" in msg:
         return _Forbidden(str(e))
+    # A fragmented stream (HLS/DASH) that YouTube stopped serving part-way.
+    if "fragment" in msg and ("not found" in msg or "unable to continue" in msg
+                              or "giving up" in msg):
+        return _Forbidden(str(e))
     if "requested format is not available" in msg or "no video formats found" in msg:
         return _NoFormat(str(e))
     if "not a bot" in msg or "confirm you" in msg or "sign in to confirm" in msg:
@@ -456,10 +460,26 @@ def _require_ytdlp():
 
 def _download_with_retries(url: str, opts: dict, cfg: Config):
     """One auth strategy: download ``url`` with ``opts``, retrying *transient*
-    failures with exponential backoff. Raises a classified exception."""
+    failures with exponential backoff. Raises a classified exception.
+
+    A stream that was cut off PART-WAY is also retried here — resumed from its
+    ``.part`` with a fresh URL — rather than handed to the player-client
+    rotation. Those are different failures: a 403 before any data means "this
+    client is refused" (rotate), but a 403 after 80 MB means "this client was
+    serving it fine and got interrupted". Abandoning such a stream is what sent
+    Shorts to a fallback client that could only offer a low resolution, and the
+    operator got pixelated copies.
+    """
     yt_dlp = _require_ytdlp()
     attempts = max(1, int(cfg.get("ingest.retries", 4)))
+    got = {"bytes": 0}
+
+    def _count(d):
+        got["bytes"] = max(got["bytes"], int(d.get("downloaded_bytes") or 0))
+    opts = {**opts, "progress_hooks": list(opts.get("progress_hooks") or []) + [_count]}
+
     for attempt in range(1, attempts + 1):
+        before = got["bytes"]
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -467,12 +487,22 @@ def _download_with_retries(url: str, opts: dict, cfg: Config):
             return info, file_path
         except Exception as e:  # yt-dlp raises many subclasses
             classified = _classify(e)
-            if isinstance(classified, _Transient) and attempt < attempts:
+            cut_midway = isinstance(classified, _Forbidden) and got["bytes"] > 0
+            if (isinstance(classified, _Transient) or cut_midway) and attempt < attempts:
                 wait = 2 ** attempt
-                log.warning("download attempt %d/%d failed (%s); retrying in %ds",
-                            attempt, attempts, _clean_err(e), wait)
+                if cut_midway:
+                    log.warning("download cut off after %.1f MB (%s); resuming the same "
+                                "stream in %ds (attempt %d/%d)", got["bytes"] / 1e6,
+                                _clean_err(e)[:120], wait, attempt + 1, attempts)
+                else:
+                    log.warning("download attempt %d/%d failed (%s); retrying in %ds",
+                                attempt, attempts, _clean_err(e), wait)
                 time.sleep(wait)
                 continue
+            if cut_midway:
+                log.warning("stream kept being cut off (%.1f MB received, %.1f MB on the "
+                            "last try) — giving up on this player client",
+                            got["bytes"] / 1e6, (got["bytes"] - before) / 1e6)
             raise classified from e
 
 

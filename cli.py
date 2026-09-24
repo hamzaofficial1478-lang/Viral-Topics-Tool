@@ -840,6 +840,23 @@ def cmd_shorts(args: argparse.Namespace) -> int:
         print(f"Output folder: {YT.output_root(cfg, S.settings(dd))}")
         return 0
 
+    if action == "formats":
+        rows, best = YT.format_table(YT.probe_formats(args.url, cfg), S.settings(dd))
+        for r in rows:
+            print(f"  {r['size']:>11}  {str(r['fps']):>3}fps  {r['codec']:<5} "
+                  f"{r['bitrate']:>10}  id {r['id']:<6} {r['note']}")
+        print(f"Best on offer: {best['width']}x{best['height']}" if best
+              else "No downloadable video versions listed.")
+        return 0
+
+    if action == "redownload":
+        items = list(S.load_history(dd)["items"].values())
+        low = [r for r in items if r.get("quality_note")
+               or 0 < min(r.get("width") or 0, r.get("height") or 0) < args.below]
+        print(f"Queued {S.queue_redownload(dd, low)} low-quality Short(s) to download again "
+              f"(each replaces its old copy and keeps its number). Run: python cli.py shorts run")
+        return 0
+
     if action == "tidy":
         from shortforge.shorts import tidy as TD
         plan = TD.plan(dd, cfg)
@@ -1506,6 +1523,13 @@ def build_parser() -> argparse.ArgumentParser:
     shs.add_parser("resume", help="Carry on a paused run")
     shs.add_parser("cancel", help="Drop everything still queued")
     shs.add_parser("status", help="What the downloader is doing")
+    shf = shs.add_parser("formats", help="Every version YouTube offers for one Short, and "
+                                          "which the downloader will take")
+    shf.add_argument("url")
+    shr = shs.add_parser("redownload", help="Download low-quality Shorts again at best "
+                                            "quality, keeping their numbers")
+    shr.add_argument("--below", type=int, default=1080,
+                     help="Re-download anything whose short side is below this (default 1080)")
     sht = shs.add_parser("tidy", help="Clean an old Shorts folder: remove extra files, "
                                       "number videos in download order (preview first)")
     sht.add_argument("--apply", action="store_true", help="Actually do it")

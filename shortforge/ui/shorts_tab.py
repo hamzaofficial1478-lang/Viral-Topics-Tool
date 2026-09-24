@@ -31,8 +31,8 @@ _STATUS_ICON = {S.PENDING: "⏳", S.DOWNLOADING: "⏬", S.DONE: "✅", S.SKIPPED
                 S.FAILED: "✗", S.CANCELLED: "🚫"}
 _QUALITY = {"best": "Best available — no limit (recommended)", "2160": "Up to 2160p (4K)",
             "1440": "Up to 1440p", "1080": "Up to 1080p", "720": "Up to 720p"}
-_CODEC = {"best": "Best quality, any codec (VP9/AV1/H.264 — whichever is best)",
-          "compatible": "Same resolution, but prefer H.264 (plays on older devices)"}
+_CODEC = {"best": "Best picture: biggest size, then the most detail (highest bitrate), any codec",
+          "compatible": "Same size, but prefer H.264 when there's a choice (older devices)"}
 
 
 # --- helpers ----------------------------------------------------------------- #
@@ -279,6 +279,30 @@ def _tab_links(dd: str) -> None:
             _flash("warning", f"Not a YouTube video link: {b}")
         st.rerun()
 
+    st.write("")
+    _quality_check(dd)
+
+
+def _quality_check(dd: str) -> None:
+    with st.expander("🔬 Check a Short's quality — what YouTube offers from this PC"):
+        url = st.text_input("One Short's link", key="sh_qc_url",
+                            placeholder="https://www.youtube.com/shorts/…")
+        if st.button("Check", key="sh_qc_go", disabled=not url.strip()):
+            with st.spinner("Asking YouTube for every version of this Short…"):
+                try:
+                    rows, best = YT.format_table(YT.probe_formats(url.strip(), Config.load()),
+                                                 S.settings(dd))
+                except Exception as e:  # noqa: BLE001 - show the reason, don't crash
+                    st.error(str(e)[:400])
+                    return
+            if not rows:
+                st.warning("YouTube listed no video versions for this link.")
+                return
+            st.success(f"Best on offer: **{best['width']}×{best['height']}** — the download "
+                       f"will only accept this size or larger." if best else "")
+            st.dataframe([{k: v for k, v in r.items() if k != "short"} for r in rows],
+                         hide_index=True, width="stretch")
+
 
 def _tab_downloads(dd: str) -> None:
     run = S.load_run(dd)
@@ -303,6 +327,51 @@ def _tab_downloads(dd: str) -> None:
                                               "stays in History."):
         S.clear_finished(dd)
         st.rerun()
+
+
+def _short_side(r: dict) -> int:
+    w, h = r.get("width") or 0, r.get("height") or 0
+    return int(min(w, h)) if (w and h) else int(h or w or 0)
+
+
+def _quality_label(r: dict) -> str:
+    """"1080×1920 · 3.4 Mb/s" — resolution AND bitrate, because a file can be
+    the right size and still look soft if it carries too little data."""
+    size = f"{r.get('width') or '?'}×{r.get('height') or '?'}"
+    br = r.get("bitrate_kbps")
+    if not br and r.get("filesize") and r.get("duration"):
+        br = round(int(r["filesize"]) * 8 / float(r["duration"]) / 1000)
+    lab = size + (f" · {br / 1000:.1f} Mb/s" if br else "")
+    return lab + (" ⚠️" if _is_low(r) else "")
+
+
+def _is_low(r: dict) -> bool:
+    return bool(r.get("quality_note")) or (0 < _short_side(r) < 1080)
+
+
+def _redownload_panel(dd: str, items: list[dict]) -> None:
+    """Fix Shorts that already came in pixelated: download them again at the
+    best quality, each replacing its old copy under the SAME number."""
+    low = [r for r in items if _is_low(r)]
+    if low:
+        st.warning(f"⚠️ {len(low)} Short(s) are below full quality (under 1080p, or YouTube "
+                   f"cut the better stream off). Earlier versions could save a lower copy "
+                   f"without saying so; this one won't. Re-download them to replace them.")
+        if st.button(f"🔁 Re-download the {len(low)} low-quality Short(s) in best quality",
+                     type="primary", key="sh_redl_low", width="stretch"):
+            n = S.queue_redownload(dd, low)
+            _flash("success", f"Queued {n} re-download(s) — each replaces its old copy and "
+                              f"keeps its number. " + ensure_worker(dd))
+            st.rerun()
+    with st.expander("🔁 Re-download any Short in best quality"):
+        labels = {f"#{r.get('number') or '-'} · {r.get('channel_name') or '-'} — "
+                  f"{(r.get('title') or '')[:60]} ({_quality_label(r)})": r for r in items[:500]}
+        picked = st.multiselect("Which ones?", list(labels), key="sh_redl_pick")
+        if st.button(f"🔁 Re-download {len(picked) or ''} selected".replace("  ", " "),
+                     disabled=not picked, key="sh_redl_go"):
+            n = S.queue_redownload(dd, [labels[k] for k in picked])
+            _flash("success", f"Queued {n} re-download(s). " + ensure_worker(dd))
+            st.rerun()
 
 
 def _tab_history(dd: str, root: str) -> None:
@@ -330,20 +399,14 @@ def _tab_history(dd: str, root: str) -> None:
                                          time.localtime(r.get("downloaded_at") or 0)),
              "Channel": r.get("channel_name") or "-",
              "Title": r.get("title"),
-             "Quality": (f"{r.get('width') or '?'}×{r.get('height') or '?'}"
-                         + (" ⚠️" if r.get("quality_note") else "")),
+             "Quality": _quality_label(r),
              "Size": _mb(r.get("filesize")),
              "Hashtags": " ".join(r.get("hashtags") or []),
              "Link": r.get("url")} for r in shown]
     st.dataframe(rows, hide_index=True, width="stretch", height=min(600, 38 + 35 * len(rows)),
                  column_config={"Link": st.column_config.LinkColumn("Link", display_text="open")})
 
-    cut = [r for r in shown if r.get("quality_note")]
-    if cut:
-        st.warning(f"⚠️ {len(cut)} Short(s) came in below the best quality YouTube started "
-                   f"sending — it cut the better stream off partway and a fallback route "
-                   f"delivered less. Example: {cut[0]['quality_note']}. "
-                   f"Updating yt-dlp (Settings → 📺 YouTube authentication) usually fixes it.")
+    _redownload_panel(dd, items)
 
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -405,6 +468,13 @@ def _tab_settings(dd: str, cfg: Config) -> None:
                            format_func=lambda k: _QUALITY[k],
                            help="Best available downloads the original streams as YouTube "
                                 "serves them — no re-encoding, no scaling.")
+    allow_lower = st.toggle(
+        "If the best quality can't be downloaded, save a lower-quality copy instead",
+        value=bool(s.get("allow_lower_quality", False)),
+        help="OFF (recommended): a Short is only saved at the best quality YouTube "
+             "offers. If YouTube keeps cutting that stream off, the Short is marked failed "
+             "(Retry tries again) — you never get a pixelated copy without knowing. ON: "
+             "step down one size at a time and label the copy in History.")
     c_keys = list(_CODEC)
     codec = st.radio("Codec", c_keys, c_keys.index(s.get("codec", "best"))
                      if s.get("codec", "best") in c_keys else 0,
@@ -453,6 +523,7 @@ def _tab_settings(dd: str, cfg: Config) -> None:
                           max_height=quality, codec=codec, container=container,
                           save_thumbnail=thumb, sidecar_txt=txt, sidecar_json=js,
                           name_style=name_style, embed_metadata=embed, ai_fill_missing=ai,
+                          allow_lower_quality=allow_lower,
                           delay_seconds=int(delay), stop_on_bot_wall=int(wall))
         st.success("Saved.")
 

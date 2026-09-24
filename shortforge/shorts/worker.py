@@ -199,7 +199,7 @@ def _drain(cfg: Config, dd: str, should_stop, announce) -> dict:
         if item is None:
             summary["finished"] = True
             break
-        if item["id"] in known:
+        if item["id"] in known and not item.get("replace"):
             _mark(dd, item["id"], store.SKIPPED, error="already downloaded")
             summary["skipped"] += 1
             continue

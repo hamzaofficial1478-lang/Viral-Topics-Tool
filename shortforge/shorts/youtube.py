@@ -228,12 +228,127 @@ def write_sidecars(video_path: str, rec: dict) -> tuple[str, str]:
 
 # --- downloading one Short --------------------------------------------------- #
 
-def format_chain(st: dict) -> list[str]:
+def _cap(st: dict) -> int:
+    """Optional size limit, as the SHORT side of the picture (1080 = "1080p").
+
+    The earlier cap filtered on ``height``, which is wrong for Shorts: a vertical
+    1080p Short is 1080x1920, so its height is 1920 and "Up to 1080p" quietly
+    fetched the 608x1080 version instead.
+    """
     cap = str(st.get("max_height") or "best").lower()
-    if cap.isdigit():
-        h = int(cap)
-        return [f"bv*[height<={h}]+ba/b[height<={h}]", "bv*+ba/b", "b"]
+    return int(cap) if cap.isdigit() else 0
+
+
+def sort_order(st: dict) -> list[str]:
+    """How yt-dlp ranks formats: biggest picture first (``res`` is the SHORT
+    side, so vertical and landscape compare fairly), then frame rate, then the
+    most video bitrate — more data per frame is more detail. Among equally
+    sized formats this takes YouTube's high-bitrate encode over a leaner one."""
+    cap = _cap(st)
+    order = [f"res:{cap}" if cap else "res", "fps"]
+    if str(st.get("codec")).lower() == "compatible":
+        order.append("vcodec:h264")        # only breaks ties at the SAME size/fps
+    return order + ["vbr", "tbr"]
+
+
+def _short_side(f: dict) -> int:
+    w, h = f.get("width") or 0, f.get("height") or 0
+    return int(min(w, h)) if (w and h) else int(h or w or 0)
+
+
+def best_offered(formats: list[dict], st: dict) -> dict | None:
+    """The largest picture on offer (within the cap), from a format list."""
+    cap = _cap(st)
+    vids = [f for f in formats or []
+            if (f.get("vcodec") or "none") != "none" and _short_side(f)
+            and (f.get("url") or f.get("fragments") or f.get("manifest_url"))
+            and (not cap or _short_side(f) <= cap)]
+    if not vids:
+        return None
+    top = max(vids, key=lambda f: (_short_side(f), max(f.get("width") or 0, f.get("height") or 0),
+                                   f.get("fps") or 0, f.get("vbr") or f.get("tbr") or 0))
+    return {"width": top.get("width"), "height": top.get("height"),
+            "short": _short_side(top), "fps": top.get("fps"),
+            "format_id": top.get("format_id"), "vcodec": top.get("vcodec"),
+            "vbr": top.get("vbr") or top.get("tbr")}
+
+
+def probe_formats(url: str, cfg: Config) -> list[dict]:
+    """Every format YouTube lists for ``url`` (no download), through the same
+    cookie chain and player clients the download will use."""
+    from ..ingest.ingest import (_auth_strategies, _classify, _BotWall, _clean_err,
+                                 _extractor_args, _require_ytdlp)
+    yt_dlp = _require_ytdlp()
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True,
+            "socket_timeout": int(cfg.get("ingest.socket_timeout", 120) or 120),
+            "extractor_args": _extractor_args(cfg)}
+    last: Exception | None = None
+    for label, overlay in _auth_strategies(cfg):
+        try:
+            with yt_dlp.YoutubeDL({**opts, **overlay}) as ydl:
+                info = ydl.extract_info(url, download=False, process=False)
+            return list((info or {}).get("formats") or [])
+        except Exception as e:  # noqa: BLE001 - try the next cookie strategy
+            last = e
+            if not isinstance(_classify(e), _BotWall):
+                log.debug("shorts: probe via '%s' failed: %s", label, _clean_err(e)[:160])
+    raise ShortForgeError(f"could not read this Short's formats: "
+                          f"{_clean_err(last) if last else 'unknown error'}") from last
+
+
+def format_table(formats: list[dict], st: dict) -> tuple[list[dict], dict | None]:
+    """Human-readable list of the video versions on offer, biggest first, and
+    the one the downloader will aim for. Backs the "Check a Short's quality"
+    tool and ``cli.py shorts formats``."""
+    best = best_offered(formats, st)
+    rows = []
+    for f in formats or []:
+        if (f.get("vcodec") or "none") == "none" or not _short_side(f):
+            continue
+        usable = bool(f.get("url") or f.get("fragments") or f.get("manifest_url"))
+        br = f.get("vbr") or f.get("tbr")
+        rows.append({"size": f"{f.get('width') or '?'}×{f.get('height') or '?'}",
+                     "short": _short_side(f), "fps": f.get("fps") or "",
+                     "codec": (f.get("vcodec") or "").split(".")[0],
+                     "bitrate": f"{br / 1000:.1f} Mb/s" if br else "",
+                     "id": f.get("format_id"),
+                     "note": ("← will be downloaded" if best and f.get("format_id") == best["format_id"]
+                              else "" if usable else "not downloadable (no stream address)")})
+    rows.sort(key=lambda r: (r["short"], r["fps"] or 0), reverse=True)
+    return rows, best
+
+
+def strict_selector(best: dict) -> str:
+    """Only formats at least as large as the best one on offer — so a fallback
+    route that can only reach 360p fails loudly instead of being saved."""
+    w, h = int(best.get("width") or 0), int(best.get("height") or 0)
+    f = "".join(x for x in (f"[width>={w}]" if w else "", f"[height>={h}]" if h else ""))
+    return f"bv*{f}+ba/b{f}"
+
+
+def loose_chain() -> list[str]:
     return ["bv*+ba/b", "b"]
+
+
+def step_down_selectors(formats: list[dict], best: dict | None, st: dict) -> list[str]:
+    """Only when lower quality is allowed: each smaller picture size on offer,
+    largest first. Stepping down one size at a time keeps as much quality as
+    YouTube will actually deliver — asking for "best" again would only retry
+    the stream that just failed."""
+    cap = _cap(st)
+    sizes = sorted({(_short_side(f), f.get("width") or 0, f.get("height") or 0)
+                    for f in formats or []
+                    if (f.get("vcodec") or "none") != "none" and _short_side(f)
+                    and (f.get("url") or f.get("fragments") or f.get("manifest_url"))
+                    and (not cap or _short_side(f) <= cap)
+                    and (not best or _short_side(f) < best["short"])}, reverse=True)
+    out = []
+    for _s, w, h in sizes:
+        lim = "".join(x for x in (f"[width<={w}]" if w else "", f"[height<={h}]" if h else ""))
+        sel = f"bv*{lim}+ba/b{lim}"
+        if sel not in out:
+            out.append(sel)
+    return out or loose_chain()
 
 
 def _container(st: dict) -> str:
@@ -253,14 +368,19 @@ def base_opts(cfg: Config, st: dict, staging: str, progress_hook=None) -> dict:
     from ..ingest.ingest import _base_opts
     opts = _base_opts(cfg, staging)
     opts.update({
-        "outtmpl": os.path.join(staging, "%(id)s.%(ext)s"),
+        # The format id is part of the name so every format has its OWN partial
+        # file. With one shared name, a retry at a different format resumed the
+        # earlier attempt's .part and appended to it — a video that starts in
+        # 1080p and carries on in 360p (reproduced with a cut-off stream).
+        "outtmpl": os.path.join(staging, "%(id)s.%(format_id)s.%(ext)s"),
         "merge_output_format": _container(st),
         "overwrites": False,
     })
-    if str(st.get("codec")).lower() == "compatible":
-        # Resolution and frame rate FIRST, so preferring H.264 can never cost a
-        # single pixel — it only breaks ties between same-size formats.
-        opts["format_sort"] = ["res", "fps", "vcodec:h264", "acodec:aac"]
+    opts["format_sort"] = sort_order(st)
+    # yt-dlp's default is to SKIP a stream piece it can't fetch and carry on,
+    # which saves a video with holes in it. Stop instead: the resume retry and
+    # the player-client rotation then get the whole stream, or it fails loudly.
+    opts["skip_unavailable_fragments"] = False
     if st.get("save_thumbnail"):
         opts["writethumbnail"] = True
         opts["postprocessors"] = [{"key": "FFmpegThumbnailsConvertor", "format": "jpg",
@@ -277,7 +397,8 @@ def _staged_video(info: dict, staging: str, container: str) -> str | None:
             return p
     vid = info.get("id") or ""
     hits = [p for p in glob.glob(os.path.join(glob.escape(staging), f"{glob.escape(vid)}.*"))
-            if p.lower().endswith((".mp4", ".mkv", ".webm", ".m4v", ".mov"))]
+            if p.lower().endswith((".mp4", ".mkv", ".webm", ".m4v", ".mov"))
+            and not re.search(r"\.f\d+\.[a-z0-9]+$", p, re.IGNORECASE)]   # not a half
     hits.sort(key=lambda p: (not p.lower().endswith("." + container), p))
     return hits[0] if hits else None
 
@@ -354,15 +475,47 @@ def _quality_hook(seen: list, outer=None):
     return hook
 
 
+def _quality_error(best: dict, why: str) -> ShortForgeError:
+    return ShortForgeError(
+        f"Not saved: couldn't download this Short at its best quality "
+        f"({best.get('width')}×{best.get('height')}) — {why}. Saving a lower-quality copy "
+        f"is switched off, so nothing was kept. 'Retry failed' tries again; if it keeps "
+        f"happening, update yt-dlp (Settings → 📺 YouTube authentication).")
+
+
+def _is_bot_wall(e: Exception) -> bool:
+    low = str(e).lower()
+    return "not a bot" in low or "requiring authentication" in low
+
+
+def _place(src: str, final: str) -> None:
+    """Move ``src`` to ``final``, replacing a file already there (a re-download
+    keeps its number and name). Copied to a temporary name first, so an
+    interrupted move can never leave half a video under the real name."""
+    import shutil
+    tmp = final + ".incoming"
+    shutil.move(src, tmp)
+    os.replace(tmp, final)
+
+
 def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dict:
-    """Download one Short; return its history record. Raises ShortForgeError.
+    """Download one Short at the best quality YouTube offers; return its
+    history record. Raises ShortForgeError.
+
+    Quality is the one thing not traded away. The best picture on offer is read
+    first, the download may only take a format at least that large, and the
+    saved file is measured afterwards. If YouTube won't deliver it, the Short
+    fails with the reason — unless the operator has explicitly allowed lower-
+    quality copies. (Previously the fallback chain quietly ended at "any single
+    file", which on YouTube is often 360p: the pixelated copies.)
 
     Only the finished video reaches the output folder, named in download order
-    (``N - Title.mp4``). Sidecar ``.txt``/``.json``/``.jpg`` files are written
-    only if switched on in Settings — the default output is videos alone.
+    (``N - Title.mp4``). ``item["replace"]`` re-downloads over an earlier copy,
+    keeping its number.
     """
     import shutil
     from ..ingest.ingest import download_resilient
+    from ..utils import ffprobe_info
 
     dd = store.data_dir(cfg)
     staging = os.path.join(dd, "incoming", item["id"])
@@ -371,8 +524,36 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
     opts = base_opts(cfg, st, staging, _quality_hook(attempted, progress_hook))
     container = _container(st)
     t0 = time.time()
+    allow_lower = bool(st.get("allow_lower_quality"))
+    best: dict | None = None
+    offered: list[dict] = []
     try:
-        info, _prepared = download_resilient(item["url"], cfg, opts, formats=format_chain(st))
+        try:
+            offered = probe_formats(item["url"], cfg)
+            best = best_offered(offered, st)
+        except ShortForgeError as e:
+            log.info("shorts: %s — couldn't read the format list first (%s); the "
+                     "download will report the real problem", item["id"], str(e)[:160])
+        if best:
+            log.info("shorts: %s — best on offer %s×%s %s (%s)", item["id"], best["width"],
+                     best["height"], best.get("vcodec") or "", best.get("format_id"))
+        try:
+            info, _prepared = download_resilient(
+                item["url"], cfg, opts,
+                formats=[strict_selector(best)] if best else loose_chain())
+        except ShortForgeError as e:
+            if not best or _is_bot_wall(e):
+                raise
+            if not allow_lower:
+                raise _quality_error(best, "YouTube kept cutting that stream off or would "
+                                           "not serve it") from e
+            log.warning("shorts: %s — best quality failed (%s); lower quality is allowed, "
+                        "so stepping down one size at a time", item["id"], str(e)[:160])
+            # Start clean: nothing from the failed attempt may end up in this file.
+            shutil.rmtree(staging, ignore_errors=True)
+            os.makedirs(staging, exist_ok=True)
+            info, _prepared = download_resilient(item["url"], cfg, opts,
+                                                 formats=step_down_selectors(offered, best, st))
     except BaseException:
         # A download that FAILED leaves nothing behind. (A power cut never gets
         # here, so its partial file stays in staging and is resumed next time.)
@@ -382,6 +563,27 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
     if not staged:
         shutil.rmtree(staging, ignore_errors=True)
         raise ShortForgeError(f"downloaded {item['id']} but the video file is missing")
+
+    # Measure the file itself — it is the only thing that matters.
+    try:
+        probe = ffprobe_info(staged)
+        w, h, dur = probe.width, probe.height, round(probe.duration, 1)
+    except Exception:  # noqa: BLE001 - fall back to what yt-dlp reported
+        w, h, dur = info.get("width"), info.get("height"), info.get("duration")
+    got_short = min(w or 0, h or 0) or (h or 0)
+    quality_note = ""
+    if best and got_short and got_short < best["short"] - 8:
+        if not allow_lower:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise _quality_error(best, f"the file that arrived was only {w}×{h}")
+        quality_note = (f"best on offer was {best['width']}×{best['height']}; "
+                        f"YouTube only delivered {w}×{h}")
+    tallest = max(attempted, default=0)
+    if not quality_note and h and tallest > int(h) + 8:
+        quality_note = (f"YouTube cut off the {tallest}p stream partway; "
+                        f"this copy is {h}p from a fallback route")
+    if quality_note:
+        log.warning("shorts: %s — %s", item["id"], quality_note)
 
     channel_name = item.get("channel_name") or info.get("channel") or info.get("uploader") or ""
     title = (info.get("title") or item.get("title") or item["id"]).strip()
@@ -395,19 +597,11 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
             if h_src == "generated" and ai["hashtags"]:
                 hashtags, h_src = ai["hashtags"], "ai"
 
-    # Resolution/duration straight from the file when YouTube's metadata lacks
-    # them — the history is where the operator checks "did I get full quality?".
-    w, h, dur = info.get("width"), info.get("height"), info.get("duration")
-    if not (w and h and dur):
-        try:
-            from ..utils import ffprobe_info
-            p = ffprobe_info(staged)
-            w, h, dur = w or p.width, h or p.height, dur or round(p.duration, 1)
-        except Exception:  # noqa: BLE001 - metadata only; the file is fine
-            pass
-
+    size_now = os.path.getsize(staged)
     rec = {
-        "id": info.get("id") or item["id"],
+        # The id this Short was QUEUED under — the one the no-repeat check and a
+        # re-download look up — not whatever the extractor echoes back.
+        "id": item["id"],
         "url": info.get("webpage_url") or item["url"],
         "title": title,
         "description": description, "description_source": d_src,
@@ -422,22 +616,27 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
         "width": w, "height": h, "fps": info.get("fps"),
         "vcodec": info.get("vcodec"), "acodec": info.get("acodec"),
         "format": info.get("format_id") or info.get("format"),
+        "bitrate_kbps": round(size_now * 8 / dur / 1000) if dur else None,
+        "best_offered": f"{best['width']}×{best['height']}" if best else "",
         "view_count": info.get("view_count"), "like_count": info.get("like_count"),
         "downloaded_at": time.time(),
         "seconds": round(time.time() - t0, 1),
         "source": item.get("source") or "channel",
-        "quality_note": "",
+        "quality_note": quality_note,
     }
-    tallest = max(attempted, default=0)
-    if h and tallest > int(h) + 8:
-        rec["quality_note"] = (f"YouTube cut off the {tallest}p stream partway; "
-                               f"this copy is {h}p from a fallback route")
-        log.warning("shorts: %s — %s", rec["id"], rec["quality_note"])
 
-    # Name it by download order in its folder, then move ONLY the video out.
-    dest = destination(cfg, st, item)
+    # Name it by download order in its folder (a re-download keeps its number),
+    # then move ONLY the video out.
+    replace = item.get("replace") or {}
+    old_file = replace.get("file") or ""
+    if replace.get("number") and old_file:
+        dest = os.path.dirname(old_file)
+        number = int(replace["number"])
+    else:
+        dest = destination(cfg, st, item)
+        number = 0
     os.makedirs(dest, exist_ok=True)
-    number = store.next_number(dd, dest)
+    number = number or store.next_number(dd, dest)
     base = numbered_name(number, title, st)
     ext = os.path.splitext(staged)[1].lower() or f".{container}"
     final = os.path.join(dest, base + ext)
@@ -445,8 +644,14 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
         tagged = os.path.join(staging, "tagged" + ext)
         if embed_metadata(staged, tagged, rec):
             staged = tagged
-    shutil.move(staged, final)
+    _place(staged, final)
     store.commit_number(dd, dest, number)
+    if old_file and os.path.abspath(old_file) != os.path.abspath(final) \
+            and os.path.isfile(old_file):
+        try:
+            os.remove(old_file)                  # the low-quality copy it replaces
+        except OSError as e:
+            log.warning("shorts: new copy saved, but couldn't remove the old one (%s)", e)
 
     rec.update({"number": number, "file": os.path.abspath(final),
                 "filesize": os.path.getsize(final), "thumbnail": "", "sidecar": "",
@@ -454,7 +659,7 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
     thumb = os.path.join(staging, f"{item['id']}.jpg")
     if st.get("save_thumbnail") and os.path.isfile(thumb):
         rec["thumbnail"] = os.path.abspath(os.path.join(dest, base + ".jpg"))
-        shutil.move(thumb, rec["thumbnail"])
+        _place(thumb, rec["thumbnail"])
     if st.get("sidecar_txt") or st.get("sidecar_json"):
         txt, js = write_sidecars(final, rec)
         rec["sidecar"] = txt if st.get("sidecar_txt") else ""
@@ -467,9 +672,9 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
                     pass
     shutil.rmtree(staging, ignore_errors=True)
 
-    log.info("shorts: %s — #%d %sx%s %s, %.1f MB in %.0fs → %s", rec["id"], number,
-             rec["width"], rec["height"], rec["vcodec"], rec["filesize"] / 1e6,
-             rec["seconds"], os.path.basename(final))
+    log.info("shorts: %s — #%d %sx%s %s %s kb/s, %.1f MB in %.0fs → %s", rec["id"], number,
+             rec["width"], rec["height"], rec["vcodec"], rec["bitrate_kbps"],
+             rec["filesize"] / 1e6, rec["seconds"], os.path.basename(final))
     return rec
 
 

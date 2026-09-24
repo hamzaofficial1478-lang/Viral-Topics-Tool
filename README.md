@@ -33,9 +33,15 @@ A second tool beside the clip maker, on its own screen in the dashboard sidebar.
   saved the moment you change them. **Download** takes that many of each
   switched-on channel's *newest* Shorts that you don't already have.
 - **Paste links** — one-off Short/video links, not saved as channels.
-- **Quality** — best available by default: the original streams, merged without
-  re-encoding or scaling. Optional height cap and an H.264-at-the-same-resolution
-  mode in Settings.
+- **Quality — best or nothing** — before each download ShortForge reads every
+  version YouTube offers and only accepts the biggest picture (then the highest
+  bitrate). A stream YouTube cuts off part-way is *resumed*, never swapped for a
+  smaller version, and the saved file is measured. If the best can't be had, the
+  Short is marked failed with the reason (Retry tries again) — a lower-quality
+  copy is only ever saved if you switch that on in Settings, and then it's
+  labelled. **🔬 Check a Short's quality** (Paste links tab) shows exactly what
+  YouTube offers from your PC; History shows each file's size and bitrate and
+  can **re-download** earlier low-quality Shorts, keeping their numbers.
 - **Clean output** — the folder holds only videos, named in download order per
   channel: `1 - Title.mp4`, `2 - Title.mp4` … and the next batch carries on at
   4, 5, 6. Downloads happen in a private staging folder, so unfinished pieces
@@ -46,8 +52,6 @@ A second tool beside the clip maker, on its own screen in the dashboard sidebar.
   re-encoding; Windows shows them under Properties → Details) and kept in
   History. Separate `.txt` / `.json` / `.jpg` files are optional switches, off by
   default. If the uploader wrote none, ShortForge writes them and says so.
-- **Quality check** — if YouTube cuts off a higher-resolution stream partway and
-  a fallback delivers less, History marks that Short with ⚠️.
 - **History** — searchable, filterable by channel, exportable to CSV.
 - **Survives everything** — runs in its own process (closing the tab or the
   dashboard window doesn't stop it), keeps the PC awake, resumes after a power

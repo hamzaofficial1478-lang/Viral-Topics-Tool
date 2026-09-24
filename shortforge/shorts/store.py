@@ -66,6 +66,10 @@ DEFAULT_SETTINGS: dict = {
     "sidecar_json": False,        # <n> - <title>.json (everything known)
     "name_style": "number_title", # "1 - Title.mp4" | "number" → "1.mp4"
     "ai_fill_missing": False,     # AI writes a description/hashtags when none exist
+    # Quality is not traded away by default: if YouTube won't deliver the best
+    # picture it offers, that Short fails (and can be retried) instead of being
+    # saved at a lower resolution. On = keep the best that could be downloaded.
+    "allow_lower_quality": False,
     "delay_seconds": 2,           # pause between downloads — fewer bot walls
     "stop_on_bot_wall": 3,        # pause the run after N bot walls in a row
 }
@@ -459,6 +463,32 @@ def start_run(dd: str, channel_keys: list[str], links: list[str]) -> dict:
             queued_links += 1
         r["paused"] = False
         return {"channels": len(queued_ch), "links": queued_links, "bad_links": bad}
+    return mutate_run(dd, fn)[1]
+
+
+def queue_redownload(dd: str, records: list[dict]) -> int:
+    """Download these Shorts again at best quality, each replacing its earlier
+    copy and keeping its number. Returns how many were queued."""
+    def fn(r):
+        if not r.get("run_id") or not has_work(r):
+            r.update({"run_id": uuid.uuid4().hex[:8], "created": time.time(),
+                      "items": [], "notes": {}, "channels_to_list": []})
+        queued = {i["id"] for i in r["items"] if i.get("status") in (PENDING, DOWNLOADING)}
+        n = 0
+        for rec in records:
+            if rec["id"] in queued:
+                continue
+            r["items"].append({
+                "id": rec["id"], "url": rec.get("url") or
+                f"https://www.youtube.com/shorts/{rec['id']}",
+                "channel_key": rec.get("channel_key") or "",
+                "channel_name": rec.get("channel_name") or "",
+                "source": "redownload", "title": rec.get("title") or "",
+                "status": PENDING, "error": None, "attempts": 0,
+                "replace": {"number": rec.get("number"), "file": rec.get("file")}})
+            n += 1
+        r["paused"] = False
+        return n
     return mutate_run(dd, fn)[1]
 
 

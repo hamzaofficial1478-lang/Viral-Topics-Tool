@@ -24,6 +24,34 @@ python cli.py wizard        # guided CLI run
 API keys are configured through the settings UI (`python cli.py ui`) and stored
 in gitignored `config/providers.local.json` — never in chat, never committed.
 
+## YouTube Shorts downloader (📥 YT Shorts)
+
+A second tool beside the clip maker, on its own screen in the dashboard sidebar.
+
+- **Channels** — paste channels (`@handle`, a channel link, or a `UC…` id), one per
+  line. Each has its own **Shorts per run** count and an on/off switch; both are
+  saved the moment you change them. **Download** takes that many of each
+  switched-on channel's *newest* Shorts that you don't already have.
+- **Paste links** — one-off Short/video links, not saved as channels.
+- **Quality** — best available by default: the original streams, merged without
+  re-encoding or scaling. Optional height cap and an H.264-at-the-same-resolution
+  mode in Settings.
+- **Never twice** — every download is recorded by video id in the history, and
+  file names carry the id (`Title [id].mp4`), so a Short is skipped even if the
+  history file were lost.
+- **Title, description, hashtags** — `Title [id].txt` beside every Short (plus a
+  `.json` with everything known and a `.jpg` thumbnail). When the uploader wrote
+  no description or hashtags, ShortForge writes them and says so in the file.
+- **History** — searchable, filterable by channel, exportable to CSV.
+- **Survives everything** — runs in its own process (closing the tab or the
+  dashboard window doesn't stop it), keeps the PC awake, resumes after a power
+  cut, and pauses itself if YouTube starts asking to sign in.
+- **Phone** — `shorts`, `shorts start`, `shorts pause`, `shorts retry`,
+  `shorts cancel`, `shorts history` on the ntfy command topic.
+
+Everything is kept in `shorts_data/` next to the program (not in the cache, so
+clearing the cache never loses it). CLI: `python cli.py shorts --help`.
+
 ## Install on a new PC
 
 Three steps — no command line needed after cloning:

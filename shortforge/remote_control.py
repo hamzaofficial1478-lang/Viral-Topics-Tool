@@ -269,7 +269,9 @@ HELP = (
     "(<b>skip</b> declines)\n"
     "/status — how the queue is doing (and whether anything is stuck)\n"
     "/list — the queued links\n"
-    "/help — this message"
+    "/help — this message\n\n"
+    "<b>YouTube Shorts downloader:</b> <b>shorts</b> (status), <b>shorts start</b>, "
+    "<b>shorts pause</b>, <b>shorts retry</b>, <b>shorts cancel</b>, <b>shorts history</b>"
 )
 
 
@@ -633,6 +635,14 @@ def _unknown_reply(text: str, work_dir: str) -> str:
             f"/list, /status, /help.")
 
 
+def _shorts_status() -> str:
+    try:
+        from .shorts import commands as SC
+        return SC.status_line()
+    except Exception as e:  # noqa: BLE001 - never let the Shorts line break /status
+        return f"📥 Shorts: status unavailable ({e})"
+
+
 def handle_text(text: str, work_dir: str) -> str:
     """Turn one owner message into a reply. Pure w.r.t. any transport (testable)."""
     text = (text or "").strip()
@@ -642,6 +652,11 @@ def handle_text(text: str, work_dir: str) -> str:
     # first is what makes it safe to accept loose multi-word phrasings above:
     # a message carrying a URL can never be mistaken for a control word.
     if not _URL_RE.search(text):
+        # The Shorts downloader's own commands, always prefixed "shorts" so a
+        # bare "start" keeps meaning the clip queue.
+        from .shorts import commands as SC
+        if SC.matches(text):
+            return SC.handle(text)
         norm = _normalize(text)
         if norm in _START_WORDS:
             return _resume(work_dir)
@@ -670,7 +685,7 @@ def handle_text(text: str, work_dir: str) -> str:
     if low.startswith("/help"):
         return HELP
     if low.startswith("/status"):
-        return _status(work_dir)
+        return _status(work_dir) + "\n\n" + _shorts_status()
     if low.startswith("/list"):
         q = Q.load_queue(work_dir)
         jobs = q.get("jobs", [])

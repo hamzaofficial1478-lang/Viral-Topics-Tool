@@ -22,3 +22,5 @@ venv/
 out/
 *.mp4
 *.wav
+# YouTube Shorts downloader: saved channels, download history, run state
+shorts_data/

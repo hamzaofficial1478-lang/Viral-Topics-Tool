@@ -616,6 +616,18 @@ def cmd_listen(args: argparse.Namespace) -> int:
         Q.set_paused(q, True)        # always ask first — see the permission gate below
     Q.save_queue(q, work_dir)
 
+    # The Shorts downloader follows the same rule: a run left unfinished by a
+    # restart waits for "shorts start" rather than resuming by itself.
+    from shortforge.shorts import store as SS, worker as SW
+    sdd = SS.data_dir(cfg0)
+    shorts_resumed = 0
+    shorts_waiting = False
+    if not SS.lock_is_live(sdd):      # a live downloader is not "interrupted"
+        shorts_resumed = SS.requeue_interrupted(sdd)
+        shorts_waiting = SS.has_work(SS.load_run(sdd))
+        if shorts_waiting:
+            SS.set_paused(sdd, True)
+
     stop = threading.Event()
 
     def _worker():
@@ -659,7 +671,27 @@ def cmd_listen(args: argparse.Namespace) -> int:
                 N.notify(f"🏁 <b>Queue empty</b>\n{s['done']} done, {s['failed']} failed\n"
                          f"<b>{s['total_clips']} clip(s)</b> total")
 
+    def _shorts_worker():
+        """Download Shorts whenever a run is queued and not paused.
+
+        Its own thread, so a long clip render never holds up a download (they
+        use different resources: the render is CPU, a download is network).
+        The Shorts lock keeps it from running alongside a `cli.py shorts run`
+        the dashboard may have started — never two downloaders at once.
+        """
+        while not stop.is_set():
+            try:
+                r = SS.load_run(sdd)
+                if SS.is_paused(r) or not SS.has_work(r) or SS.lock_is_live(sdd):
+                    stop.wait(5)
+                    continue
+                SW.drain(_cfg_for_queue(args), dd=sdd, should_stop=stop.is_set)
+            except Exception as e:  # noqa: BLE001 - the listener must outlive any run
+                log.error("shorts worker: %s", e)
+                stop.wait(30)
+
     threading.Thread(target=_worker, daemon=True).start()
+    threading.Thread(target=_shorts_worker, daemon=True, name="shorts").start()
     threading.Thread(target=NB.listen, args=(work_dir,),
                      kwargs={"stop": stop.is_set}, daemon=True).start()
 
@@ -685,6 +717,12 @@ def cmd_listen(args: argparse.Namespace) -> int:
                      "stopped. Nothing runs until you say so.")
     else:
         lines.append("Nothing queued yet — send me a link, or /help.")
+    if shorts_waiting:
+        r = SS.load_run(sdd)
+        left = SS.counts(r)[SS.PENDING] + len(r.get("channels_to_list", []))
+        lines.append(f"📥 Shorts: {left} step(s) left from the last run"
+                     + (f" ({shorts_resumed} interrupted mid-download)" if shorts_resumed else "")
+                     + ' — reply "shorts start" to carry on.')
     N.notify("\n".join(lines))
     log.info("listening for commands (paused=%s). Ctrl+C to stop.", has_work)
 
@@ -703,6 +741,116 @@ def cmd_listen(args: argparse.Namespace) -> int:
             lifecycle.announce_offline(work_dir, "stopped with Ctrl+C")
             return 0
     return 0
+
+
+def cmd_shorts(args: argparse.Namespace) -> int:
+    """YouTube Shorts downloader: saved channels with their own counts, no repeat
+    downloads, a title/description/hashtags file per Short, and a history."""
+    setup_logging(args.verbose)
+    load_env_file(getattr(args, "env_file", None) or ".env")
+    from shortforge.shorts import store as S, worker as W, youtube as YT
+
+    cfg = Config.load(args.config)
+    dd = S.data_dir(cfg)
+    action = args.shorts_action
+
+    if action == "add":
+        if not args.owner_confirmed:
+            log.error("Add --owner-confirmed to confirm these are your channels, or that "
+                      "you have the rights to reuse their Shorts.")
+            return 2
+        added, problems = S.add_channels(dd, "\n".join(args.channels), args.count,
+                                         rights_confirmed=args.owner_confirmed)
+        for c in added:
+            print(f"  + {c['key']}  ({c['count']} per run)")
+        for p in problems:
+            print(f"  ! {p}")
+        return 0 if added or not problems else 2
+
+    if action == "channels":
+        data = S.load_channels(dd)
+        taken = S.taken_by_channel(dd)
+        if not data["channels"]:
+            print("No channels saved. Add one:  python cli.py shorts add @handle "
+                  "--count 10 --owner-confirmed")
+            return 0
+        for i, c in enumerate(data["channels"], 1):
+            print(f" {'on ' if c.get('enabled', True) else 'off'} {i:2d}. "
+                  f"{(c.get('name') or c['key'])[:40]:40}  {c['count']:>3} per run  "
+                  f"{taken.get(c['key'], 0):>4} downloaded so far")
+        return 0
+
+    if action == "start":
+        chans = S.load_channels(dd)["channels"]
+        keys = ([c["key"] for c in chans if c.get("enabled", True)] if args.all
+                else [k.lower() if k.startswith("@") else k for k in (args.channel or [])])
+        links = list(args.link or [])
+        if links and not args.owner_confirmed:
+            log.error("Pasted links need --owner-confirmed: confirm these are your "
+                      "Shorts, or that you have the rights to reuse them.")
+            return 2
+        if not keys and not links:
+            log.error("Nothing to download: pass --all, --channel KEY or --link URL.")
+            return 2
+        q = S.start_run(dd, keys, links)
+        print(f"Queued {q['channels']} channel(s) and {q['links']} link(s).")
+        for b in q["bad_links"]:
+            print(f"  ! not a YouTube video link: {b}")
+        if args.queue_only:
+            return 0
+        action = "run"
+
+    if action == "run":
+        import logging
+        os.makedirs(dd, exist_ok=True)
+        # The dashboard starts this with no console window, so the file is the
+        # only place its log can be read.
+        fh = logging.FileHandler(os.path.join(dd, S.LOG_FILE), encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s"))
+        logging.getLogger("shortforge").addHandler(fh)
+        s = W.drain(cfg, dd=dd)
+        if s.get("locked"):
+            print("Another Shorts download is already running — it will do this work.")
+            return 0
+        print(f"downloaded {s['downloaded']}, failed {s['failed']}, "
+              f"skipped {s['skipped']}" + (" — PAUSED" if s["paused"] else ""))
+        return 0 if not s["failed"] else 1
+
+    if action in ("pause", "resume"):
+        S.set_paused(dd, action == "pause")
+        print("Paused — the Short being downloaded finishes first." if action == "pause"
+              else "Resumed.")
+        return 0
+
+    if action == "cancel":
+        print(f"Cancelled {S.cancel_pending(dd)} queued step(s).")
+        return 0
+
+    if action == "status":
+        run = S.load_run(dd)
+        c = S.counts(run)
+        state = ("running" if S.lock_is_live(dd) else
+                 "paused" if S.is_paused(run) and S.has_work(run) else
+                 "waiting to start" if S.has_work(run) else "idle")
+        print(f"Shorts: {state} — {len(run.get('channels_to_list', []))} channel(s) to "
+              f"list, {c[S.PENDING]} to download, {c[S.DONE]} done, {c[S.FAILED]} failed, "
+              f"{c[S.SKIPPED]} skipped")
+        for k, note in (run.get("notes") or {}).items():
+            print(f"  {k}: {note}")
+        print(f"Output folder: {YT.output_root(cfg, S.settings(dd))}")
+        return 0
+
+    if action == "history":
+        items = sorted(S.load_history(dd)["items"].values(),
+                       key=lambda r: r.get("downloaded_at") or 0, reverse=True)
+        for r in items[: args.limit]:
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(r.get("downloaded_at") or 0))
+            print(f" {when}  {(r.get('channel_name') or '-')[:18]:18}  "
+                  f"{r.get('height') or '?':>4}p  {r['title'][:60]}")
+        print(f"{len(items)} Short(s) downloaded in total.")
+        return 0
+    log.error("unknown shorts action")
+    return 2
 
 
 def _cfg_for_queue(args) -> Config:
@@ -1321,6 +1469,30 @@ def build_parser() -> argparse.ArgumentParser:
     ls.add_argument("--owner-confirmed", action="store_true",
                     help="Confirm every link you send is your own / licensed content")
     ls.set_defaults(func=cmd_listen)
+
+    sh = sub.add_parser("shorts", help="YouTube Shorts downloader: channels, counts, history")
+    shs = sh.add_subparsers(dest="shorts_action", required=True)
+    sha = shs.add_parser("add", help="Save channel(s) — @handle, channel link, or UC… id")
+    sha.add_argument("channels", nargs="+")
+    sha.add_argument("--count", type=int, default=10, help="Shorts to download per run")
+    sha.add_argument("--owner-confirmed", action="store_true",
+                     help="Confirm these are your channels, or you have rights to reuse them")
+    shs.add_parser("channels", help="List saved channels and how many were downloaded")
+    shst = shs.add_parser("start", help="Queue a run (and run it unless --queue-only)")
+    shst.add_argument("--all", action="store_true", help="Every channel that is switched on")
+    shst.add_argument("--channel", action="append", help="A saved channel key, e.g. @handle")
+    shst.add_argument("--link", action="append", help="A Short/video link (repeatable)")
+    shst.add_argument("--owner-confirmed", action="store_true")
+    shst.add_argument("--queue-only", action="store_true",
+                      help="Only queue it; a running worker (or `shorts run`) does the work")
+    shs.add_parser("run", help="Work through the queued run (resumes after a crash)")
+    shs.add_parser("pause", help="Stop after the Short being downloaded")
+    shs.add_parser("resume", help="Carry on a paused run")
+    shs.add_parser("cancel", help="Drop everything still queued")
+    shs.add_parser("status", help="What the downloader is doing")
+    shh = shs.add_parser("history", help="Recently downloaded Shorts")
+    shh.add_argument("--limit", type=int, default=30)
+    sh.set_defaults(func=cmd_shorts)
 
     nd = sub.add_parser("netdiag",
                         help="Diagnose why ntfy won't connect (DNS/TCP/TLS/proxy)")

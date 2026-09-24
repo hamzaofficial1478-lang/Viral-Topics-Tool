@@ -16,6 +16,13 @@ import yaml
 # Baked-in defaults so the pipeline runs even without a settings file present.
 DEFAULTS: dict[str, Any] = {
     # output_prefix tags each rendered file with the queue link it came from.
+    # YouTube Shorts downloader. Its channels, history and run live in their own
+    # folder — NOT in work_dir, which cache clearing and pruning may empty — so
+    # the saved channels and the no-repeat archive survive any cleanup. The
+    # Shorts settings themselves are edited in the Shorts tab.
+    "shorts": {
+        "data_dir": "shorts_data",
+    },
     "paths": {
         "work_dir": ".shortforge",
         "output_dir": "out",

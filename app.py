@@ -1281,9 +1281,18 @@ def main() -> None:
     st.title("🎬 ShortForge")
 
     with st.sidebar:
-        screen = st.radio("Screen", ["Queue", "Chat", "New job", "Settings", "History"], index=0)
+        screen = st.radio("Screen", ["Queue", "Chat", "New job", "📥 YT Shorts", "Settings",
+                                     "History"], index=0,
+                          help="📥 YT Shorts is a separate tool: it downloads Shorts from "
+                               "the channels you save. Everything else makes clips from "
+                               "long videos.")
         st.divider()
 
+    if screen == "📥 YT Shorts":
+        from shortforge.ui.shorts_tab import render as render_shorts
+        render_shorts(run_every=_refresh_seconds())
+        _resource_footer()
+        return
     if screen == "Settings":
         from shortforge.ui.settings import render as render_settings
         render_settings()

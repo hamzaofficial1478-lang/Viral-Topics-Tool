@@ -1,6 +1,11 @@
 # ShortForge configuration (Phase 1).
 # Every value here can also be overridden on the CLI. See `shortforge --help`.
 
+shorts:
+  # Channels, download history and the current run for the Shorts downloader.
+  # Kept out of work_dir so clearing the cache can never lose them.
+  data_dir: shorts_data
+
 paths:
   work_dir: .shortforge          # cache + intermediate files (per source hash)
   output_dir: out                # rendered clips land here

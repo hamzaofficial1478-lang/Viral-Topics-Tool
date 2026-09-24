@@ -110,6 +110,10 @@ def _classify(e: Exception) -> Exception:
         return _DRMProtected(str(e))
     if "403" in msg and ("forbidden" in msg or "download video data" in msg):
         return _Forbidden(str(e))
+    # Same cause, different words: the media URL handed to this player client
+    # returned nothing. Seen live on a Short with the default+tv clients.
+    if "downloaded file is empty" in msg or "page needs to be reloaded" in msg:
+        return _Forbidden(str(e))
     if "requested format is not available" in msg or "no video formats found" in msg:
         return _NoFormat(str(e))
     if "not a bot" in msg or "confirm you" in msg or "sign in to confirm" in msg:
@@ -270,7 +274,7 @@ def _format_chain(cfg: Config) -> list[str]:
     return out
 
 
-def _with_format_fallback(cfg: Config, attempt):
+def _with_format_fallback(cfg: Config, attempt, formats: list[str] | None = None):
     """Run ``attempt(format_selector)`` down `_format_chain`, loosening the
     selector each time YouTube refuses it.
 
@@ -281,7 +285,7 @@ def _with_format_fallback(cfg: Config, attempt):
     Returns ``(result, format_used, fell_back)``. Re-raises the final `_NoFormat`
     if every selector is refused; any other exception propagates immediately.
     """
-    formats = _format_chain(cfg)
+    formats = formats or _format_chain(cfg)
     for i, fmt in enumerate(formats):
         try:
             return attempt(fmt), fmt, bool(i)
@@ -472,13 +476,21 @@ def _download_with_retries(url: str, opts: dict, cfg: Config):
             raise classified from e
 
 
-def _ingest_url(url: str, cfg: Config) -> SourceMeta:
-    _require_ytdlp()
-    work_dir = cfg.get("paths.work_dir", ".shortforge")
-    dl_dir = os.path.join(work_dir, "downloads")
-    os.makedirs(dl_dir, exist_ok=True)
-    base = _base_opts(cfg, dl_dir)
+def download_resilient(url: str, cfg: Config, base: dict, *,
+                       formats: list[str] | None = None) -> tuple[dict, str]:
+    """Download ``url`` through every recovery path YouTube currently needs.
 
+    Cookie strategies (outer) × player clients × format selectors (inner), with
+    transient retries inside each attempt. Returns ``(info, file_path)`` or
+    raises ShortForgeError with the plain-language cause.
+
+    One implementation for every YouTube download in the program — the long-
+    video ingest and the Shorts downloader both come through here, so a fix for
+    the next thing YouTube changes lands in both at once (engineering rule 6:
+    the two paths drifted once before and it cost two rounds to find).
+    ``formats`` overrides the selector chain; ingest leaves it None so the
+    chain follows the chosen output resolution.
+    """
     # STEP 5(#5): fallback chain — configured cookies → browser cookies → none.
     # A bot wall on one strategy moves to the next; the winning strategy is logged.
     strategies = _auth_strategies(cfg)
@@ -496,7 +508,8 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
                 cfg,
                 lambda ex: _with_format_fallback(
                     cfg, lambda f: _download_with_retries(
-                        url, {**base, **overlay, "format": f, "extractor_args": ex}, cfg)))
+                        url, {**base, **overlay, "format": f, "extractor_args": ex}, cfg),
+                    formats))
             if fell_back:
                 log.info("download: format '%s' worked (the preferred one wasn't "
                          "offered for this video)", fmt)
@@ -574,6 +587,18 @@ def _ingest_url(url: str, cfg: Config) -> SourceMeta:
             f"strategy(ies): {last_err}. Re-run to resume the partial download; "
             f"if it's a network problem this often clears on retry."
         ) from last_err
+
+    return info, file_path
+
+
+def _ingest_url(url: str, cfg: Config) -> SourceMeta:
+    _require_ytdlp()
+    work_dir = cfg.get("paths.work_dir", ".shortforge")
+    dl_dir = os.path.join(work_dir, "downloads")
+    os.makedirs(dl_dir, exist_ok=True)
+    base = _base_opts(cfg, dl_dir)
+
+    info, file_path = download_resilient(url, cfg, base)
 
     # merge_output_format may have rewritten the extension to .mp4.
     if not os.path.isfile(file_path):

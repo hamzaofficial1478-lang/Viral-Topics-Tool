@@ -325,16 +325,25 @@ def _tab_history(dd: str, root: str) -> None:
              if (pick == "All channels" or (r.get("channel_name") or "-") == pick)
              and (not q or q in (r.get("title", "") + " " + " ".join(r.get("hashtags") or [])
                                  + " " + (r.get("channel_name") or "")).lower())]
-    rows = [{"Downloaded": time.strftime("%Y-%m-%d %H:%M",
+    rows = [{"#": r.get("number") or "",
+             "Downloaded": time.strftime("%Y-%m-%d %H:%M",
                                          time.localtime(r.get("downloaded_at") or 0)),
              "Channel": r.get("channel_name") or "-",
              "Title": r.get("title"),
-             "Quality": f"{r.get('width') or '?'}×{r.get('height') or '?'}",
+             "Quality": (f"{r.get('width') or '?'}×{r.get('height') or '?'}"
+                         + (" ⚠️" if r.get("quality_note") else "")),
              "Size": _mb(r.get("filesize")),
              "Hashtags": " ".join(r.get("hashtags") or []),
              "Link": r.get("url")} for r in shown]
     st.dataframe(rows, hide_index=True, width="stretch", height=min(600, 38 + 35 * len(rows)),
                  column_config={"Link": st.column_config.LinkColumn("Link", display_text="open")})
+
+    cut = [r for r in shown if r.get("quality_note")]
+    if cut:
+        st.warning(f"⚠️ {len(cut)} Short(s) came in below the best quality YouTube started "
+                   f"sending — it cut the better stream off partway and a fallback route "
+                   f"delivered less. Example: {cut[0]['quality_note']}. "
+                   f"Updating yt-dlp (Settings → 📺 YouTube authentication) usually fixes it.")
 
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -372,10 +381,11 @@ def _tab_history(dd: str, root: str) -> None:
             st.caption(f"File: `{r.get('file')}`")
             if st.button("↩️ Allow this Short to be downloaded again", key=f"sh_forget_{r['id']}"):
                 S.forget(dd, r["id"])
-                if r.get("file") and os.path.isfile(r["file"]):
-                    st.warning("Removed from history. The file is still on disk, so it will "
-                               "still be skipped — delete or move the file too if you want "
-                               "it downloaded again.")
+                if r.get("file") and os.path.isfile(r["file"]) and \
+                        f"[{r['id']}]" in os.path.basename(r["file"]):
+                    st.warning("Removed from history. This older file still has the video's "
+                               "id in its name, so it will still be skipped — delete or move "
+                               "it (or run 🧹 Tidy in Settings) to allow a re-download.")
                 else:
                     st.success("Removed from history — the next download can fetch it again.")
 
@@ -403,15 +413,32 @@ def _tab_settings(dd: str, cfg: Config) -> None:
                          0 if s.get("container", "mp4") != "mkv" else 1, horizontal=True,
                          help="mp4 plays almost everywhere. Streams are merged, never "
                               "re-encoded, in either case.")
+    names = {"number_title": "1 - Title.mp4, 2 - Title.mp4, … (number + title)",
+             "number": "1.mp4, 2.mp4, … (number only)"}
+    nkeys = list(names)
+    name_style = st.radio("File names", nkeys,
+                          nkeys.index(s.get("name_style", "number_title"))
+                          if s.get("name_style", "number_title") in nkeys else 0,
+                          format_func=lambda k: names[k],
+                          help="Numbered in the order they were downloaded, per folder, and "
+                               "the count carries on: download 3, then 3 more, and the "
+                               "second batch is 4, 5, 6.")
+    st.markdown("**What goes in the folder** — by default, only the videos.")
+    embed = st.toggle("Write the title, description and hashtags INTO each video",
+                      value=bool(s.get("embed_metadata", True)),
+                      help="No quality change (nothing is re-encoded). Windows shows them in "
+                           "the file's Properties → Details. They're also always in History.")
     t1, t2, t3 = st.columns(3)
-    thumb = t1.toggle("Save thumbnail (.jpg)", value=bool(s.get("write_thumbnail", True)))
-    embed = t2.toggle("Write title/description into the file",
-                      value=bool(s.get("embed_metadata", True)))
-    ai = t3.toggle("AI fills in missing descriptions/hashtags",
+    txt = t1.toggle("Also save a .txt (title/description/hashtags)",
+                    value=bool(s.get("sidecar_txt", False)))
+    js = t2.toggle("Also save a .json (all details)", value=bool(s.get("sidecar_json", False)))
+    thumb = t3.toggle("Also save the thumbnail (.jpg)",
+                      value=bool(s.get("save_thumbnail", False)))
+    ai = st.toggle("AI fills in missing descriptions/hashtags",
                    value=bool(s.get("ai_fill_missing", False)),
                    help="Only when the uploader left them empty. Uses the model bound to "
                         "'metadata' in Task routing. Off = ShortForge builds them from the "
-                        "title, and says so in the file.")
+                        "title, and says so.")
     n1, n2 = st.columns(2)
     delay = n1.number_input("Pause between downloads (seconds)", min_value=0, max_value=30,
                             value=int(s.get("delay_seconds", 2)),
@@ -424,9 +451,37 @@ def _tab_settings(dd: str, cfg: Config) -> None:
                                           else chosen),
                           folder_per_channel=per_ch, default_count=int(default_count),
                           max_height=quality, codec=codec, container=container,
-                          write_thumbnail=thumb, embed_metadata=embed, ai_fill_missing=ai,
+                          save_thumbnail=thumb, sidecar_txt=txt, sidecar_json=js,
+                          name_style=name_style, embed_metadata=embed, ai_fill_missing=ai,
                           delay_seconds=int(delay), stop_on_bot_wall=int(wall))
         st.success("Saved.")
+
+    st.divider()
+    st.markdown("**🧹 Tidy the Shorts folder** — for downloads made before this update: "
+                "removes the extra .txt/.json/.jpg files and unfinished .part pieces, and "
+                "numbers the videos in the order they were downloaded. Only files this "
+                "program named are touched. You see the list before anything changes.")
+    from ..shorts import tidy as TD
+    if st.button("🔍 Check what can be tidied", key="sh_tidy_check"):
+        st.session_state["sh_tidy_plan"] = TD.plan(dd, cfg)
+    plan = st.session_state.get("sh_tidy_plan")
+    if plan:
+        st.info(TD.describe(plan))
+        if plan["deletes"] or plan["renames"]:
+            with st.expander(f"See the {len(plan['deletes'])} removal(s) and "
+                             f"{len(plan['renames'])} rename(s)"):
+                for r in plan["renames"][:200]:
+                    st.text(f"rename  {os.path.basename(r['from'])}\n     →  "
+                            f"{os.path.basename(r['to'])}")
+                for path, why in plan["deletes"][:300]:
+                    st.text(f"remove  {os.path.basename(path)}   ({why})")
+        if plan["deletes"] or plan["renames"] or plan["stale_staging"]:
+            if st.button("🧹 Tidy now", type="primary", key="sh_tidy_go"):
+                done = TD.apply(dd, plan)
+                st.session_state.pop("sh_tidy_plan", None)
+                _flash("success", f"Tidied: removed {done['removed']} file(s), numbered "
+                                  f"{done['renamed']} video(s).")
+                st.rerun()
 
     st.divider()
     st.markdown("**Backup** — your channel list and settings in one file.")

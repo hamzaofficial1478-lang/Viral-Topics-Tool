@@ -36,12 +36,18 @@ A second tool beside the clip maker, on its own screen in the dashboard sidebar.
 - **Quality** — best available by default: the original streams, merged without
   re-encoding or scaling. Optional height cap and an H.264-at-the-same-resolution
   mode in Settings.
-- **Never twice** — every download is recorded by video id in the history, and
-  file names carry the id (`Title [id].mp4`), so a Short is skipped even if the
-  history file were lost.
-- **Title, description, hashtags** — `Title [id].txt` beside every Short (plus a
-  `.json` with everything known and a `.jpg` thumbnail). When the uploader wrote
-  no description or hashtags, ShortForge writes them and says so in the file.
+- **Clean output** — the folder holds only videos, named in download order per
+  channel: `1 - Title.mp4`, `2 - Title.mp4` … and the next batch carries on at
+  4, 5, 6. Downloads happen in a private staging folder, so unfinished pieces
+  (`.part`, `.f137.mp4`) never appear. **Settings → 🧹 Tidy** cleans a folder made
+  by the first version (preview first).
+- **Never twice** — every download is recorded by video id in the history.
+- **Title, description, hashtags** — written *inside* each video (no
+  re-encoding; Windows shows them under Properties → Details) and kept in
+  History. Separate `.txt` / `.json` / `.jpg` files are optional switches, off by
+  default. If the uploader wrote none, ShortForge writes them and says so.
+- **Quality check** — if YouTube cuts off a higher-resolution stream partway and
+  a fallback delivers less, History marks that Short with ⚠️.
 - **History** — searchable, filterable by channel, exportable to CSV.
 - **Survives everything** — runs in its own process (closing the tab or the
   dashboard window doesn't stop it), keeps the PC awake, resumes after a power

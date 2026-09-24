@@ -218,7 +218,7 @@ def test_best_quality_has_no_height_cap():
 def test_compatible_codec_never_trades_resolution(tmp_path):
     opts = YT.base_opts(Config.load(), {"codec": "compatible", "container": "mp4"}, str(tmp_path))
     assert opts["format_sort"][:2] == ["res", "fps"]              # resolution decided first
-    assert "[%(id)s]" in opts["outtmpl"]                          # on-disk no-repeat key
+    assert opts["outtmpl"].startswith(str(tmp_path))              # staging, not the output
     assert "format_sort" not in YT.base_opts(Config.load(), {"codec": "best"}, str(tmp_path))
 
 
@@ -378,3 +378,101 @@ def test_remote_control_routes_shorts_but_not_links(monkeypatch, tmp_path, dd):
     # a link with clip settings still goes to the clip queue
     reply = RC.handle_text("https://youtu.be/abcdefghijk 3 shorts 1:30", str(tmp_path))
     assert "Shorts downloader" not in reply
+
+
+# --- clean output folder + numbering (operator: "only videos", "count 4,5,6") -- #
+
+def test_numbering_continues_across_runs_and_never_goes_back(dd, tmp_path):
+    folder = str(tmp_path / "out" / "Chan")
+    os.makedirs(folder)
+    assert S.next_number(dd, folder) == 1
+    for n in (1, 2, 3):
+        open(os.path.join(folder, f"{n} - Same title.mp4"), "w").close()
+        S.commit_number(dd, folder, n)
+    assert S.next_number(dd, folder) == 4                         # next batch: 4, 5, 6
+    for n in (1, 2, 3):                                            # operator deletes them
+        os.remove(os.path.join(folder, f"{n} - Same title.mp4"))
+    assert S.next_number(dd, folder) == 4                         # still 4, not 1
+    os.remove(os.path.join(dd, S.COUNTERS_FILE))                   # counter lost…
+    open(os.path.join(folder, "9 - x.mp4"), "w").close()
+    assert S.next_number(dd, folder) == 10                         # …the folder still says
+
+
+def test_numbers_are_per_folder(dd, tmp_path):
+    a, b = str(tmp_path / "A"), str(tmp_path / "B")
+    S.commit_number(dd, a, 5)
+    assert S.next_number(dd, a) == 6 and S.next_number(dd, b) == 1
+
+
+def test_numbered_names_are_windows_safe():
+    st = {"name_style": "number_title"}
+    assert YT.numbered_name(4, 'Last One Is "Unbelievable" #shorts?', st) == \
+        "4 - Last One Is Unbelievable #shorts"
+    assert YT.numbered_name(4, "ends with a dot...", st) == "4 - ends with a dot"
+    assert YT.numbered_name(4, "anything", {"name_style": "number"}) == "4"
+    assert YT.numbered_name(4, "", st) == "4"
+
+
+def test_extra_files_are_off_by_default():
+    s = S.DEFAULT_SETTINGS
+    assert not s["sidecar_txt"] and not s["sidecar_json"] and not s["save_thumbnail"]
+    assert s["embed_metadata"] is True
+    assert "write_thumbnail" not in s        # the old key can't switch it back on
+
+
+def test_title_description_hashtags_go_inside_the_video(tmp_path):
+    """Real ffmpeg: stream copy + tags, readable back with ffprobe."""
+    import shutil
+    import subprocess
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("ffmpeg not installed")
+    src = str(tmp_path / "in.mp4")
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=320x568:rate=25:duration=1", "-f", "lavfi", "-i",
+                    "sine=duration=1", "-c:v", "libx264", "-c:a", "aac", "-shortest", src],
+                   check=True)
+    dst = str(tmp_path / "out.mp4")
+    ok = YT.embed_metadata(src, dst, {"title": "My title", "description": "Some words",
+                                      "hashtags": ["#one", "#two"], "channel_name": "Chan"})
+    assert ok
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags",
+                          "-of", "json", dst], capture_output=True, text=True).stdout
+    tags = {k.lower(): v for k, v in json.loads(out)["format"]["tags"].items()}
+    assert tags["title"] == "My title"
+    assert "Some words" in tags["description"] and "#one #two" in tags["description"]
+    assert tags["comment"] == "#one #two"
+
+
+def test_tidy_cleans_old_style_folders_and_touches_nothing_else(dd, tmp_path):
+    from shortforge.shorts import tidy as TD
+    cfg = Config.load()
+    root = tmp_path / "out"
+    cfg.override("paths.output_dir", str(root))
+    folder = root / "shorts" / "Chan"
+    folder.mkdir(parents=True)
+    ids = ["777Echaaaaa", "fytMfXaaaaa", "P5Ye0Aaaaaa"]
+    for i, vid in enumerate(ids):
+        base = folder / f"Last One Is Unbelievable #shorts [{vid}]"
+        for ext in (".mp4", ".txt", ".json", ".jpg"):
+            (base.parent / (base.name + ext)).write_bytes(b"x")
+        S.record_download(dd, {"id": vid, "title": "Last One Is Unbelievable #shorts",
+                               "downloaded_at": 100 + i, "file": str(base) + ".mp4"})
+    (folder / f"Last One Is Unbelievable #shorts [{ids[0]}].f616.mp4.part").write_bytes(b"x" * 10)
+    (folder / f"Last One Is Unbelievable #shorts [{ids[1]}].f137.mp4").write_bytes(b"x")
+    (folder / "my own notes.txt").write_text("keep me")          # not ours
+
+    p = TD.plan(dd, cfg)
+    assert len(p["renames"]) == 3
+    assert len(p["deletes"]) == 3 * 3 + 2                         # txt/json/jpg + 2 pieces
+    assert not any("my own notes" in d for d, _ in p["deletes"])
+    assert sorted(os.listdir(folder)) != []                        # plan changed nothing
+    TD.apply(dd, p)
+    assert sorted(os.listdir(folder)) == [
+        "1 - Last One Is Unbelievable #shorts.mp4",
+        "2 - Last One Is Unbelievable #shorts.mp4",
+        "3 - Last One Is Unbelievable #shorts.mp4",
+        "my own notes.txt"]
+    h = S.load_history(dd)["items"]
+    assert h[ids[0]]["number"] == 1 and h[ids[0]]["file"].endswith("1 - Last One Is Unbelievable #shorts.mp4")
+    out = folder
+    assert S.next_number(dd, str(out)) == 4                       # new downloads continue

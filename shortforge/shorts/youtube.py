@@ -236,58 +236,152 @@ def format_chain(st: dict) -> list[str]:
     return ["bv*+ba/b", "b"]
 
 
-def base_opts(cfg: Config, st: dict, dest: str, progress_hook=None) -> dict:
+def _container(st: dict) -> str:
+    return "mkv" if str(st.get("container")).lower() == "mkv" else "mp4"
+
+
+def base_opts(cfg: Config, st: dict, staging: str, progress_hook=None) -> dict:
+    """yt-dlp options. Everything is written into ``staging`` — a private folder
+    per Short inside shorts_data — never straight into the output folder.
+
+    Writing into the output folder is what left it full of debris: an attempt
+    YouTube cut off halfway leaves an 80-90 MB ``.part``, a failed merge leaves
+    a video-only ``.f137.mp4``, and the fallback that finally works saves under
+    a different name, so the leftovers were never cleaned up. Now only the
+    finished video is ever moved out.
+    """
     from ..ingest.ingest import _base_opts
-    opts = _base_opts(cfg, dest)
-    container = "mkv" if str(st.get("container")).lower() == "mkv" else "mp4"
+    opts = _base_opts(cfg, staging)
     opts.update({
-        # The id in brackets is what the on-disk no-repeat check looks for.
-        "outtmpl": os.path.join(dest, "%(title).80B [%(id)s].%(ext)s"),
-        "windowsfilenames": True,
-        "merge_output_format": container,
+        "outtmpl": os.path.join(staging, "%(id)s.%(ext)s"),
+        "merge_output_format": _container(st),
         "overwrites": False,
     })
     if str(st.get("codec")).lower() == "compatible":
         # Resolution and frame rate FIRST, so preferring H.264 can never cost a
         # single pixel — it only breaks ties between same-size formats.
         opts["format_sort"] = ["res", "fps", "vcodec:h264", "acodec:aac"]
-    pps = []
-    if st.get("write_thumbnail", True):
+    if st.get("save_thumbnail"):
         opts["writethumbnail"] = True
-        pps.append({"key": "FFmpegThumbnailsConvertor", "format": "jpg", "when": "before_dl"})
-    if st.get("embed_metadata", True):
-        pps.append({"key": "FFmpegMetadata", "add_metadata": True, "add_chapters": False})
-    if pps:
-        opts["postprocessors"] = pps
+        opts["postprocessors"] = [{"key": "FFmpegThumbnailsConvertor", "format": "jpg",
+                                   "when": "before_dl"}]
     if progress_hook:
         opts["progress_hooks"] = [progress_hook]
     return opts
 
 
-def _final_path(info: dict, dest: str, container: str) -> str | None:
+def _staged_video(info: dict, staging: str, container: str) -> str | None:
     for d in info.get("requested_downloads") or []:
         p = d.get("filepath")
         if p and os.path.isfile(p):
             return p
     vid = info.get("id") or ""
-    hits = [p for p in glob.glob(os.path.join(glob.escape(dest), f"*[[]{vid}[]].*"))
+    hits = [p for p in glob.glob(os.path.join(glob.escape(staging), f"{glob.escape(vid)}.*"))
             if p.lower().endswith((".mp4", ".mkv", ".webm", ".m4v", ".mov"))]
     hits.sort(key=lambda p: (not p.lower().endswith("." + container), p))
     return hits[0] if hits else None
 
 
+_BAD_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def safe_title(title: str, limit: int = 90) -> str:
+    """A title usable as a Windows file name: reserved characters out, no
+    trailing dot or space (Explorer can't open those), and not too long."""
+    t = _BAD_CHARS.sub(" ", title or "")
+    t = " ".join(t.split())[:limit].rstrip(". ")
+    return t
+
+
+def numbered_name(number: int, title: str, st: dict) -> str:
+    """``7 - Title`` (or just ``7``): the number is the download order in that
+    folder, so the files sort in the order they arrived — which matters when a
+    creator gives every Short the same title."""
+    if str(st.get("name_style") or "number_title") == "number":
+        return str(number)
+    t = safe_title(title)
+    return f"{number} - {t}" if t else str(number)
+
+
+def embed_metadata(src: str, dst: str, rec: dict) -> bool:
+    """Copy ``src`` to ``dst`` with title, description and hashtags written INTO
+    the file. Stream copy only — not a single frame is re-encoded.
+
+    This is what lets the output folder hold nothing but videos while every
+    Short still carries its title, description and hashtags (Windows shows them
+    under Properties → Details).
+    """
+    from ..utils import require_binary, run
+    tags = " ".join(rec.get("hashtags") or [])
+    desc = rec.get("description") or ""
+    if tags and tags not in desc:
+        desc = f"{desc}\n\n{tags}".strip()
+    cmd = [require_binary("ffmpeg"), "-v", "error", "-y", "-i", src,
+           "-map", "0", "-c", "copy", "-map_metadata", "0",
+           "-metadata", f"title={rec.get('title') or ''}",
+           "-metadata", f"description={desc}",
+           "-metadata", f"synopsis={desc}",
+           "-metadata", f"comment={tags}",
+           "-metadata", f"artist={rec.get('channel_name') or ''}"]
+    if rec.get("upload_date"):
+        cmd += ["-metadata", f"date={rec['upload_date']}"]
+    if dst.lower().endswith(".mp4"):
+        cmd += ["-movflags", "+faststart"]
+    cmd.append(dst)
+    try:
+        run(cmd)
+        return os.path.isfile(dst) and os.path.getsize(dst) > 0
+    except Exception as e:  # noqa: BLE001 - the video itself is fine without tags
+        log.warning("shorts: could not write the title/description into the file "
+                    "(%s) — keeping the video as downloaded", str(e)[:200])
+        try:
+            os.remove(dst)
+        except OSError:
+            pass
+        return False
+
+
+def _quality_hook(seen: list, outer=None):
+    """Remember the tallest stream yt-dlp STARTED downloading. If the file that
+    finally lands is shorter, YouTube cut the better stream off and a fallback
+    route delivered less — which must be said, not hidden."""
+    def hook(d: dict) -> None:
+        h = (d.get("info_dict") or {}).get("height")
+        if h:
+            seen.append(int(h))
+        if outer:
+            outer(d)
+    return hook
+
+
 def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dict:
-    """Download one Short; return its history record. Raises ShortForgeError."""
+    """Download one Short; return its history record. Raises ShortForgeError.
+
+    Only the finished video reaches the output folder, named in download order
+    (``N - Title.mp4``). Sidecar ``.txt``/``.json``/``.jpg`` files are written
+    only if switched on in Settings — the default output is videos alone.
+    """
+    import shutil
     from ..ingest.ingest import download_resilient
-    dest = destination(cfg, st, item)
-    os.makedirs(dest, exist_ok=True)
-    opts = base_opts(cfg, st, dest, progress_hook)
+
+    dd = store.data_dir(cfg)
+    staging = os.path.join(dd, "incoming", item["id"])
+    os.makedirs(staging, exist_ok=True)
+    attempted: list[int] = []
+    opts = base_opts(cfg, st, staging, _quality_hook(attempted, progress_hook))
+    container = _container(st)
     t0 = time.time()
-    info, _prepared = download_resilient(item["url"], cfg, opts, formats=format_chain(st))
-    container = "mkv" if str(st.get("container")).lower() == "mkv" else "mp4"
-    path = _final_path(info, dest, container)
-    if not path:
-        raise ShortForgeError(f"downloaded {item['id']} but could not find the file in {dest}")
+    try:
+        info, _prepared = download_resilient(item["url"], cfg, opts, formats=format_chain(st))
+    except BaseException:
+        # A download that FAILED leaves nothing behind. (A power cut never gets
+        # here, so its partial file stays in staging and is resumed next time.)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    staged = _staged_video(info, staging, container)
+    if not staged:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise ShortForgeError(f"downloaded {item['id']} but the video file is missing")
 
     channel_name = item.get("channel_name") or info.get("channel") or info.get("uploader") or ""
     title = (info.get("title") or item.get("title") or item["id"]).strip()
@@ -307,12 +401,11 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
     if not (w and h and dur):
         try:
             from ..utils import ffprobe_info
-            p = ffprobe_info(path)
+            p = ffprobe_info(staged)
             w, h, dur = w or p.width, h or p.height, dur or round(p.duration, 1)
         except Exception:  # noqa: BLE001 - metadata only; the file is fine
             pass
 
-    thumb = os.path.splitext(path)[0] + ".jpg"
     rec = {
         "id": info.get("id") or item["id"],
         "url": info.get("webpage_url") or item["url"],
@@ -330,17 +423,53 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
         "vcodec": info.get("vcodec"), "acodec": info.get("acodec"),
         "format": info.get("format_id") or info.get("format"),
         "view_count": info.get("view_count"), "like_count": info.get("like_count"),
-        "file": os.path.abspath(path),
-        "filesize": os.path.getsize(path),
-        "thumbnail": os.path.abspath(thumb) if os.path.isfile(thumb) else "",
         "downloaded_at": time.time(),
         "seconds": round(time.time() - t0, 1),
         "source": item.get("source") or "channel",
+        "quality_note": "",
     }
-    rec["sidecar"], rec["info_json"] = write_sidecars(path, rec)
-    log.info("shorts: %s — %sx%s %s, %.1f MB in %.0fs → %s", rec["id"], rec["width"],
-             rec["height"], rec["vcodec"], rec["filesize"] / 1e6, rec["seconds"],
-             os.path.basename(path))
+    tallest = max(attempted, default=0)
+    if h and tallest > int(h) + 8:
+        rec["quality_note"] = (f"YouTube cut off the {tallest}p stream partway; "
+                               f"this copy is {h}p from a fallback route")
+        log.warning("shorts: %s — %s", rec["id"], rec["quality_note"])
+
+    # Name it by download order in its folder, then move ONLY the video out.
+    dest = destination(cfg, st, item)
+    os.makedirs(dest, exist_ok=True)
+    number = store.next_number(dd, dest)
+    base = numbered_name(number, title, st)
+    ext = os.path.splitext(staged)[1].lower() or f".{container}"
+    final = os.path.join(dest, base + ext)
+    if st.get("embed_metadata", True):
+        tagged = os.path.join(staging, "tagged" + ext)
+        if embed_metadata(staged, tagged, rec):
+            staged = tagged
+    shutil.move(staged, final)
+    store.commit_number(dd, dest, number)
+
+    rec.update({"number": number, "file": os.path.abspath(final),
+                "filesize": os.path.getsize(final), "thumbnail": "", "sidecar": "",
+                "info_json": ""})
+    thumb = os.path.join(staging, f"{item['id']}.jpg")
+    if st.get("save_thumbnail") and os.path.isfile(thumb):
+        rec["thumbnail"] = os.path.abspath(os.path.join(dest, base + ".jpg"))
+        shutil.move(thumb, rec["thumbnail"])
+    if st.get("sidecar_txt") or st.get("sidecar_json"):
+        txt, js = write_sidecars(final, rec)
+        rec["sidecar"] = txt if st.get("sidecar_txt") else ""
+        rec["info_json"] = js if st.get("sidecar_json") else ""
+        for path, keep in ((txt, st.get("sidecar_txt")), (js, st.get("sidecar_json"))):
+            if not keep:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+    shutil.rmtree(staging, ignore_errors=True)
+
+    log.info("shorts: %s — #%d %sx%s %s, %.1f MB in %.0fs → %s", rec["id"], number,
+             rec["width"], rec["height"], rec["vcodec"], rec["filesize"] / 1e6,
+             rec["seconds"], os.path.basename(final))
     return rec
 
 

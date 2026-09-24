@@ -56,8 +56,15 @@ DEFAULT_SETTINGS: dict = {
     # among formats of that same resolution, so older players cope.
     "codec": "best",
     "container": "mp4",           # mp4 | mkv
-    "write_thumbnail": True,
-    "embed_metadata": True,       # title/description into the file (no re-encode)
+    # The operator wants the output folder to hold videos and nothing else, so
+    # the title, description and hashtags are written INTO each file and kept in
+    # the history — the separate files are opt-in. (The thumbnail setting was
+    # renamed from write_thumbnail so an old saved "on" doesn't bring it back.)
+    "embed_metadata": True,       # title/description/hashtags inside the video
+    "save_thumbnail": False,      # <n> - <title>.jpg next to the video
+    "sidecar_txt": False,         # <n> - <title>.txt  (title/description/hashtags)
+    "sidecar_json": False,        # <n> - <title>.json (everything known)
+    "name_style": "number_title", # "1 - Title.mp4" | "number" → "1.mp4"
     "ai_fill_missing": False,     # AI writes a description/hashtags when none exist
     "delay_seconds": 2,           # pause between downloads — fewer bot walls
     "stop_on_bot_wall": 3,        # pause the run after N bot walls in a row
@@ -330,6 +337,51 @@ def taken_by_channel(dd: str) -> dict[str, int]:
         if k:
             out[k] = out.get(k, 0) + 1
     return out
+
+
+# --- download-order numbering ----------------------------------------------- #
+# "1 - Title.mp4", "2 - …": the number is the order a Short arrived in its
+# folder, and it keeps counting across runs — ask for 3, then 3 more, and the
+# second batch is 4, 5, 6, never 1, 2, 3 again.
+
+COUNTERS_FILE = "counters.json"
+_NUMBERED = re.compile(r"^(\d+)(?:\s*-\s|\.[A-Za-z0-9]{2,4}$)")
+
+
+def _folder_key(folder: str) -> str:
+    return os.path.normcase(os.path.abspath(folder))
+
+
+def highest_number_in(folder: str) -> int:
+    """The largest ``N`` among ``N - ….mp4`` / ``N.mp4`` videos in ``folder``."""
+    best = 0
+    try:
+        for name in os.listdir(folder):
+            if name.lower().endswith(_VIDEO_EXTS):
+                m = _NUMBERED.match(name)
+                if m:
+                    best = max(best, int(m.group(1)))
+    except OSError:
+        pass
+    return best
+
+
+def next_number(dd: str, folder: str) -> int:
+    """Next number for ``folder``: past the saved counter AND past anything
+    already in the folder. Either alone would do; both means that losing the
+    counter file, or dropping extra numbered files in, still never re-uses a
+    number. Deleting videos never makes the count go back down."""
+    saved = int(_load(_path(dd, COUNTERS_FILE), {"folders": {}})
+                .get("folders", {}).get(_folder_key(folder), 0) or 0)
+    return max(saved, highest_number_in(folder)) + 1
+
+
+def commit_number(dd: str, folder: str, number: int) -> None:
+    def fn(d):
+        f = d.setdefault("folders", {})
+        k = _folder_key(folder)
+        f[k] = max(int(f.get(k, 0) or 0), int(number))
+    _mutate(dd, COUNTERS_FILE, {"folders": {}}, fn)
 
 
 # --- the current run --------------------------------------------------------- #

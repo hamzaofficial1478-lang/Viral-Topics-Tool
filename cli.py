@@ -840,6 +840,22 @@ def cmd_shorts(args: argparse.Namespace) -> int:
         print(f"Output folder: {YT.output_root(cfg, S.settings(dd))}")
         return 0
 
+    if action == "tidy":
+        from shortforge.shorts import tidy as TD
+        plan = TD.plan(dd, cfg)
+        for r in plan["renames"]:
+            print(f"  rename  {os.path.basename(r['from'])}  ->  {os.path.basename(r['to'])}")
+        for path, why in plan["deletes"]:
+            print(f"  remove  {os.path.basename(path)}   ({why})")
+        print(TD.describe(plan))
+        if not args.apply:
+            if plan["deletes"] or plan["renames"]:
+                print("Nothing changed yet. Re-run with --apply to do it.")
+            return 0
+        done = TD.apply(dd, plan)
+        print(f"Removed {done['removed']} file(s), numbered {done['renamed']} video(s).")
+        return 0
+
     if action == "history":
         items = sorted(S.load_history(dd)["items"].values(),
                        key=lambda r: r.get("downloaded_at") or 0, reverse=True)
@@ -1490,6 +1506,9 @@ def build_parser() -> argparse.ArgumentParser:
     shs.add_parser("resume", help="Carry on a paused run")
     shs.add_parser("cancel", help="Drop everything still queued")
     shs.add_parser("status", help="What the downloader is doing")
+    sht = shs.add_parser("tidy", help="Clean an old Shorts folder: remove extra files, "
+                                      "number videos in download order (preview first)")
+    sht.add_argument("--apply", action="store_true", help="Actually do it")
     shh = shs.add_parser("history", help="Recently downloaded Shorts")
     shh.add_argument("--limit", type=int, default=30)
     sh.set_defaults(func=cmd_shorts)

@@ -114,6 +114,7 @@ def _drain(cfg: Config, dd: str, should_stop, announce) -> dict:
     root = YT.output_root(cfg, st)
     resumed = store.requeue_interrupted(dd)
     run = store.load_run(dd)
+    _clear_abandoned_staging(dd, run)
     summary = {"downloaded": 0, "failed": 0, "skipped": 0, "bytes": 0,
                "paused": False, "finished": False}
     if store.is_paused(run) or not store.has_work(run):
@@ -247,6 +248,21 @@ def _drain(cfg: Config, dd: str, should_stop, announce) -> dict:
                  f"{c[store.PENDING] + len(run.get('channels_to_list', []))} step(s) left. "
                  "Press Resume (or reply “shorts start”) to carry on.")
     return summary
+
+
+def _clear_abandoned_staging(dd: str, run: dict) -> None:
+    """Drop staging folders of Shorts no longer queued (cancelled, or a run that
+    was cleared). A queued one keeps its folder so its partial file resumes."""
+    import os
+    import shutil
+    incoming = os.path.join(dd, "incoming")
+    if not os.path.isdir(incoming):
+        return
+    keep = {i["id"] for i in run.get("items", [])
+            if i.get("status") in (store.PENDING, store.DOWNLOADING)}
+    for name in os.listdir(incoming):
+        if name not in keep:
+            shutil.rmtree(os.path.join(incoming, name), ignore_errors=True)
 
 
 def _pause_for_bot_wall(dd: str, announce, summary: dict) -> dict:

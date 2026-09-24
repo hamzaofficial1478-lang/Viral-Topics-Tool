@@ -17,8 +17,18 @@ echo.
 
 REM ---- 1. Python -----------------------------------------------------------
 REM  Prefer the "py" launcher (avoids the Microsoft Store python stub).
+REM  Pick a TESTED version (3.13/3.12/3.11) explicitly. `py -3` alone gives the
+REM  NEWEST installed Python, so a PC with 3.14 also installed would use it and
+REM  fail building numpy from source -- even though 3.13 is sitting right there.
 set "PY="
-where py >nul 2>&1 && set "PY=py -3"
+for %%V in (3.13 3.12 3.11) do (
+  if not defined PY (
+    py -%%V --version >nul 2>&1 && set "PY=py -%%V"
+  )
+)
+if not defined PY (
+  where py >nul 2>&1 && set "PY=py -3"
+)
 if not defined PY (
   where python >nul 2>&1 && set "PY=python"
 )

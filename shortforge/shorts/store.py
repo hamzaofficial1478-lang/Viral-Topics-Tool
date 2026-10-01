@@ -72,7 +72,13 @@ DEFAULT_SETTINGS: dict = {
     "allow_lower_quality": False,
     "delay_seconds": 2,           # pause between downloads — fewer bot walls
     "stop_on_bot_wall": 3,        # pause the run after N bot walls in a row
+    # Channels found by "Find channels" go to a separate WISHLIST, not straight
+    # into your channels. A download only includes them when this is on — it
+    # is the "also download from the wishlist" box next to the Download button.
+    "include_wishlist": False,
 }
+
+MAIN, WISHLIST = "main", "wishlist"
 
 _VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".m4v")
 _ID_IN_NAME = re.compile(r"\[([A-Za-z0-9_-]{11})\]\.[A-Za-z0-9]{2,4}$")
@@ -215,12 +221,40 @@ def update_settings(dd: str, **fields) -> dict:
     return {**DEFAULT_SETTINGS, **_mutate(dd, CHANNELS_FILE, _CHANNELS_DEFAULT, fn)[0]["settings"]}
 
 
+def channel_list(c: dict) -> str:
+    """Which list a saved channel is on. Channels saved before the wishlist
+    existed have no field and are, correctly, your own channels."""
+    return WISHLIST if c.get("list") == WISHLIST else MAIN
+
+
+def channels_in(dd: str, which: str) -> list[dict]:
+    return [c for c in load_channels(dd)["channels"] if channel_list(c) == which]
+
+
+def download_keys(dd: str, *, include_wishlist: bool | None = None) -> list[str]:
+    """The channels a "Download" visits: every switched-on channel of yours, plus
+    the switched-on wishlist channels when the wishlist is included."""
+    if include_wishlist is None:
+        include_wishlist = bool(settings(dd).get("include_wishlist"))
+    out = []
+    for c in load_channels(dd)["channels"]:
+        if not c.get("enabled", True):
+            continue
+        if channel_list(c) == WISHLIST and not include_wishlist:
+            continue
+        out.append(c["key"])
+    return out
+
+
 def add_channels(dd: str, text: str, count: int, *,
-                 rights_confirmed: bool) -> tuple[list[dict], list[str]]:
+                 rights_confirmed: bool, list_name: str = MAIN,
+                 meta: dict | None = None) -> tuple[list[dict], list[str]]:
     """Add every channel in ``text`` (one per line, or comma/space separated).
 
-    Returns ``(added, problems)``; a channel already saved is reported, not
-    duplicated, and keeps its own count.
+    Returns ``(added, problems)``; a channel already saved — on either list — is
+    reported, not duplicated, and keeps its own count. ``meta`` maps a channel
+    key to what "Find channels" learned about it (name, subscribers, country,
+    language) so the wishlist can show it without asking YouTube again.
     """
     if not rights_confirmed:
         return [], ["Tick the box confirming these are your channels, or that you "
@@ -239,13 +273,27 @@ def add_channels(dd: str, text: str, count: int, *,
     def fn(d):
         have = {c["key"] for c in d["channels"]}
         added = []
+        ids = {c.get("channel_id") for c in d["channels"] if c.get("channel_id")}
         for key, url in parsed:
-            if key in have:
-                problems.append(f"{key}: already saved — its count was left as it is")
+            info = (meta or {}).get(key) or {}
+            if key in have or (info.get("channel_id") and info["channel_id"] in ids):
+                where = next((channel_list(c) for c in d["channels"]
+                              if c["key"] == key or (info.get("channel_id")
+                                                     and c.get("channel_id") == info["channel_id"])),
+                             MAIN)
+                problems.append(f"{key}: already saved"
+                                + (" on the wishlist" if where == WISHLIST else "")
+                                + " — its count was left as it is")
                 continue
-            ch = {"key": key, "url": url, "name": "", "count": count, "enabled": True,
-                  "added": time.time(), "rights_confirmed": True}
+            ch = {"key": key, "url": url, "name": info.get("name") or "", "count": count,
+                  "enabled": True, "added": time.time(), "rights_confirmed": True,
+                  "list": WISHLIST if list_name == WISHLIST else MAIN}
+            for k in ("channel_id", "subscribers", "country", "language", "found_by"):
+                if info.get(k):
+                    ch[k] = info[k]
             d["channels"].append(ch)
+            if ch.get("channel_id"):
+                ids.add(ch["channel_id"])
             have.add(key)
             added.append(ch)
         return added
@@ -255,23 +303,31 @@ def add_channels(dd: str, text: str, count: int, *,
 
 
 def update_channel(dd: str, key: str, **fields) -> dict | None:
-    allowed = {"count", "enabled", "name"}
+    allowed = {"count", "enabled", "name", "channel_id", "list"}
 
     def fn(d):
         for c in d["channels"]:
             if c["key"] == key:
                 for k, v in fields.items():
-                    if k in allowed:
-                        c[k] = max(1, min(int(v), 500)) if k == "count" else v
+                    if k not in allowed:
+                        continue
+                    if k == "count":
+                        c[k] = max(1, min(int(v), 500))
+                    elif k == "list":
+                        c[k] = WISHLIST if v == WISHLIST else MAIN
+                    else:
+                        c[k] = v
                 return dict(c)
         return None
     return _mutate(dd, CHANNELS_FILE, _CHANNELS_DEFAULT, fn)[1]
 
 
-def set_all_enabled(dd: str, enabled: bool) -> None:
+def set_all_enabled(dd: str, enabled: bool, which: str | None = None) -> None:
+    """Switch every channel on/off — or only those on one list."""
     def fn(d):
         for c in d["channels"]:
-            c["enabled"] = bool(enabled)
+            if which is None or channel_list(c) == which:
+                c["enabled"] = bool(enabled)
     _mutate(dd, CHANNELS_FILE, _CHANNELS_DEFAULT, fn)
 
 

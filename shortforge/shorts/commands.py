@@ -64,11 +64,12 @@ def handle(text: str, dd: str | None = None) -> str:
         if store.has_work(run):
             store.set_paused(dd, False)
             return "▶️ <b>Shorts resumed.</b> " + status_line(dd)
-        chans = [c for c in store.load_channels(dd)["channels"] if c.get("enabled", True)]
+        keys = store.download_keys(dd)
+        chans = [c for c in store.load_channels(dd)["channels"] if c["key"] in keys]
         if not chans:
             return ("No channels are switched on. Add channels in the dashboard → "
                     "📥 YT Shorts → Channels.")
-        store.start_run(dd, [c["key"] for c in chans], [])
+        store.start_run(dd, keys, [])
         n = sum(int(c.get("count", 0)) for c in chans)
         return (f"▶️ <b>Shorts started</b> — up to {n} new Short(s) from "
                 f"{len(chans)} channel(s). I'll message you as each channel finishes.")

@@ -123,3 +123,92 @@ def test_history_lists_downloads(dd):
     at = _shorts()
     assert not at.exception
     assert any(m.label == "Downloaded" and str(m.value) == "1" for m in at.metric)
+
+
+# --- 🔎 Find channels + wishlist --------------------------------------------- #
+
+def _finished_search(dd):
+    """A completed search job on disk, as the background process leaves it."""
+    from shortforge.shorts import discover as D
+    job = D.new_job(dd, {"mode": "describe", "prompt": "pakistani cooking", "count": 3,
+                         "country": "PK", "language": "ur", "use_ai": False})
+    job.update(status="done", stage="found 2 of 3",
+               effective={"country": "PK", "language": "ur", "country_name": "Pakistan",
+                          "language_name": "Urdu"},
+               notes=["only 2 of 3 channels fit — 12 were checked"],
+               results=[{"channel_id": "UCpk1aaaaaaaaaaaaaaaaaaa", "key": "@lahorekitchen",
+                         "url": "https://www.youtube.com/@lahorekitchen", "name": "Lahore Kitchen",
+                         "subscribers": 500000, "country": "Pakistan", "country_code": "PK",
+                         "country_status": "match", "language": "hi-Latn",
+                         "language_label": "Hindi/Urdu (Roman script)", "fit": None,
+                         "why": "matches: cooking", "sample_titles": ["biryani kaise banaye"],
+                         "avatar": ""},
+                        {"channel_id": "UCpk2aaaaaaaaaaaaaaaaaaa", "key": "@karachicooks",
+                         "url": "https://www.youtube.com/@karachicooks", "name": "Karachi Cooks",
+                         "subscribers": 90000, "country": "Pakistan", "country_code": "PK",
+                         "country_status": "match", "language": "ur", "language_label": "Urdu",
+                         "fit": None, "why": "", "sample_titles": [], "avatar": ""}])
+    D.save_job(dd, job)
+    return job
+
+
+def _find_tab(at=None):
+    at = _shorts(at)
+    return at
+
+
+def test_find_tab_starts_a_background_search(dd, monkeypatch):
+    import shortforge.ui.shorts_tab as T
+    started = []
+    monkeypatch.setattr(T, "spawn_search", lambda d, job_id: started.append(job_id))
+    at = _shorts()
+    go = next(b for b in at.button if b.key == "dc_go")
+    assert go.disabled                                        # nothing described yet
+    at.text_area(key="dc_prompt").set_value("pakistani cooking in urdu").run()
+    at.number_input(key="dc_count").set_value(7).run()
+    next(b for b in at.button if b.key == "dc_go").click().run()
+    assert len(started) == 1
+    from shortforge.shorts import discover as D
+    job = D.load_job(dd, started[0])
+    assert job["params"]["prompt"] == "pakistani cooking in urdu"
+    assert job["params"]["count"] == 7
+
+
+def test_results_can_be_added_to_the_wishlist(dd):
+    _finished_search(dd)
+    at = _shorts()
+    assert not at.exception
+    assert any("2 of 3 found" in m.value for m in at.markdown)
+    assert any("only 2 of 3" in i.value for i in at.info)       # the shortfall is explained
+    add = next(b for b in at.button if b.key == "dc_add")
+    assert add.disabled                                          # nothing ticked, no rights
+    next(b for b in at.button if b.label == "Select all").click().run()
+    at.checkbox(key="dc_rights").check().run()
+    next(b for b in at.button if b.key == "dc_add").click().run()
+    wish = S.channels_in(dd, S.WISHLIST)
+    assert sorted(c["key"] for c in wish) == ["@karachicooks", "@lahorekitchen"]
+    assert S.channels_in(dd, S.MAIN) == []
+
+
+def test_hidden_channels_are_remembered(dd):
+    from shortforge.shorts import discover as D
+    _finished_search(dd)
+    at = _shorts()
+    at.checkbox(key=next(c.key for c in at.checkbox
+                         if c.key and c.key.endswith("UCpk2aaaaaaaaaaaaaaaaaaa"))).check().run()
+    next(b for b in at.button if b.key == "dc_dismiss").click().run()
+    assert "UCpk2aaaaaaaaaaaaaaaaaaa" in D.dismissed(dd)
+
+
+def test_channels_tab_shows_the_wishlist_and_the_download_switch(dd):
+    S.add_channels(dd, "@mineone", 3, rights_confirmed=True)
+    S.add_channels(dd, "@wishone", 4, rights_confirmed=True, list_name=S.WISHLIST)
+    at = _shorts()
+    go = next(b for b in at.button if b.key == "sh_go")
+    assert "from 1 channel(s)" in go.label                      # wishlist off by default
+    at.checkbox(key="sh_inc_wish").check().run()
+    go = next(b for b in at.button if b.key == "sh_go")
+    assert "7 new Short(s) from 2 channel(s)" in go.label
+    assert S.settings(dd)["include_wishlist"] is True            # remembered
+    fresh = _shorts()
+    assert fresh.checkbox(key="sh_inc_wish").value is True

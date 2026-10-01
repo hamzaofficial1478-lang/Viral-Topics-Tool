@@ -352,6 +352,10 @@ TASKS = (
     # per-clip copywriting metadata does. Read-only by construction; whatever
     # is bound here explains, it never acts.
     {"key": "error_agent",         "label": "Error analysis agent 🤖",     "cats": ("llm",),                "free_only": False, "on": True,  "timeout": 300},
+    # YT Shorts "Find channels": writes search phrases (in the target language)
+    # and judges whether each found channel really fits. Optional — without a
+    # model the finder matches by keywords and says so.
+    {"key": "channel_discovery",   "label": "Shorts channel finder 🔎",    "cats": ("llm",),                "free_only": False, "on": True,  "timeout": 180},
     {"key": "tts_quality",         "label": "TTS — quality tier",         "cats": ("tts",),                "free_only": False, "on": True},
     {"key": "tts_volume",          "label": "TTS — volume tier",          "cats": ("tts",),                "free_only": False, "on": True},
     {"key": "voice_cloning",       "label": "Voice cloning",              "cats": ("tts",),                "free_only": False, "on": True},

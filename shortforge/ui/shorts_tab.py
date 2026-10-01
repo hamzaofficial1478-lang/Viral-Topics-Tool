@@ -202,21 +202,56 @@ def _tab_channels(dd: str) -> None:
             st.rerun()
 
     if not chans:
-        st.info("No channels saved yet. Add some above — they're kept on disk, "
-                "so they are still here next time you open the program.")
+        st.info("No channels saved yet. Add some above — or find some in "
+                "🔎 Find channels. They're kept on disk, so they are still here next "
+                "time you open the program.")
         return
 
-    enabled = [c for c in chans if c.get("enabled", True)]
-    total = sum(int(c.get("count", 0)) for c in enabled)
-    h1, h2, h3 = st.columns([3, 1, 1])
-    h1.markdown(f"**{len(enabled)} of {len(chans)} channel(s) switched on** — a download "
-                f"takes up to **{total}** new Short(s), newest first, skipping any "
-                f"already downloaded.")
-    if h2.button("Turn all on", width="stretch", disabled=len(enabled) == len(chans)):
-        S.set_all_enabled(dd, True)
+    mine = [c for c in chans if S.channel_list(c) == S.MAIN]
+    wish = [c for c in chans if S.channel_list(c) == S.WISHLIST]
+    _channel_section(dd, mine, taken, S.MAIN, "📺 Your channels")
+    if wish:
+        st.write("")
+        _channel_section(dd, wish, taken, S.WISHLIST, f"⭐ Wishlist ({len(wish)})",
+                         caption="Channels you added from 🔎 Find channels. A download only "
+                                 "includes them when the box below is ticked.")
+
+    st.write("")
+    inc = st.checkbox(
+        f"Also download from the wishlist ({sum(1 for c in wish if c.get('enabled', True))} "
+        f"switched on)", value=bool(st_.get("include_wishlist")), key="sh_inc_wish",
+        disabled=not wish, on_change=_on_include_wishlist, args=(dd,),
+        help="Remembered. Applies to this button and to “shorts start” from your phone.")
+    keys = S.download_keys(dd, include_wishlist=inc)
+    picked = [c for c in chans if c["key"] in keys]
+    total = sum(int(c.get("count", 0)) for c in picked)
+    if st.button(f"⏬ Download {total} new Short(s) from {len(picked)} channel(s)",
+                 type="primary", width="stretch", disabled=not picked, key="sh_go"):
+        q = S.start_run(dd, keys, [])
+        _flash("success", f"Queued {q['channels']} channel(s). " + ensure_worker(dd))
         st.rerun()
-    if h3.button("Turn all off", width="stretch", disabled=not enabled):
-        S.set_all_enabled(dd, False)
+
+
+def _on_include_wishlist(dd: str) -> None:
+    S.update_settings(dd, include_wishlist=bool(st.session_state["sh_inc_wish"]))
+
+
+def _channel_section(dd: str, chans: list[dict], taken: dict, which: str, title: str,
+                     caption: str = "") -> None:
+    if not chans:
+        return
+    enabled = [c for c in chans if c.get("enabled", True)]
+    h1, h2, h3 = st.columns([3, 1, 1])
+    h1.markdown(f"**{title}** — {len(enabled)} of {len(chans)} switched on")
+    if caption:
+        h1.caption(caption)
+    if h2.button("Turn all on", width="stretch", disabled=len(enabled) == len(chans),
+                 key=f"sh_allon_{which}"):
+        S.set_all_enabled(dd, True, which)
+        st.rerun()
+    if h3.button("Turn all off", width="stretch", disabled=not enabled,
+                 key=f"sh_alloff_{which}"):
+        S.set_all_enabled(dd, False, which)
         st.rerun()
 
     for i, c in enumerate(chans, 1):
@@ -228,10 +263,19 @@ def _tab_channels(dd: str) -> None:
             r1.toggle(f"Include {key}", value=on, key=tw, label_visibility="collapsed",
                       on_change=_on_toggle, args=(dd, key, tw))
             name = c.get("name") or key
+            facts = []
+            if which == S.WISHLIST:
+                if c.get("subscribers"):
+                    facts.append(f"{_short_count(c['subscribers'])} subscribers")
+                if c.get("country"):
+                    facts.append(c["country"])
+                if c.get("language"):
+                    facts.append(c["language"])
             state = ("" if on else " · <span style='color:#b45309'>switched off — "
                      "skipped, but its count is kept</span>")
             r2.markdown(f"**{i}. {name}**  \n[{key}]({c['url']}/shorts) · "
-                        f"{taken.get(key, 0)} downloaded so far{state}",
+                        f"{taken.get(key, 0)} downloaded so far"
+                        + ("".join(f" · {f}" for f in facts)) + state,
                         unsafe_allow_html=True)
             cw = f"sh_cnt_{key}"
             r3.number_input("Per run", min_value=1, max_value=500,
@@ -249,13 +293,268 @@ def _tab_channels(dd: str) -> None:
             elif r4.button("🗑", key=f"sh_rm_{key}_btn", help="Remove this channel"):
                 st.session_state[confirm] = True
                 st.rerun()
+            if which == S.WISHLIST and r4.button("➕", key=f"sh_promote_{key}",
+                                                 help="Move to your channels — downloaded "
+                                                      "every time, not only with the box ticked"):
+                S.update_channel(dd, key, list=S.MAIN)
+                _flash("success", f"{name} moved to your channels.")
+                st.rerun()
+
+
+def _short_count(n) -> str:
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "?"
+    for div, suf in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if n >= div:
+            return f"{n / div:.1f}".rstrip("0").rstrip(".") + suf
+    return str(n)
+
+
+# --- 🔎 Find channels ------------------------------------------------------ #
+
+def spawn_search(dd: str, job_id: str) -> None:
+    """Start the search in its own process (patched out in tests)."""
+    from ..shorts import discover as DS
+    DS.spawn(dd, job_id)
+
+
+def _tab_find(dd: str, run_every: str) -> None:
+    from ..shorts import countries as CO
+    from ..shorts import discover as DS
+    from ..shorts import langid as LG
+
+    st.caption("Find Shorts channels by describing them, or ask for more channels like "
+               "one you give. Every result is checked first: it really posts Shorts, its "
+               "language is read from its titles, and its country from its own About page.")
+    mode = st.radio("How do you want to search?", ["describe", "like"], horizontal=True,
+                    key="dc_mode",
+                    format_func=lambda m: {"describe": "✍️ Describe it in words",
+                                           "like": "🔗 Like a channel I give"}[m])
+    ref = ""
+    if mode == "like":
+        ref = st.text_input("Reference channel", key="dc_ref",
+                            placeholder="@handle or https://www.youtube.com/@channel")
+        prompt = st.text_input("Anything to add? (optional)", key="dc_extra",
+                               placeholder="e.g. only street food, no restaurants")
+    else:
+        prompt = st.text_area("What kind of Shorts channels are you looking for?",
+                              key="dc_prompt", height=90,
+                              placeholder="e.g. Pakistani home cooking, quick recipes, "
+                                          "spoken in Urdu")
+    same = [("same", "Same as the reference")] if mode == "like" else []
+    c_opts = same + CO.choices()
+    l_opts = same + LG.LANGUAGES
+    f1, f2, f3 = st.columns([1, 1.4, 1.4])
+    count = f1.number_input("How many channels", 1, 50, 10, key="dc_count")
+    country = f2.selectbox("Country", [c for c, _ in c_opts], key="dc_country",
+                           format_func=lambda c: dict(c_opts)[c])
+    language = f3.selectbox("Language of their Shorts", [c for c, _ in l_opts],
+                            key="dc_lang", format_func=lambda c: dict(l_opts)[c],
+                            help="Urdu and Hindi also match Shorts written in Roman letters "
+                                 "(“recipe kaise banaye”) — the two can't be told apart "
+                                 "in that script.")
+    ai_ok = DS.ai_available()
+    with st.expander("More filters"):
+        a1, a2 = st.columns(2)
+        min_subs = a1.number_input("Minimum subscribers", 0, 100_000_000, 0, step=1000,
+                                   key="dc_minsubs")
+        min_shorts = a2.number_input("Minimum Shorts on the channel", 1, 15, 3,
+                                     key="dc_minshorts",
+                                     help="Out of the 15 newest it looks at — filters out "
+                                          "channels that rarely post Shorts.")
+        unlisted = st.toggle("Include channels that don't show their country", value=True,
+                             key="dc_unlisted",
+                             help="Many channels never set a country on YouTube. When on, "
+                                  "they can fill up the results AFTER the confirmed ones, "
+                                  "marked “not listed”.")
+        use_ai = st.toggle("Use AI to understand the description and check each channel fits",
+                           value=ai_ok, key="dc_ai", disabled=not ai_ok,
+                           help=("Uses the model bound to “Shorts channel finder” in Task "
+                                 "routing." if ai_ok else
+                                 "No AI model is set up — searching by keywords."))
+
+    jobs = DS.list_jobs(dd)
+    running = next((j for j in jobs if DS.is_alive(j)), None)
+    ready = (bool(prompt.strip()) if mode == "describe" else bool(ref.strip()))
+    b1, b2 = st.columns([3, 1])
+    if b1.button("🔎 Find channels", type="primary", width="stretch", key="dc_go",
+                 disabled=not ready or running is not None):
+        try:
+            job = DS.new_job(dd, {"mode": mode, "prompt": prompt, "reference": ref,
+                                  "count": int(count), "country": country,
+                                  "language": language, "min_subscribers": int(min_subs),
+                                  "min_shorts": int(min_shorts), "use_ai": bool(use_ai),
+                                  "allow_unlisted_country": bool(unlisted)})
+        except Exception as e:  # noqa: BLE001 - show the reason
+            st.error(str(e))
+        else:
+            spawn_search(dd, job["id"])
+            st.session_state["dc_view"] = job["id"]
+            st.rerun()
+    if running and b2.button("⏹ Stop", width="stretch", key="dc_stop"):
+        DS.cancel(dd, running["id"])
+        st.rerun()
+
+    if not jobs:
+        return
+    st.divider()
+    labels = {j["id"]: _job_label(j) for j in jobs}
+    current = st.session_state.get("dc_view")
+    if current not in labels:
+        current = jobs[0]["id"]
+    view = st.selectbox("Search", list(labels), index=list(labels).index(current),
+                        format_func=lambda i: labels[i], key="dc_view")
+    job = DS.load_job(dd, view)
+    if job and DS.is_alive(job):
+        st.fragment(run_every=run_every)(_search_live)(dd, view)
+    elif job:
+        _search_results(dd, job)
+
+
+def _job_label(j: dict) -> str:
+    p = j.get("params", {})
+    what = (f"like {p.get('reference', '')[:40]}" if p.get("mode") == "like"
+            else f"“{p.get('prompt', '')[:45]}”")
+    n = len(j.get("results") or [])
+    state = {"running": "searching…", "queued": "starting…", "done": f"{n} found",
+             "failed": "failed", "cancelled": f"stopped · {n} found"}.get(j.get("status"), "")
+    when = time.strftime("%d %b %H:%M", time.localtime(j.get("created") or 0))
+    return f"{when} — {what} — {state}"
+
+
+def _search_live(dd: str, job_id: str) -> None:
+    from ..shorts import discover as DS
+    job = DS.load_job(dd, job_id)
+    if not job:
+        return
+    if not DS.is_alive(job):
+        st.rerun(scope="app")            # finished: switch to the interactive results
+    prog = job.get("progress") or {}
+    want = (job.get("params") or {}).get("count") or 1
+    got = len(job.get("results") or [])
+    st.progress(min(1.0, got / want),
+                text=f"🔎 {job.get('stage', '')} — {got} of {want} found"
+                     + (f" · {prog.get('checked', 0)} checked" if prog.get("checked") else ""))
+    _results_table(job, readonly=True)
+
+
+def _search_results(dd: str, job: dict) -> None:
+    from ..shorts import discover as DS
+    eff = job.get("effective") or {}
+    status = job.get("status")
+    if status == "failed":
+        st.error(f"The search failed: {job.get('error')}")
+    elif job.get("status") in ("running", "queued"):
+        st.warning("This search stopped without finishing (the program was closed?). "
+                   "Run it again to continue.")
+    want = (job.get("params") or {}).get("count") or 0
+    results = job.get("results") or []
+    head = f"**{len(results)} of {want} found**"
+    if eff:
+        head += f" · country: {eff.get('country_name')} · language: {eff.get('language_name')}"
+    st.markdown(head)
+    if job.get("reference"):
+        r = job["reference"]
+        st.caption(f"Reference: {r.get('name')} — {_lang_label(r.get('language'))}, "
+                   f"{r.get('country_code') or 'country not listed'}")
+    for n in job.get("notes") or []:
+        st.info(n)
+    if job.get("queries"):
+        st.caption("Searched for: " + " · ".join(f"“{q}”" for q in job["queries"]))
+    if not results:
+        return
+
+    saved_keys = {c["key"] for c in S.load_channels(dd)["channels"]}
+    saved_ids = {c.get("channel_id") for c in S.load_channels(dd)["channels"]}
+    fresh = [r for r in results if r["key"] not in saved_keys and r["channel_id"] not in saved_ids]
+    picked = _results_table(job, readonly=False, saved_keys=saved_keys, saved_ids=saved_ids)
 
     st.write("")
-    if st.button(f"⏬ Download {total} new Short(s) from {len(enabled)} channel(s)",
-                 type="primary", width="stretch", disabled=not enabled, key="sh_go"):
-        q = S.start_run(dd, [c["key"] for c in enabled], [])
-        _flash("success", f"Queued {q['channels']} channel(s). " + ensure_worker(dd))
+    a1, a2 = st.columns([1, 2])
+    each = a1.number_input("Shorts per run, each", 1, 500,
+                           int(S.settings(dd).get("default_count", 10)), key="dc_each")
+    rights = a2.checkbox("I have the rights to reuse these channels' Shorts", key="dc_rights")
+    chosen = [r for r in fresh if r["channel_id"] in picked]
+    c1, c2, c3 = st.columns(3)
+    if c1.button(f"⭐ Add {len(chosen)} to wishlist", type="primary", width="stretch",
+                 disabled=not (chosen and rights), key="dc_add"):
+        added, problems = DS.add_to_wishlist(dd, chosen, int(each), rights_confirmed=rights,
+                                             query_label=_job_label(job))
+        _flash("success", f"Added {len(added)} channel(s) to your wishlist — see 📺 Channels.")
+        for p in problems:
+            _flash("warning", p)
         st.rerun()
+    if c2.button(f"🙈 Hide {len(chosen)} for good", width="stretch", disabled=not chosen,
+                 key="dc_dismiss", help="Never suggest these channels again."):
+        DS.dismiss(dd, [r["channel_id"] for r in chosen])
+        _flash("info", f"Hid {len(chosen)} channel(s) — they won't be suggested again.")
+        st.rerun()
+    if c3.button("🔁 Find more like these", width="stretch", key="dc_more",
+                 help="Same search, skipping everything already shown."):
+        p = dict(job.get("params") or {})
+        p["exclude_ids"] = list(set(p.get("exclude_ids") or [])
+                                | {r["channel_id"] for r in results})
+        new = DS.new_job(dd, p)
+        spawn_search(dd, new["id"])
+        st.session_state["dc_view"] = new["id"]
+        st.rerun()
+
+
+def _lang_label(code: str | None) -> str:
+    from ..shorts import langid as LG
+    return LG.label(code or "")
+
+
+def _pick_all(job: dict, value: bool) -> None:
+    for r in job.get("results") or []:
+        st.session_state[f"dc_pick_{job['id']}_{r['channel_id']}"] = value
+
+
+def _results_table(job: dict, *, readonly: bool, saved_keys: set | None = None,
+                   saved_ids: set | None = None) -> set[str]:
+    """Results as cards. Returns the channel ids that are ticked."""
+    picked: set[str] = set()
+    saved_keys = saved_keys or set()
+    saved_ids = saved_ids or set()
+    results = job.get("results") or []
+    if not readonly and results:
+        s1, s2, _ = st.columns([1, 1, 4])
+        s1.button("Select all", key=f"dc_all_{job['id']}", on_click=_pick_all,
+                  args=(job, True), width="stretch")
+        s2.button("Select none", key=f"dc_none_{job['id']}", on_click=_pick_all,
+                  args=(job, False), width="stretch")
+    for i, r in enumerate(results, 1):
+        with st.container(border=True):
+            c0, c1, c2 = st.columns([0.6, 5, 1.4])
+            if r.get("avatar"):
+                try:
+                    c0.image(r["avatar"], width=48)
+                except Exception:  # noqa: BLE001 - a missing picture is not an error
+                    c0.write("📺")
+            else:
+                c0.write("📺")
+            facts = [f"{_short_count(r['subscribers'])} subscribers" if r.get("subscribers")
+                     else "subscribers hidden",
+                     (r.get("country") or "country not listed")
+                     + (" ✓" if r.get("country_status") == "match" else ""),
+                     r.get("language_label") or "language unknown"]
+            if r.get("fit") is not None:
+                facts.append(f"fit {r['fit']}/10")
+            c1.markdown(f"**{i}. [{r['name']}]({r['url']}/shorts)**  \n" + " · ".join(facts))
+            if r.get("why"):
+                c1.caption(r["why"])
+            if r.get("sample_titles"):
+                c1.caption("e.g. " + " | ".join(t[:60] for t in r["sample_titles"]))
+            already = r["key"] in saved_keys or r["channel_id"] in saved_ids
+            if readonly:
+                continue
+            if already:
+                c2.markdown("✓ saved")
+            elif c2.checkbox("Select", key=f"dc_pick_{job['id']}_{r['channel_id']}"):
+                picked.add(r["channel_id"])
+    return picked
 
 
 def _tab_links(dd: str) -> None:
@@ -605,10 +904,12 @@ def render(run_every: str = "3s") -> None:
     _show_flash()
     st.fragment(run_every=run_every)(_status_panel)(dd)
 
-    t1, t2, t3, t4, t5 = st.tabs(["📺 Channels", "🔗 Paste links", "⏬ This run",
-                                  "🕘 History", "⚙️ Settings"])
+    t1, t0, t2, t3, t4, t5 = st.tabs(["📺 Channels", "🔎 Find channels", "🔗 Paste links",
+                                      "⏬ This run", "🕘 History", "⚙️ Settings"])
     with t1:
         _tab_channels(dd)
+    with t0:
+        _tab_find(dd, run_every)
     with t2:
         _tab_links(dd)
     with t3:

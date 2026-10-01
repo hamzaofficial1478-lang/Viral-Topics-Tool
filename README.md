@@ -32,6 +32,27 @@ A second tool beside the clip maker, on its own screen in the dashboard sidebar.
   line. Each has its own **Shorts per run** count and an on/off switch; both are
   saved the moment you change them. **Download** takes that many of each
   switched-on channel's *newest* Shorts that you don't already have.
+- **🔎 Find channels** — describe the kind of Shorts channel you want in your
+  own words, *or* paste a channel and ask for **more like it**. Choose how many,
+  the **country** (read from each channel's own About page, not guessed) and the
+  **language** the Shorts are in (detected from their titles; Urdu or Hindi typed
+  in English letters counts). With a reference channel, "same as the reference"
+  is offered for both. Each result shows subscribers, country, language, why it
+  matched and example titles; tick the ones you want and **⭐ Add to wishlist**.
+  **🙈 Hide** keeps a channel out of every future search, **🔁 Find more like
+  these** searches again without repeating anyone. If fewer were found than you
+  asked for, it says so and why (wrong country, wrong language, no Shorts …).
+  For a language other than English it learns search words *in that language*
+  from the first channels it finds, because YouTube answers English words with
+  English channels. The search runs in its own process, so closing the browser
+  doesn't stop it. Works without AI; binding a model to **Shorts channel finder
+  🔎** (Settings → Task routing) writes better searches and drops off-topic
+  channels.
+- **⭐ Wishlist** — found channels are kept on the Channels tab under their own
+  heading, each with its own count and switch, and ➕ moves one to your main
+  list. Tick **Also download from the wishlist** (remembered; `shorts start`
+  from the phone follows it) to include them in a run. The never-twice rule
+  covers them too.
 - **Paste links** — one-off Short/video links, not saved as channels.
 - **Quality — best or nothing** — before each download ShortForge reads every
   version YouTube offers and only accepts the biggest picture (then the highest
@@ -60,7 +81,10 @@ A second tool beside the clip maker, on its own screen in the dashboard sidebar.
   `shorts cancel`, `shorts history` on the ntfy command topic.
 
 Everything is kept in `shorts_data/` next to the program (not in the cache, so
-clearing the cache never loses it). CLI: `python cli.py shorts --help`.
+clearing the cache never loses it). CLI: `python cli.py shorts --help`;
+channel search from the command line: `python cli.py shorts discover street food
+vlogs --country PK --language ur --count 10` (`--like <channel>` for "more like
+this", `--add-to-wishlist --owner-confirmed` to save the results).
 
 ## Install on a new PC
 

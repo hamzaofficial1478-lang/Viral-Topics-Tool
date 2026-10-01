@@ -160,6 +160,10 @@ def _drain(cfg: Config, dd: str, should_stop, announce) -> dict:
                 if meta.get("name") and not ch.get("name"):
                     store.update_channel(dd, key, name=meta["name"])
                     ch["name"] = meta["name"]
+                # The channel id lets "Find channels" recognise this channel
+                # however it was added (@handle or link) and never suggest it.
+                if meta.get("id") and not ch.get("channel_id"):
+                    store.update_channel(dd, key, channel_id=meta["id"])
                 if exhausted:
                     note = (f"only {len(new)} new Short(s) left on this channel "
                             f"(asked for {ch['count']}) — everything else is already "

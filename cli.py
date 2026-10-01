@@ -840,6 +840,53 @@ def cmd_shorts(args: argparse.Namespace) -> int:
         print(f"Output folder: {YT.output_root(cfg, S.settings(dd))}")
         return 0
 
+    if action in ("discover", "discover-run"):
+        from shortforge.shorts import discover as DS
+        if action == "discover-run":
+            import logging
+            os.makedirs(dd, exist_ok=True)
+            fh = logging.FileHandler(os.path.join(dd, "discover.log"), encoding="utf-8")
+            fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(message)s"))
+            logging.getLogger("shortforge").addHandler(fh)
+            job = DS.run(dd, args.job, cfg)
+            return 0 if job.get("status") == "done" else 1
+        if not args.prompt and not args.like:
+            log.error("Describe the channels you want, or give --like <channel>.")
+            return 2
+        try:
+            job = DS.new_job(dd, {"mode": "like" if args.like else "describe",
+                                  "prompt": " ".join(args.prompt or []), "reference": args.like,
+                                  "count": args.count, "country": args.country or "",
+                                  "language": args.language or "",
+                                  "min_subscribers": args.min_subs, "min_shorts": args.min_shorts,
+                                  "use_ai": not args.no_ai,
+                                  "allow_unlisted_country": not args.strict_country})
+        except (ValueError, ShortForgeError) as e:
+            log.error("%s", e)
+            return 2
+        print(f"Searching… (job {job['id']})")
+        job = DS.run(dd, job["id"], cfg)
+        for n in job.get("notes") or []:
+            print(f"  note: {n}")
+        if job.get("status") == "failed":
+            print(f"Search failed: {job.get('error')}")
+            return 1
+        for i, r in enumerate(job.get("results") or [], 1):
+            subs = f"{r['subscribers']:,}" if r.get("subscribers") else "?"
+            print(f" {i:2d}. {r['name'][:38]:38} {subs:>12} subs  {r['country'] or 'country not listed':22} "
+                  f"{r['language_label'][:25]:25} {r['url']}")
+            if r.get("why"):
+                print(f"       {r['why']}")
+        print(f"{job.get('stage')}.")
+        if args.add_to_wishlist and job.get("results"):
+            added, problems = DS.add_to_wishlist(dd, job["results"], args.shorts_each,
+                                                 rights_confirmed=args.owner_confirmed,
+                                                 query_label=" ".join(args.prompt or []) or args.like)
+            print(f"Added {len(added)} channel(s) to the wishlist.")
+            for p_ in problems:
+                print(f"  ! {p_}")
+        return 0
+
     if action == "formats":
         rows, best = YT.format_table(YT.probe_formats(args.url, cfg), S.settings(dd))
         for r in rows:
@@ -1523,6 +1570,25 @@ def build_parser() -> argparse.ArgumentParser:
     shs.add_parser("resume", help="Carry on a paused run")
     shs.add_parser("cancel", help="Drop everything still queued")
     shs.add_parser("status", help="What the downloader is doing")
+    shd = shs.add_parser("discover", help="Find Shorts channels from a description, or like "
+                                           "a reference channel")
+    shd.add_argument("prompt", nargs="*", help="What kind of channels, in your own words")
+    shd.add_argument("--like", help="A reference channel (@handle or link)")
+    shd.add_argument("--count", type=int, default=10, help="How many channels to find")
+    shd.add_argument("--country", help="Country code, e.g. PK, AE, US — or 'same' (as --like)")
+    shd.add_argument("--language", help="Language code, e.g. ur, hi, en, ar — or 'same'")
+    shd.add_argument("--min-subs", type=int, default=0)
+    shd.add_argument("--min-shorts", type=int, default=3)
+    shd.add_argument("--no-ai", action="store_true", help="Keyword matching only")
+    shd.add_argument("--strict-country", action="store_true",
+                     help="Drop channels that don't list their country")
+    shd.add_argument("--add-to-wishlist", action="store_true")
+    shd.add_argument("--shorts-each", type=int, default=10,
+                     help="Shorts per run for channels added to the wishlist")
+    shd.add_argument("--owner-confirmed", action="store_true",
+                     help="Confirm you have the rights to reuse these channels' Shorts")
+    shdr = shs.add_parser("discover-run", help=argparse.SUPPRESS)
+    shdr.add_argument("--job", required=True)
     shf = shs.add_parser("formats", help="Every version YouTube offers for one Short, and "
                                           "which the downloader will take")
     shf.add_argument("url")

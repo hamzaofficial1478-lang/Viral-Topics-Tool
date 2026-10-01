@@ -58,7 +58,25 @@ def destination(cfg: Config, st: dict, item: dict) -> str:
 
 # --- listing ----------------------------------------------------------------- #
 
-def _flat_list(url: str, cfg: Config, limit: int) -> dict:
+class _QuietLogger:
+    """yt-dlp prints ERROR lines straight to the console even with quiet=True.
+    Channel discovery rejects many channels on purpose (no Shorts tab etc.), so
+    those lines are noise there; the exception still carries the message."""
+    def debug(self, msg):
+        pass
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        pass
+
+    def error(self, msg):
+        pass
+
+
+def _flat_list(url: str, cfg: Config, limit: int, *, quiet_errors: bool = False,
+               youtube_args: dict | None = None) -> dict:
     """Flat playlist listing (ids and titles only — no per-video requests),
     through the same cookie chain as downloads."""
     from ..ingest.ingest import (_BotWall, _auth_strategies, _classify, _clean_err,
@@ -68,6 +86,12 @@ def _flat_list(url: str, cfg: Config, limit: int) -> dict:
             "extract_flat": "in_playlist", "playlistend": int(limit),
             "socket_timeout": int(cfg.get("ingest.socket_timeout", 120) or 120),
             "extractor_args": _extractor_args(cfg)}
+    if quiet_errors:
+        opts["logger"] = _QuietLogger()
+    if youtube_args:
+        ex = {k: dict(v) for k, v in (opts["extractor_args"] or {}).items()}
+        ex.setdefault("youtube", {}).update(youtube_args)
+        opts["extractor_args"] = ex
     last: Exception | None = None
     saw_bot = False
     for label, overlay in _auth_strategies(cfg):
@@ -85,7 +109,8 @@ def _flat_list(url: str, cfg: Config, limit: int) -> dict:
             msg = _clean_err(e)
             if "does not have a shorts tab" in msg.lower():
                 raise ShortForgeError("this channel has no Shorts") from e
-            log.warning("shorts: listing via '%s' failed (%s); trying next", label, msg[:160])
+            (log.debug if quiet_errors else log.warning)(
+                "shorts: listing via '%s' failed (%s); trying next", label, msg[:160])
     if saw_bot:
         from ..ingest.ingest import BOT_AUTH_MESSAGE
         raise ShortForgeError(BOT_AUTH_MESSAGE) from last

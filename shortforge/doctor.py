@@ -68,12 +68,11 @@ def _ctranslate2() -> Check:
 
 
 def _ytdlp() -> Check:
-    try:
-        import yt_dlp
-    except ImportError:
+    from .ingest.ingest import ytdlp_version
+    ver = ytdlp_version()
+    if ver is None:
         return Check("yt-dlp", WARN, "not installed (needed for URL ingest)",
-                     "pip install -U yt-dlp")
-    ver = getattr(yt_dlp, "__version__", "?")
+                     "pip install -U \"yt-dlp[default]\"")
     # yt-dlp versions are date-stamped (YYYY.MM.DD). Extractors break often, so
     # warn when the install is stale — updating is the single biggest fix.
     import datetime
@@ -85,12 +84,33 @@ def _ytdlp() -> Check:
             age = (datetime.date.today() - released).days
             if age > 30:
                 return Check("yt-dlp", WARN, f"version {ver} is {age} days old",
-                             "YouTube extractors break often — run `pip install -U yt-dlp` "
+                             "YouTube extractors break often — run update.bat "
                              "(or the 'Update yt-dlp' button in Settings).")
             return Check("yt-dlp", OK, f"version {ver} ({age} days old)")
         except ValueError:
             pass
     return Check("yt-dlp", OK, f"version {ver} (run `pip install -U yt-dlp` periodically)")
+
+
+def _youtube_js() -> Check:
+    """YouTube hides part of its format list (often the best picture) unless
+    yt-dlp can run its player JavaScript: that needs a runtime (Deno) AND
+    yt-dlp's solver scripts (the yt-dlp-ejs package)."""
+    from .ingest.ingest import find_js_runtime
+    name = "YouTube JavaScript (best quality)"
+    rt = find_js_runtime()
+    try:
+        import yt_dlp_ejs  # noqa: F401
+        ejs = True
+    except ImportError:
+        ejs = False
+    if rt and ejs:
+        return Check(name, OK, f"{rt[0]} found + yt-dlp-ejs installed")
+    missing = ([] if rt else ["no JavaScript runtime (Deno)"]) + \
+              ([] if ejs else ["yt-dlp-ejs not installed"])
+    return Check(name, WARN, "; ".join(missing) + " — YouTube may hide its best-quality "
+                 "versions", "run update.bat (installs both), or: winget install "
+                 "DenoLand.Deno  and  pip install -U \"yt-dlp[default]\"")
 
 
 def _translation() -> Check:
@@ -204,7 +224,7 @@ def _whisper_model(cfg: Config) -> Check:
 
 def run_checks(cfg: Config) -> list[Check]:
     return [
-        _ffmpeg(), _python(), _ctranslate2(), _whisper_model(cfg), _ytdlp(),
+        _ffmpeg(), _python(), _ctranslate2(), _whisper_model(cfg), _ytdlp(), _youtube_js(),
         _translation(), _tts(), _demucs(), _disk(cfg), _hardware(), _encoders(),
     ]
 

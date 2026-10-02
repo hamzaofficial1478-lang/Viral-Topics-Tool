@@ -92,8 +92,11 @@ Three steps — no command line needed after cloning:
 
 1. **Clone, then double-click `setup.bat`.** It runs unattended: checks Python
    (tells you where to get it if missing), creates the `venv` and installs
-   everything, installs FFmpeg via `winget` if absent, installs the Visual C++
-   runtime if absent, pre-downloads the Whisper `small` model, and finishes with
+   everything, installs FFmpeg via `winget` if absent, installs **Deno** via
+   `winget` if absent (YouTube shows its best-quality versions only to programs
+   that can run its JavaScript — without it Shorts can come out lower than they
+   should), installs the Visual C++ runtime if absent, pre-downloads the Whisper
+   `small` model, and finishes with
    `python cli.py doctor` printing a clear **PASS/FAIL**. The window stays open so
    you can read the result. Paths with spaces (e.g. `ammar laptops`) are fine.
    *If it says FFmpeg is missing right after installing it, close the window and
@@ -109,7 +112,7 @@ Three steps — no command line needed after cloning:
 
 **Keeping more than one PC in step:** double-click **`update.bat`** on each. It
 pulls whichever branch that checkout is on, reinstalls anything new, updates
-yt-dlp, and prints the **build id** the PC is now running. Compare that id
+yt-dlp, installs Deno if it's missing, and prints the **build id** the PC is now running. Compare that id
 across your machines — if they differ, one is on older code, and a failure it
 reports may already be fixed on the other. Local edits to tracked files are
 stashed automatically (git otherwise refuses the pull outright); nothing is

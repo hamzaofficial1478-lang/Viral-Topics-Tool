@@ -77,8 +77,28 @@ if !ERRORLEVEL! NEQ 0 (
 echo [..] Installing any new requirements ...
 "%VPY%" -m pip install -q -r requirements.txt
 echo [..] Updating yt-dlp ^(YouTube breaks its extractors often^) ...
-"%VPY%" -m pip install -q -U yt-dlp
+"%VPY%" -m pip install -q -U "yt-dlp[default]"
 echo [ok ] Dependencies up to date.
+echo.
+
+REM ---- 3b. Deno - lets yt-dlp see YouTube's FULL format list ---------------
+REM  (Everything above the pull must stay byte-for-byte the same: Windows keeps
+REM  reading a running .bat at the same position after git replaces it.)
+set "HAVE_DENO="
+where deno >nul 2>&1 && set "HAVE_DENO=1"
+if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links\deno.exe" set "HAVE_DENO=1"
+if defined HAVE_DENO (
+  echo [ok ] Deno found ^(lets YouTube offer its best-quality versions^).
+) else (
+  where winget >nul 2>&1
+  if !ERRORLEVEL! NEQ 0 (
+    echo [warn] Deno is missing and winget is not available. Install it from
+    echo        https://deno.com  - without it YouTube may hide the best quality.
+  ) else (
+    echo [..] Installing Deno with winget ^(lets YouTube offer its best quality^) ...
+    winget install --id DenoLand.Deno -e --accept-source-agreements --accept-package-agreements
+  )
+)
 echo.
 
 REM ---- 4. Say which build this PC is now on --------------------------------

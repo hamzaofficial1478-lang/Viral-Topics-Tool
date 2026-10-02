@@ -1,13 +1,16 @@
 # ShortForge runtime dependencies.
 # System requirements (install separately):
 #   ffmpeg + ffprobe   (Debian/Ubuntu: sudo apt-get install -y ffmpeg | macOS: brew install ffmpeg)
+#   deno               (YouTube's player JavaScript; Windows: winget install DenoLand.Deno)
 #   espeak-ng          (offline TTS fallback for dubbing; apt-get install -y espeak-ng)
 #   On Windows, faster-whisper/ctranslate2 need the Microsoft Visual C++ Redistributable (x64).
 #
 # Run `python cli.py doctor` after installing to verify the environment.
 
 # --- Core (required) ---
-yt-dlp>=2024.8.6
+# [default] brings yt-dlp-ejs: with a JavaScript runtime (Deno — setup.bat and
+# update.bat install it) YouTube offers its full format list, best picture included.
+yt-dlp[default]>=2025.11.12
 faster-whisper>=1.0.0,<2.0
 ctranslate2>=4.0,<5.0          # faster-whisper backend (Windows: needs VC++ redist)
 PyYAML>=6.0

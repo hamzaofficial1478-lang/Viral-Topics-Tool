@@ -302,11 +302,11 @@ def probe_formats(url: str, cfg: Config) -> list[dict]:
     """Every format YouTube lists for ``url`` (no download), through the same
     cookie chain and player clients the download will use."""
     from ..ingest.ingest import (_auth_strategies, _classify, _BotWall, _clean_err,
-                                 _extractor_args, _require_ytdlp)
+                                 _extractor_args, _js_runtime_opts, _require_ytdlp)
     yt_dlp = _require_ytdlp()
     opts = {"quiet": True, "no_warnings": True, "skip_download": True,
             "socket_timeout": int(cfg.get("ingest.socket_timeout", 120) or 120),
-            "extractor_args": _extractor_args(cfg)}
+            "extractor_args": _extractor_args(cfg), **_js_runtime_opts()}
     last: Exception | None = None
     for label, overlay in _auth_strategies(cfg):
         try:
@@ -501,11 +501,15 @@ def _quality_hook(seen: list, outer=None):
 
 
 def _quality_error(best: dict, why: str) -> ShortForgeError:
+    from ..ingest.ingest import find_js_runtime
+    hint = ("update yt-dlp (Settings → 📺 YouTube authentication)" if find_js_runtime() else
+            "run update.bat — this PC has no JavaScript runtime (Deno), and without one "
+            "YouTube hides some versions of its videos")
     return ShortForgeError(
         f"Not saved: couldn't download this Short at its best quality "
         f"({best.get('width')}×{best.get('height')}) — {why}. Saving a lower-quality copy "
         f"is switched off, so nothing was kept. 'Retry failed' tries again; if it keeps "
-        f"happening, update yt-dlp (Settings → 📺 YouTube authentication).")
+        f"happening, {hint}.")
 
 
 def _is_bot_wall(e: Exception) -> bool:

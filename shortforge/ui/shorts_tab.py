@@ -900,6 +900,12 @@ def render(run_every: str = "3s") -> None:
     st.caption("Save channels, give each one its own count, and download that many of "
                "their newest Shorts at the best quality YouTube offers — never the same "
                "Short twice, each with its title, description and hashtags saved beside it.")
+    from ..ingest.ingest import find_js_runtime
+    if find_js_runtime() is None:
+        st.warning("⚠️ **Deno is not installed**, so YouTube may hide the best-quality "
+                   "version of a Short (it shows the full list only to programs that can "
+                   "run its JavaScript). Run **update.bat** once — it installs Deno — then "
+                   "restart ShortForge.")
 
     _show_flash()
     st.fragment(run_every=run_every)(_status_panel)(dd)

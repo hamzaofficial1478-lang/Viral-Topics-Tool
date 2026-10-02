@@ -106,7 +106,27 @@ if !ERRORLEVEL! NEQ 0 (
 )
 echo [ok ] Python packages installed.
 echo [..] Updating yt-dlp to the latest ^(YouTube extractors break often^) ...
-"%VPY%" -m pip install -U yt-dlp
+"%VPY%" -m pip install -U "yt-dlp[default]"
+echo.
+
+REM ---- 2b. Deno - lets yt-dlp see YouTube's FULL format list -------------
+REM  Without a JavaScript runtime YouTube hides some versions of a video,
+REM  often the best picture, so downloads come out lower than they should.
+set "HAVE_DENO="
+where deno >nul 2>&1 && set "HAVE_DENO=1"
+if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links\deno.exe" set "HAVE_DENO=1"
+if defined HAVE_DENO (
+  echo [ok ] Deno found ^(lets YouTube offer its best-quality versions^).
+) else (
+  where winget >nul 2>&1
+  if !ERRORLEVEL! NEQ 0 (
+    echo [warn] Deno is missing and winget is not available. Install it from
+    echo        https://deno.com  - without it YouTube may hide the best quality.
+  ) else (
+    echo [..] Installing Deno with winget ^(lets YouTube offer its best quality^) ...
+    winget install --id DenoLand.Deno -e --accept-source-agreements --accept-package-agreements
+  )
+)
 echo.
 
 REM ---- 3. FFmpeg -----------------------------------------------------------

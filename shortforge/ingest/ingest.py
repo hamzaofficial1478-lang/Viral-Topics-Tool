@@ -235,6 +235,49 @@ def _extractor_args(cfg: Config) -> dict:
     return {"youtube": {"player_client": clients}} if clients else {}
 
 
+_JS_RUNTIMES = ("deno", "node", "bun")
+_js_warned = False
+
+
+def find_js_runtime() -> tuple[str, str] | None:
+    """``(name, path)`` of a JavaScript runtime yt-dlp can use, or None.
+
+    Since late 2025 YouTube hides part of its format list (often the biggest
+    picture) unless yt-dlp can run YouTube's player JavaScript. yt-dlp only
+    looks for Deno by itself; Node or Bun work too if one is already installed.
+    A window opened before Deno was installed does not have it on PATH yet,
+    so winget's and Deno's own install folders are checked as well.
+    """
+    import shutil
+    for name in _JS_RUNTIMES:
+        p = shutil.which(name)
+        if p:
+            return name, p
+    if os.name == "nt":
+        for p in (os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet",
+                               "Links", "deno.exe"),
+                  os.path.join(os.path.expanduser("~"), ".deno", "bin", "deno.exe")):
+            if os.path.isfile(p):
+                return "deno", p
+    return None
+
+
+def _js_runtime_opts() -> dict:
+    """The ``js_runtimes`` yt-dlp option, or nothing (logged once) when no
+    runtime is installed — downloads still work, but may not be offered the
+    best version, and that has to be visible."""
+    global _js_warned
+    rt = find_js_runtime()
+    if rt:
+        return {"js_runtimes": {rt[0]: {"path": rt[1]}}}
+    if not _js_warned:
+        _js_warned = True
+        log.warning("no JavaScript runtime (Deno) found — YouTube may hide its best-quality "
+                    "versions from yt-dlp. Fix: run update.bat (it installs Deno), or "
+                    "`winget install DenoLand.Deno`")
+    return {}
+
+
 def source_ceiling(cfg: Config) -> int:
     """Tallest source worth downloading, in pixels.
 
@@ -393,6 +436,7 @@ def _base_opts(cfg: Config, dl_dir: str) -> dict:
         "socket_timeout": int(cfg.get("ingest.socket_timeout", 120) or 120),
         # yt-dlp default is 1 (serial) — see _resolve_concurrent_fragments.
         "concurrent_fragment_downloads": _resolve_concurrent_fragments(cfg),
+        **_js_runtime_opts(),
     }
 
 
@@ -748,35 +792,41 @@ def list_formats(url: str, cfg: Config) -> tuple[bool, str]:
 
 
 def ytdlp_version() -> str | None:
+    # The version lives in yt_dlp.version — the package itself has no
+    # __version__, so reading that always said "?" and the stale-version
+    # warning in `doctor` could never fire.
     try:
-        import yt_dlp
-        return getattr(yt_dlp, "__version__", None)
+        from yt_dlp.version import __version__
+        return __version__
     except ImportError:
-        return None
+        try:
+            import yt_dlp
+            return getattr(yt_dlp, "__version__", None)
+        except ImportError:
+            return None
 
 
 def update_ytdlp() -> tuple[bool, str]:
-    """Run ``pip install -U yt-dlp`` in the current interpreter; report the new
+    """Run ``pip install -U "yt-dlp[default]"`` (yt-dlp plus its YouTube
+    JavaScript solver, yt-dlp-ejs) in the current interpreter; report the new
     version. Backing the Settings 'Update yt-dlp' button."""
     import subprocess
     import sys
     before = ytdlp_version() or "none"
     try:
         proc = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-U", "yt-dlp"],
+            [sys.executable, "-m", "pip", "install", "-U", "yt-dlp[default]"],
             capture_output=True, text=True, timeout=300)
     except Exception as e:  # noqa: BLE001
         return False, f"Update failed to launch: {e}"
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
         return False, "pip failed:\n" + "\n".join(tail)
-    # Re-import to read the fresh version (a running process may still show the old
-    # one until restart; report what pip installed from its output when possible).
-    import importlib
+    # Read what pip just installed from its metadata on disk — the yt_dlp module
+    # already loaded in this process still reports the old version until restart.
+    from importlib.metadata import PackageNotFoundError, version
     try:
-        import yt_dlp
-        importlib.reload(yt_dlp)
-        after = getattr(yt_dlp, "__version__", "?")
-    except Exception:  # noqa: BLE001
+        after = version("yt-dlp")
+    except PackageNotFoundError:
         after = "installed (restart to load)"
     return True, f"yt-dlp {before} → {after}. Restart the app to load it if unchanged."

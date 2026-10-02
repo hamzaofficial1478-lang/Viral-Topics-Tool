@@ -50,7 +50,7 @@ REM cause. Warn plainly rather than let that happen silently.
 for /f "tokens=2" %%v in ('%PY% --version 2^>^&1') do set "PYVER=%%v"
 echo !PYVER! | findstr /b /c:"3.14" /c:"3.15" >nul && (
   echo.
-  echo [!!] Python !PYVER! is newer than this project is tested against ^(3.11-3.13^).
+  echo [warn] Python !PYVER! is newer than this project is tested against ^(3.11-3.13^).
   echo      Several dependencies may have no wheels for it yet and will fail to
   echo      install. If the install below fails, install Python 3.13 from
   echo      python.org, then delete the "venv" folder and re-run setup.bat.
@@ -75,7 +75,7 @@ if defined VENV_OK (
   echo [ok ] venv already exists and works.
 ) else (
   if exist "venv" (
-    echo [!!] The existing venv is broken - it points at a Python that is no
+    echo [warn] The existing venv is broken - it points at a Python that is no
     echo      longer installed. Rebuilding it from scratch ...
     rmdir /s /q "venv"
   ) else (

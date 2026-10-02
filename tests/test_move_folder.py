@@ -65,3 +65,13 @@ def test_warnings_survive_delayed_expansion():
             _, s = _bat(name)
             if "enabledelayedexpansion" in s:
                 assert not re.search(r"(?im)^\s*echo [^\n]*\[!+\]", s), name
+
+
+def test_it_puts_a_desktop_icon_that_opens_the_new_place():
+    """The operator wanted it "on the desktop" — but their Desktop is backed up
+    by OneDrive (…\\OneDrive\\Desktop), so the program can't live there. A
+    shortcut on the Desktop pointing at the new folder gives them both."""
+    _, s = _bat("move_to_c.bat")
+    assert 'sh.SpecialFolders("Desktop") ^& "\\ShortForge.lnk"' in s
+    assert 'lnk.Arguments = """%DST%\\start_ui.vbs"""' in s
+    assert s.index("ShortForge.lnk") < s.index('call "%DST%\\setup.bat"')

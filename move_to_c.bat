@@ -141,7 +141,29 @@ if exist "%QU%" (
   echo [ok ] Start-at-logon now starts the copy in "%DST%".
 )
 
-REM ---- 5. Set up the new copy -------------------------------------------------
+REM ---- 5. A "ShortForge" icon on the desktop that opens the NEW place -------
+REM  The program itself must not live on the Desktop when OneDrive backs the
+REM  Desktop up (C:\Users\[you]\OneDrive\Desktop) - that is still OneDrive.
+REM  A shortcut is a tiny file that only points at the real folder.
+set "VBS=%TEMP%\shortforge_shortcut.vbs"
+> "%VBS%" echo Set sh = CreateObject("WScript.Shell")
+>>"%VBS%" echo Set lnk = sh.CreateShortcut(sh.SpecialFolders("Desktop") ^& "\ShortForge.lnk")
+>>"%VBS%" echo lnk.TargetPath = "wscript.exe"
+>>"%VBS%" echo lnk.Arguments = """%DST%\start_ui.vbs"""
+>>"%VBS%" echo lnk.WorkingDirectory = "%DST%"
+>>"%VBS%" echo lnk.Description = "ShortForge dashboard"
+>>"%VBS%" echo lnk.Save
+cscript //nologo "%VBS%" >nul 2>&1
+set "SC=!ERRORLEVEL!"
+del "%VBS%" >nul 2>&1
+if "!SC!"=="0" (
+  echo [ok ] A "ShortForge" icon on your desktop now opens "%DST%".
+) else (
+  echo [warn] Couldn't make the desktop icon - right-click "%DST%\start_ui.vbs" and
+  echo        choose Send to - Desktop ^(create shortcut^) instead.
+)
+
+REM ---- 6. Set up the new copy -------------------------------------------------
 echo.
 echo [..] Setting up the new copy - setup.bat runs next ^(a few minutes^) ...
 echo.
@@ -151,15 +173,16 @@ echo.
 echo ############################################################
 echo #  From now on ShortForge lives in:  "%DST%"
 echo #
-echo #  Start it - double-click start_ui.bat there, or in PowerShell:
+echo #  Start it - double-click the ShortForge icon on your desktop,
+echo #  or in PowerShell:
 echo #      cd "%DST%"
 echo #      .\start_ui.bat
 echo #
 echo #  Once it works, delete the old copy - in PowerShell:
 echo #      Remove-Item "%SRC%" -Recurse -Force
 echo #
-echo #  A desktop shortcut made earlier still opens the old folder:
-echo #  make a new one from "%DST%\start_ui.vbs".
+echo #  Any OTHER shortcut you made earlier still opens the old folder -
+echo #  delete it and use the new ShortForge icon.
 echo ############################################################
 
 :end

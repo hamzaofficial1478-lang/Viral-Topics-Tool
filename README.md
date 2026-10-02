@@ -125,9 +125,12 @@ D:\Somewhere` for another place). It works out both paths itself, copies
 everything that matters — settings and keys, channels, history, queue, clips —
 leaves out the Python environment and cached source videos (rebuilt / fetched
 again), checks the copy, points start-at-logon at the new place and runs
-`setup.bat` there. The old folder stays until you delete it. Keep ShortForge out
-of OneDrive if you can: OneDrive opens every file it syncs, which slows it down
-and can block saves.
+`setup.bat` there, and puts a **ShortForge** icon on the desktop that opens the
+new place. The old folder stays until you delete it. Keep ShortForge out of
+OneDrive if you can: OneDrive opens every file it syncs, which slows it down and
+can block saves. If OneDrive backs up your Desktop (its path is
+`…\OneDrive\Desktop`), the Desktop *is* OneDrive — keep the program in a folder
+like `C:\ShortForge` and use the desktop icon.
 
 **Start automatically at logon:** double-click **`install_autostart.bat`** and pick
 Everything mode (UI + ntfy remote control) or Queue mode (option 3 turns it off

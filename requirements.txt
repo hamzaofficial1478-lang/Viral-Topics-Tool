@@ -20,7 +20,7 @@ numpy>=1.24,<2.3
 # Settings + new-job dashboard (`python cli.py ui`). This is the ONLY place API
 # keys are entered/edited (the operator does not hand-edit .env), so it's required.
 # >=1.49: `width="stretch"` layout API (replaces the deprecated use_container_width).
-streamlit>=1.49
+streamlit>=1.55
 
 # --- Optional: Claude-backed hook detection / metadata / translation ---
 # (or any OpenAI-compatible gateway — see Part E / .env.example)

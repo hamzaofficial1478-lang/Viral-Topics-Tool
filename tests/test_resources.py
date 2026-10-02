@@ -71,3 +71,26 @@ def test_the_error_agent_has_its_own_routing_slot():
     assert t is not None, "error_agent is missing from the routing table"
     assert "llm" in t["cats"] and t["on"] is True
     assert any(x["key"] == "error_agent" for x in TASKS)
+
+
+def test_gpu_is_asked_once_and_pages_never_wait_for_it(monkeypatch):
+    """Asking Windows for the GPU starts `wmic` (~1s). The footer used to ask on
+    every page, so every click on every screen paid for it."""
+    import threading
+    calls = []
+    gate = threading.Event()
+
+    def slow_probe():
+        calls.append(1)
+        gate.wait(5)
+        return "Test GPU"
+    monkeypatch.setattr(R, "_probe_gpu", slow_probe)
+    monkeypatch.setattr(R, "_gpu", None)
+    monkeypatch.setattr(R, "_gpu_thread", None)
+    assert R.gpu_name_nowait() is None          # returns at once, probe still running
+    assert R.gpu_name_nowait() is None          # ...and isn't started twice
+    gate.set()
+    R._gpu_thread.join(5)
+    assert R.gpu_name_nowait() == "Test GPU"
+    assert R.gpu_name() == "Test GPU"
+    assert len(calls) == 1

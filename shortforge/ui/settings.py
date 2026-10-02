@@ -16,6 +16,7 @@ import streamlit as st
 from ..providers import store as S
 from ..providers import detect as D
 from ..providers import capability_warnings
+from .lazy import lazy_tabs
 
 _CATS = list(S.CATEGORIES)
 
@@ -88,7 +89,6 @@ def _render_notifications(store: dict) -> None:
     """ntfy.sh progress messages + remote control — the only channel (Telegram
     was removed: ntfy needs no bot/account setup and has a free phone app, so
     running two channels bought nothing)."""
-    st.divider()
     st.subheader("📨 Notifications & remote control (ntfy)")
     st.caption("Get a message when the UI opens, when each link finishes, when the whole "
                "queue is done, and when it stops — and control it back from your phone. "
@@ -213,7 +213,6 @@ def _render_youtube_auth(store: dict) -> None:
     from ..config import Config
     from ..ingest import list_formats, test_youtube_auth, update_ytdlp, ytdlp_version
 
-    st.divider()
     st.subheader("📺 YouTube authentication")
     st.caption("YouTube increasingly blocks downloads with a \"confirm you're not a bot\" wall. "
                "Point ShortForge at the browser you're logged into YouTube with — those cookies "
@@ -284,6 +283,21 @@ def _render_youtube_auth(store: dict) -> None:
         (st.success if ok else st.error)(detail)
 
 
+@st.cache_data(ttl=60, show_spinner="Measuring the working folder…")
+def _disk_report(work_dir: str) -> dict:
+    from .. import maintenance as M
+    return M.cache_report(work_dir)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _disk_dry_run(work_dir: str, keep_hours: float) -> tuple[int, int]:
+    """What the 'remove old downloads' button would free."""
+    from .. import maintenance as M
+    n, freed = M.prune_downloads(work_dir, keep_hours=keep_hours, dry_run=True)
+    n2, freed2 = M.prune_source_caches(work_dir, keep_hours=keep_hours, dry_run=True)
+    return n + n2, freed + freed2
+
+
 def _render_disk_usage() -> None:
     """What the working directory is holding, and a safe way to reclaim it.
 
@@ -296,10 +310,17 @@ def _render_disk_usage() -> None:
     from ..config import Config
     from .. import maintenance as M
 
-    st.divider()
     st.subheader("🧹 Disk space")
     work_dir = Config.load().get("paths.work_dir", ".shortforge")
-    r = M.cache_report(work_dir)
+    # Measuring means visiting every file in the working folder, which takes
+    # seconds once it holds a few videos' worth of audio and frames. It used to
+    # happen on every click anywhere in Settings; now once a minute at most.
+    r = _disk_report(work_dir)
+    if st.button("🔄 Measure again", key="disk_remeasure",
+                 help="The numbers are kept for a minute so this screen stays quick."):
+        _disk_report.clear()
+        _disk_dry_run.clear()
+        st.rerun()
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Reclaimable", M.human_gb(r["reclaimable_bytes"]),
@@ -323,20 +344,21 @@ def _render_disk_usage() -> None:
                              max_value=24 * 90, value=48, step=24,
                              help="Anything the running job needs is minutes old, so it can "
                                   "never be caught by this.")
-    n_old, freed = M.prune_downloads(work_dir, keep_hours=float(keep_h), dry_run=True)
-    n_src, freed_src = M.prune_source_caches(work_dir, keep_hours=float(keep_h), dry_run=True)
-    n_old += n_src
-    freed += freed_src
+    n_old, freed = _disk_dry_run(work_dir, float(keep_h))
     d1, d2 = st.columns(2)
     if d1.button(f"🧽 Remove {n_old} old download(s) · {M.human_gb(freed)}",
                  width="stretch", disabled=not n_old):
         n, got = M.prune_downloads(work_dir, keep_hours=float(keep_h))
         n2, got2 = M.prune_source_caches(work_dir, keep_hours=float(keep_h))
+        _disk_report.clear()
+        _disk_dry_run.clear()
         st.success(f"Removed {n + n2} item(s), freed {M.human_gb(got + got2)}.")
         st.rerun()
     if d2.button("🗑 Remove ALL cached downloads", width="stretch",
                  disabled=not r["downloads_files"]):
         got = M.clear_downloads(work_dir)
+        _disk_report.clear()
+        _disk_dry_run.clear()
         st.success(f"Cleared every cached download — freed {M.human_gb(got)}. "
                    "Sources re-download on demand.")
         st.rerun()
@@ -400,7 +422,6 @@ def _render_disk_usage() -> None:
 
 def _render_backup_restore(store: dict) -> None:
     """Export/import the whole settings store so moving machines needs no re-entry."""
-    st.divider()
     st.subheader("💾 Backup & restore settings")
     st.caption("Move to a new PC without re-entering anything: export one file with every "
                "credential, model, category, priority and task binding, then import it there.")
@@ -446,18 +467,43 @@ def _caps_summary(p: dict) -> str:
 
 
 def render() -> None:
-    st.header("⚙️ API providers")
+    st.header("⚙️ Settings")
+    store = _load()
+    _render_autodetect_import(store)
+    for w in capability_warnings(store):
+        st.warning(w)
+
+    # One section at a time. Settings used to be a single long page, every part
+    # of it rebuilt on every click — including measuring the whole working
+    # folder — so it was the slowest screen to open and to use.
+    t_models, t_tasks, t_phone, t_yt, t_disk, t_backup = lazy_tabs(
+        ["🔑 Models & keys", "🎛️ Task routing", "📨 Phone (ntfy)", "📺 YouTube",
+         "🧹 Disk & upkeep", "💾 Backup & restore"], key="set_tab")
+    if t_models.open:
+        with t_models:
+            _render_models(store)
+    if t_tasks.open:
+        with t_tasks:
+            _render_task_routing(store)
+    if t_phone.open:
+        with t_phone:
+            _render_notifications(store)
+    if t_yt.open:
+        with t_yt:
+            _render_youtube_auth(store)
+    if t_disk.open:
+        with t_disk:
+            _render_disk_usage()
+    if t_backup.open:
+        with t_backup:
+            _render_backup_restore(store)
+
+
+def _render_models(store: dict) -> None:
     st.caption("Add a **credential** once (base URL + key), then **Fetch available "
                "models** and enable the ones you want — each with its own category, "
                "toggle and failover priority. Click **Test & Detect** to auto-discover "
                "what a model can do. Keys are stored locally (gitignored) and masked.")
-
-    store = _load()
-
-    _render_autodetect_import(store)
-
-    for w in capability_warnings(store):
-        st.warning(w)
 
     # --- overview table (credential-models + legacy, one row per model) ---
     rows = []
@@ -482,22 +528,6 @@ def render() -> None:
     for cred in S.credentials(store):
         _render_credential(store, cred)
     _render_add_credential(store)
-
-    # --- per-task routing (R1) + cost-tier guard (R2) ---
-    st.divider()
-    _render_task_routing(store)
-
-    # --- ntfy notifications + remote control ---
-    _render_notifications(store)
-
-    # --- YouTube authentication (fix the bot wall on downloads) ---
-    _render_youtube_auth(store)
-
-    # --- disk usage + safe reclaim (downloads grow forever otherwise) ---
-    _render_disk_usage()
-
-    # --- backup / restore (move machines without re-entering keys) ---
-    _render_backup_restore(store)
 
     # --- legacy migration (item 3): collapse to ONE config path ---
     legacy = store.get("providers", [])

@@ -56,8 +56,38 @@ def _windows_memory() -> tuple[int, int] | None:
         return None
 
 
+_gpu: str | None = None
+_gpu_thread = None
+
+
 def gpu_name() -> str:
-    """Installed GPU, if it can be identified without extra dependencies."""
+    """Installed GPU, if it can be identified without extra dependencies.
+
+    Asked once per process: the answer can't change while the program runs,
+    and asking is slow — on Windows it starts ``wmic``, which takes around a
+    second. The dashboard footer used to ask on every page, so every click on
+    every screen waited for it.
+    """
+    global _gpu
+    if _gpu is None:
+        _gpu = _probe_gpu()
+    return _gpu
+
+
+def gpu_name_nowait() -> str | None:
+    """The GPU name if it is already known, else None — and start finding out
+    in the background, so a page never waits for it."""
+    global _gpu_thread
+    if _gpu is not None:
+        return _gpu
+    if _gpu_thread is None:
+        import threading
+        _gpu_thread = threading.Thread(target=gpu_name, name="gpu-probe", daemon=True)
+        _gpu_thread.start()
+    return None
+
+
+def _probe_gpu() -> str:
     try:
         import subprocess
         out = subprocess.run(

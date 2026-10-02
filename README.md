@@ -29,8 +29,8 @@ in gitignored `config/providers.local.json` — never in chat, never committed.
 A second tool beside the clip maker, on its own screen in the dashboard sidebar.
 
 - **Channels** — paste channels (`@handle`, a channel link, or a `UC…` id), one per
-  line. Each has its own **Shorts per run** count and an on/off switch; both are
-  saved the moment you change them. **Download** takes that many of each
+  line. They are listed in one table where each has its own **Shorts per run**
+  count and an **On** tick; both are saved the moment you change them. **Download** takes that many of each
   switched-on channel's *newest* Shorts that you don't already have.
 - **🔎 Find channels** — describe the kind of Shorts channel you want in your
   own words, *or* paste a channel and ask for **more like it**. Choose how many,

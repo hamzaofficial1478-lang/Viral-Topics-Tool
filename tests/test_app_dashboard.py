@@ -78,11 +78,38 @@ def test_settings_shows_credentials_with_a_seeded_model(tmp_path, monkeypatch):
     assert "🔑 Credentials" in [s.value for s in at.subheader]
 
 
-def test_settings_shows_backup_restore_section():
+def _settings_tab(label: str):
+    """Settings opens on its first tab; only the open tab is built. (The test
+    tool can't click a tab, so the choice is set the way a click sets it.)"""
     at = _fresh()
     at.sidebar.radio[0].set_value("Settings").run()
+    at.session_state["set_tab"] = label
+    return at.run()
+
+
+def test_settings_shows_backup_restore_section():
+    at = _settings_tab("💾 Backup & restore")
     assert not at.exception
     assert "💾 Backup & restore settings" in [s.value for s in at.subheader]
+
+
+def test_settings_builds_only_the_open_section(monkeypatch):
+    """Settings was one long page rebuilt on every click — including measuring
+    every file in the working folder. Now that only happens on its own tab."""
+    from shortforge import maintenance as M
+    from shortforge.ui import settings as SET
+    scans = []
+    real = M.cache_report
+    monkeypatch.setattr(M, "cache_report", lambda wd: (scans.append(wd), real(wd))[1])
+    SET._disk_report.clear()
+    at = _fresh()
+    at.sidebar.radio[0].set_value("Settings").run()
+    assert not at.exception and scans == []
+    assert "🔑 Credentials" in [s.value for s in at.subheader]
+    assert "💾 Backup & restore settings" not in [s.value for s in at.subheader]
+    at = _settings_tab("🧹 Disk & upkeep")
+    assert not at.exception and len(scans) == 1
+    assert "🧹 Disk space" in [s.value for s in at.subheader]
 
 
 def test_history_screen_renders():
@@ -443,3 +470,45 @@ def test_remove_this_link_button_notifies(tmp_path, monkeypatch):
     assert len(sent) == 1
     assert "Removed a queued link" in sent[0] and "remove-me-please" in sent[0]
     assert Q.load_queue(work_dir)["jobs"] == []
+
+
+def _past_runs(root: Path, n_runs: int, n_clips: int = 3) -> None:
+    for r in range(n_runs):
+        d = root / "out" / "someone" / f"vid{r:03d}"
+        d.mkdir(parents=True)
+        clips = []
+        for c in range(n_clips):
+            fp = d / f"clip_{c}.mp4"
+            fp.write_bytes(b"\0" * 1024)
+            clips.append({"clip_id": c + 1, "file_path": str(fp), "start": 0, "end": 30,
+                          "score": 0.7, "metadata": {"title": f"Run {r} clip {c}"}})
+        (d / f"vid{r:03d}_manifest.json").write_text(
+            json.dumps({"source": {"title": f"Run {r}"}, "clips": clips, "summary": "done"}),
+            encoding="utf-8")
+
+
+def test_history_reads_no_clip_until_play_is_pressed(tmp_path, monkeypatch):
+    """The History screen drew every run ever made, each clip with a player and
+    a download button that BOTH read the whole video file — on every click.
+    Now: one run at a time, downloads read on click, players load on ▶ Play."""
+    import builtins
+    _past_runs(tmp_path, n_runs=4)
+    monkeypatch.chdir(tmp_path)
+    reads = []
+    real_open = builtins.open
+
+    def spy(f, mode="r", *a, **k):
+        if "b" in mode and str(f).endswith(".mp4"):
+            reads.append(str(f))
+        return real_open(f, mode, *a, **k)
+    monkeypatch.setattr(builtins, "open", spy)
+
+    at = _fresh()
+    at.sidebar.radio[0].set_value("History").run()
+    assert not at.exception
+    assert len(at.selectbox[0].options) == 4
+    assert [b.label for b in at.button].count("▶ Play") == 3      # one run's clips only
+    assert not at.get("video") and reads == []
+    at.button[1].click().run()                                     # first ▶ Play
+    assert not at.exception
+    assert len(at.get("video")) == 1 and len(reads) == 1

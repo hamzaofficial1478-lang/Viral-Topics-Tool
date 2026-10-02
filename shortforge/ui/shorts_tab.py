@@ -26,6 +26,7 @@ from ..config import Config
 from ..shorts import store as S
 from ..shorts import worker as W
 from ..shorts import youtube as YT
+from .lazy import lazy_tabs
 
 _STATUS_ICON = {S.PENDING: "⏳", S.DOWNLOADING: "⏬", S.DONE: "✅", S.SKIPPED: "⏭",
                 S.FAILED: "✗", S.CANCELLED: "🚫"}
@@ -111,7 +112,7 @@ def _status_panel(dd: str) -> None:
     m1.metric("Downloaded this run", c[S.DONE])
     m2.metric("Still to go", left if not to_list else f"{left}+")
     m3.metric("Failed", c[S.FAILED])
-    m4.metric("All-time downloads", len(S.load_history(dd)["items"]))
+    m4.metric("All-time downloads", len(S.history_items(dd)))
 
     if live and not paused:
         p = W.read_progress(dd)
@@ -163,14 +164,6 @@ def _status_panel(dd: str) -> None:
 
 # --- tabs -------------------------------------------------------------------- #
 
-def _on_count(dd: str, key: str, widget: str) -> None:
-    S.update_channel(dd, key, count=int(st.session_state[widget]))
-
-
-def _on_toggle(dd: str, key: str, widget: str) -> None:
-    S.update_channel(dd, key, enabled=bool(st.session_state[widget]))
-
-
 def _tab_channels(dd: str) -> None:
     st_ = S.settings(dd)
     data = S.load_channels(dd)
@@ -199,6 +192,7 @@ def _tab_channels(dd: str) -> None:
                 _flash("warning", p)
             if added:
                 st.session_state.pop("sh_add_text", None)
+                _reset_table(S.MAIN)
             st.rerun()
 
     if not chans:
@@ -238,6 +232,12 @@ def _on_include_wishlist(dd: str) -> None:
 
 def _channel_section(dd: str, chans: list[dict], taken: dict, which: str, title: str,
                      caption: str = "") -> None:
+    """One list of channels as ONE table — switch and count editable in place.
+
+    It used to be a bordered row per channel with its own switch, number box
+    and buttons: with a few dozen channels that is hundreds of widgets for the
+    browser to draw, and opening this tab took over a second. A table is one.
+    """
     if not chans:
         return
     enabled = [c for c in chans if c.get("enabled", True)]
@@ -248,57 +248,114 @@ def _channel_section(dd: str, chans: list[dict], taken: dict, which: str, title:
     if h2.button("Turn all on", width="stretch", disabled=len(enabled) == len(chans),
                  key=f"sh_allon_{which}"):
         S.set_all_enabled(dd, True, which)
+        _reset_table(which)
         st.rerun()
     if h3.button("Turn all off", width="stretch", disabled=not enabled,
                  key=f"sh_alloff_{which}"):
         S.set_all_enabled(dd, False, which)
+        _reset_table(which)
         st.rerun()
 
-    for i, c in enumerate(chans, 1):
-        key = c["key"]
-        with st.container(border=True):
-            r1, r2, r3, r4 = st.columns([0.7, 4, 1.6, 0.8])
-            tw = f"sh_on_{key}"
-            on = bool(c.get("enabled", True))
-            r1.toggle(f"Include {key}", value=on, key=tw, label_visibility="collapsed",
-                      on_change=_on_toggle, args=(dd, key, tw))
-            name = c.get("name") or key
-            facts = []
-            if which == S.WISHLIST:
-                if c.get("subscribers"):
-                    facts.append(f"{_short_count(c['subscribers'])} subscribers")
-                if c.get("country"):
-                    facts.append(c["country"])
-                if c.get("language"):
-                    facts.append(c["language"])
-            state = ("" if on else " · <span style='color:#b45309'>switched off — "
-                     "skipped, but its count is kept</span>")
-            r2.markdown(f"**{i}. {name}**  \n[{key}]({c['url']}/shorts) · "
-                        f"{taken.get(key, 0)} downloaded so far"
-                        + ("".join(f" · {f}" for f in facts)) + state,
-                        unsafe_allow_html=True)
-            cw = f"sh_cnt_{key}"
-            r3.number_input("Per run", min_value=1, max_value=500,
-                            value=int(c.get("count", 10)), key=cw,
-                            on_change=_on_count, args=(dd, key, cw),
-                            help="How many NEW Shorts to take from this channel each "
-                                 "time you download. Saved the moment you change it.")
-            confirm = f"sh_rm_{key}"
-            if st.session_state.get(confirm):
-                if r4.button("Sure?", key=f"sh_rm_yes_{key}", type="primary",
-                             help="Removes the channel. Its downloads and history stay."):
-                    S.remove_channel(dd, key)
-                    st.session_state.pop(confirm, None)
-                    st.rerun()
-            elif r4.button("🗑", key=f"sh_rm_{key}_btn", help="Remove this channel"):
-                st.session_state[confirm] = True
+    wish = which == S.WISHLIST
+    rows = []
+    for c in chans:
+        row = {"On": bool(c.get("enabled", True)),
+               "Channel": c.get("name") or c["key"],
+               "Shorts per run": int(c.get("count", 10)),
+               "Downloaded so far": taken.get(c["key"], 0)}
+        if wish:
+            row.update({"Subscribers": _short_count(c["subscribers"]) if c.get("subscribers")
+                        else "", "Country": c.get("country") or "",
+                        "Language": c.get("language") or ""})
+        row["Link"] = f"{c['url']}/shorts"
+        rows.append(row)
+    tkey = _table_key(which)
+    st.data_editor(
+        rows, key=tkey, hide_index=True, width="stretch", num_rows="fixed",
+        height=min(560, 38 + 35 * len(rows)),
+        disabled=[k for k in rows[0] if k not in ("On", "Shorts per run")],
+        column_config={
+            "On": st.column_config.CheckboxColumn(
+                "On", width="small", help="Switched off = skipped, but its count is kept."),
+            "Shorts per run": st.column_config.NumberColumn(
+                "Shorts per run", min_value=1, max_value=500, step=1, format="%d",
+                help="How many NEW Shorts to take from this channel each time you "
+                     "download. Saved the moment you change it."),
+            "Link": st.column_config.LinkColumn("Link", display_text="open"),
+        },
+        on_change=_on_table_edit, args=(dd, [c["key"] for c in chans], tkey))
+    st.caption("Tick **On** or change **Shorts per run** right in the table — saved "
+               "the moment you change it.")
+
+    names = {f"{c.get('name') or c['key']} ({c['key']})": c["key"] for c in chans}
+    a1, a2 = st.columns([3, 2])
+    picked = a1.multiselect("Remove" + (" or move" if wish else "") + " channels",
+                            list(names), key=f"sh_pick_{which}",
+                            placeholder="Pick channels…", label_visibility="collapsed")
+    keys = [names[n] for n in picked]
+    confirm = f"sh_rm_confirm_{which}"
+    with a2:
+        b1, b2 = st.columns(2)
+        if st.session_state.get(confirm) and keys:
+            if b1.button(f"Sure? Remove {len(keys)}", type="primary", width="stretch",
+                         key=f"sh_rm_yes_{which}",
+                         help="Removes the channels. Their downloads and history stay."):
+                for k in keys:
+                    S.remove_channel(dd, k)
+                _after_list_change(which, confirm)
                 st.rerun()
-            if which == S.WISHLIST and r4.button("➕", key=f"sh_promote_{key}",
-                                                 help="Move to your channels — downloaded "
-                                                      "every time, not only with the box ticked"):
-                S.update_channel(dd, key, list=S.MAIN)
-                _flash("success", f"{name} moved to your channels.")
-                st.rerun()
+        elif b1.button("🗑 Remove", width="stretch", disabled=not keys,
+                       key=f"sh_rm_{which}", help="Asks once more before removing."):
+            st.session_state[confirm] = True
+            st.rerun()
+        if wish and b2.button("➕ To your channels", width="stretch", disabled=not keys,
+                              key=f"sh_promote_{which}",
+                              help="Downloaded every time, not only with the box ticked."):
+            for k in keys:
+                S.update_channel(dd, k, list=S.MAIN)
+            _flash("success", f"Moved {len(keys)} channel(s) to your channels.")
+            _after_list_change(which, confirm)
+            st.rerun()
+
+
+def _table_key(which: str) -> str:
+    return f"sh_tbl_{which}_{st.session_state.get(f'sh_tbl_ver_{which}', 0)}"
+
+
+def _reset_table(which: str) -> None:
+    """Start the table afresh after its rows changed outside it (removed, moved,
+    all switched) — its pending edits refer to rows by position."""
+    st.session_state[f"sh_tbl_ver_{which}"] = st.session_state.get(f"sh_tbl_ver_{which}", 0) + 1
+
+
+def _after_list_change(which: str, confirm: str) -> None:
+    st.session_state.pop(confirm, None)
+    st.session_state.pop(f"sh_pick_{which}", None)
+    for w in (S.MAIN, S.WISHLIST):          # a move changes both lists
+        _reset_table(w)
+
+
+def apply_channel_edits(dd: str, keys: list[str], edited_rows: dict) -> int:
+    """Save what was changed in a channel table: ``{row: {column: value}}``.
+    Returns how many channels changed."""
+    n = 0
+    for row, changes in (edited_rows or {}).items():
+        try:
+            key = keys[int(row)]
+        except (IndexError, ValueError):
+            continue
+        fields = {}
+        if "On" in changes:
+            fields["enabled"] = bool(changes["On"])
+        if changes.get("Shorts per run") is not None:
+            fields["count"] = max(1, min(500, int(changes["Shorts per run"])))
+        if fields and S.update_channel(dd, key, **fields) is not None:
+            n += 1
+    return n
+
+
+def _on_table_edit(dd: str, keys: list[str], tkey: str) -> None:
+    apply_channel_edits(dd, keys, (st.session_state.get(tkey) or {}).get("edited_rows"))
 
 
 def _short_count(n) -> str:
@@ -674,7 +731,7 @@ def _redownload_panel(dd: str, items: list[dict]) -> None:
 
 
 def _tab_history(dd: str, root: str) -> None:
-    items = sorted(S.load_history(dd)["items"].values(),
+    items = sorted(S.history_items(dd).values(),
                    key=lambda r: r.get("downloaded_at") or 0, reverse=True)
     total_bytes = sum(int(r.get("filesize") or 0) for r in items)
     c1, c2, c3 = st.columns(3)
@@ -693,7 +750,7 @@ def _tab_history(dd: str, root: str) -> None:
              if (pick == "All channels" or (r.get("channel_name") or "-") == pick)
              and (not q or q in (r.get("title", "") + " " + " ".join(r.get("hashtags") or [])
                                  + " " + (r.get("channel_name") or "")).lower())]
-    rows = [{"#": r.get("number") or "",
+    rows = [{"#": r.get("number") or None,
              "Downloaded": time.strftime("%Y-%m-%d %H:%M",
                                          time.localtime(r.get("downloaded_at") or 0)),
              "Channel": r.get("channel_name") or "-",
@@ -707,17 +764,22 @@ def _tab_history(dd: str, root: str) -> None:
 
     _redownload_panel(dd, items)
 
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["downloaded", "channel", "title", "description", "hashtags", "width",
-                "height", "bytes", "file", "url"])
-    for r in shown:
-        w.writerow([time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r.get("downloaded_at") or 0)),
-                    r.get("channel_name"), r.get("title"), r.get("description"),
-                    " ".join(r.get("hashtags") or []), r.get("width"), r.get("height"),
-                    r.get("filesize"), r.get("file"), r.get("url")])
+    def export_csv(rows=tuple(shown)) -> bytes:
+        # Built when the button is clicked, not on every rerun of the page.
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["downloaded", "channel", "title", "description", "hashtags", "width",
+                    "height", "bytes", "file", "url"])
+        for r in rows:
+            w.writerow([time.strftime("%Y-%m-%d %H:%M:%S",
+                                      time.localtime(r.get("downloaded_at") or 0)),
+                        r.get("channel_name"), r.get("title"), r.get("description"),
+                        " ".join(r.get("hashtags") or []), r.get("width"), r.get("height"),
+                        r.get("filesize"), r.get("file"), r.get("url")])
+        return buf.getvalue().encode("utf-8-sig")
+
     d1, d2 = st.columns(2)
-    d1.download_button("⬇️ Export this list (CSV)", buf.getvalue().encode("utf-8-sig"),
+    d1.download_button("⬇️ Export this list (CSV)", export_csv,
                        file_name="shorts_history.csv", mime="text/csv", width="stretch")
     if d2.button("📂 Open the Shorts folder", width="stretch", key="sh_hist_open"):
         ok, err = _open_folder(root)
@@ -891,6 +953,23 @@ def _tab_settings(dd: str, cfg: Config) -> None:
                 st.caption(f"Couldn't read the log: {e}")
 
 
+_js_seen: tuple[float, bool] = (0.0, False)
+
+
+def _has_js_runtime() -> bool:
+    """Is Deno (or Node/Bun) installed? Looking means searching every folder on
+    PATH, which on Windows is hundreds of file checks — so once found it is
+    remembered, and a "no" is looked at again every 30 seconds (so the warning
+    goes away soon after update.bat installs Deno, without a restart)."""
+    global _js_seen
+    from ..ingest.ingest import find_js_runtime
+    at, ok = _js_seen
+    if ok or time.time() - at < 30:
+        return ok
+    _js_seen = (time.time(), find_js_runtime() is not None)
+    return _js_seen[1]
+
+
 def render(run_every: str = "3s") -> None:
     cfg = Config.load()
     dd = S.data_dir(cfg)
@@ -900,8 +979,7 @@ def render(run_every: str = "3s") -> None:
     st.caption("Save channels, give each one its own count, and download that many of "
                "their newest Shorts at the best quality YouTube offers — never the same "
                "Short twice, each with its title, description and hashtags saved beside it.")
-    from ..ingest.ingest import find_js_runtime
-    if find_js_runtime() is None:
+    if not _has_js_runtime():
         st.warning("⚠️ **Deno is not installed**, so YouTube may hide the best-quality "
                    "version of a Short (it shows the full list only to programs that can "
                    "run its JavaScript). Run **update.bat** once — it installs Deno — then "
@@ -910,17 +988,27 @@ def render(run_every: str = "3s") -> None:
     _show_flash()
     st.fragment(run_every=run_every)(_status_panel)(dd)
 
-    t1, t0, t2, t3, t4, t5 = st.tabs(["📺 Channels", "🔎 Find channels", "🔗 Paste links",
-                                      "⏬ This run", "🕘 History", "⚙️ Settings"])
-    with t1:
-        _tab_channels(dd)
-    with t0:
-        _tab_find(dd, run_every)
-    with t2:
-        _tab_links(dd)
-    with t3:
-        st.fragment(run_every=run_every)(_tab_downloads)(dd)
-    with t4:
-        _tab_history(dd, root)
-    with t5:
-        _tab_settings(dd, cfg)
+    # Only the open tab is built. Streamlit otherwise runs every tab on every
+    # click — all channel rows, the whole download history, past searches —
+    # and switching between them is what dragged.
+    t1, t0, t2, t3, t4, t5 = lazy_tabs(["📺 Channels", "🔎 Find channels", "🔗 Paste links",
+                                        "⏬ This run", "🕘 History", "⚙️ Settings"],
+                                       key="sh_tab")
+    if t1.open:
+        with t1:
+            _tab_channels(dd)
+    if t0.open:
+        with t0:
+            _tab_find(dd, run_every)
+    if t2.open:
+        with t2:
+            _tab_links(dd)
+    if t3.open:
+        with t3:
+            st.fragment(run_every=run_every)(_tab_downloads)(dd)
+    if t4.open:
+        with t4:
+            _tab_history(dd, root)
+    if t5.open:
+        with t5:
+            _tab_settings(dd, cfg)

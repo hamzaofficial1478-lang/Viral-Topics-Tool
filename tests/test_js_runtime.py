@@ -68,7 +68,9 @@ def test_quality_failure_points_at_the_missing_runtime(no_path):
 def test_shorts_page_warns_when_deno_is_missing(no_path, monkeypatch, tmp_path):
     from streamlit.testing.v1 import AppTest
     from shortforge.shorts import store as S
+    from shortforge.ui import shorts_tab as T
     monkeypatch.setattr(S, "data_dir", lambda cfg=None: str(tmp_path / "data"))
+    monkeypatch.setattr(T, "_js_seen", (0.0, False))      # forget an earlier answer
     at = AppTest.from_string(
         "from shortforge.ui import shorts_tab\nshorts_tab.render(run_every=None)",
         default_timeout=30).run()

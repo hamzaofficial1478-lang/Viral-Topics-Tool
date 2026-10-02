@@ -350,6 +350,33 @@ def load_history(dd: str) -> dict:
     return data
 
 
+_history_cache: dict[str, tuple[tuple, dict]] = {}
+
+
+def history_items(dd: str) -> dict:
+    """``{video_id: record}`` — READ-ONLY, parsed once per change of the file.
+
+    The history holds every Short ever downloaded with its description and
+    hashtags, so it grows to megabytes. The dashboard read it several times on
+    every click and again every few seconds for the live status, which made
+    switching tabs drag. Callers must not modify what this returns; changes
+    go through ``record_download`` / ``forget``.
+    """
+    path = _path(dd, HISTORY_FILE)
+    try:
+        st_ = os.stat(path)
+        sig = (st_.st_mtime_ns, st_.st_size)
+    except OSError:
+        sig = None
+    hit = _history_cache.get(path)
+    if sig is not None and hit and hit[0] == sig:
+        return hit[1]
+    items = load_history(dd)["items"]
+    if sig is not None:
+        _history_cache[path] = (sig, items)
+    return items
+
+
 def record_download(dd: str, rec: dict) -> None:
     def fn(d):
         d["items"][rec["id"]] = rec
@@ -384,7 +411,7 @@ def ids_on_disk(output_root: str) -> set[str]:
 
 
 def known_ids(dd: str, output_root: str | None = None) -> set[str]:
-    ids = set(load_history(dd)["items"])
+    ids = set(load_history(dd)["items"])    # always fresh: this is the no-repeat check
     if output_root:
         ids |= ids_on_disk(output_root)
     return ids
@@ -392,7 +419,7 @@ def known_ids(dd: str, output_root: str | None = None) -> set[str]:
 
 def taken_by_channel(dd: str) -> dict[str, int]:
     out: dict[str, int] = {}
-    for rec in load_history(dd)["items"].values():
+    for rec in history_items(dd).values():
         k = rec.get("channel_key") or ""
         if k:
             out[k] = out.get(k, 0) + 1

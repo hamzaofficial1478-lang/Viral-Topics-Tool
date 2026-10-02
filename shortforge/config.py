@@ -307,24 +307,40 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+# Parsed settings, keyed by file and its (mtime, size): the dashboard loads the
+# config several times on every click, and parsing the YAML is the slow part.
+# An edited file has a new mtime, so a change is always picked up.
+_parsed: dict[str, tuple[tuple, dict]] = {}
+
+
+def _merged_settings(cand: str) -> dict:
+    st_ = os.stat(cand)
+    sig = (st_.st_mtime_ns, st_.st_size)
+    hit = _parsed.get(cand)
+    if hit and hit[0] == sig:
+        return hit[1]
+    with open(cand, "r", encoding="utf-8") as f:
+        loaded = yaml.safe_load(f) or {}
+    merged = _deep_merge(DEFAULTS, loaded)
+    _parsed[cand] = (sig, merged)
+    return merged
+
+
 class Config:
     def __init__(self, data: dict[str, Any]):
         self._data = data
 
     @classmethod
     def load(cls, path: str | None = None) -> "Config":
-        data = copy.deepcopy(DEFAULTS)
         candidates = [path] if path else [
             os.path.join("config", "settings.yaml"),
             os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml"),
         ]
         for cand in candidates:
             if cand and os.path.isfile(cand):
-                with open(cand, "r", encoding="utf-8") as f:
-                    loaded = yaml.safe_load(f) or {}
-                data = _deep_merge(data, loaded)
-                break
-        return cls(data)
+                # a private copy: callers change their Config with set()/override()
+                return cls(copy.deepcopy(_merged_settings(os.path.abspath(cand))))
+        return cls(copy.deepcopy(DEFAULTS))
 
     def get(self, dotted: str, default: Any = None) -> Any:
         node: Any = self._data

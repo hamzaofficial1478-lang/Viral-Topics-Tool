@@ -251,7 +251,7 @@ def _resource_footer() -> None:
         f"<b>{s.get('cores') or '?'}</b> cores",
         f"disk <b>{R.human_bytes(s.get('disk_free'))}</b> free",
     ]
-    gpu = R.gpu_name()
+    gpu = R.gpu_name_nowait()              # never waits: asking Windows takes ~1s
     if gpu and gpu != "not detected":
         parts.append(f"GPU <b>{gpu[:28]}</b>")
     speed = R.render_speed(work_dir)
@@ -521,15 +521,38 @@ def _copyable(label: str, text: str, key: str) -> None:
     st.code(text, language=None)
 
 
-def _render_clip(c: dict, key: str) -> None:
+def _file_reader(path: str):
+    """Download-button data that is read only when the button is CLICKED.
+
+    Passing the bytes read the whole clip from disk on every rerun of the page,
+    for every clip shown — with a few dozen past runs that was gigabytes per
+    click on the History screen.
+    """
+    def read() -> bytes:
+        with open(path, "rb") as f:
+            return f.read()
+    return read
+
+
+def _render_clip(c: dict, key: str, *, video_on_demand: bool = False) -> None:
+    """One clip: player, download, thumbnail, and its copy-ready text.
+
+    ``video_on_demand``: show a ▶ Play button instead of the player. Streamlit
+    reads and hashes the WHOLE video file every time a page with ``st.video``
+    reruns, so a screen of old runs only loads the clip you ask to watch.
+    """
     vc, ic = st.columns([2, 3])
     fp = c.get("file_path", "")
     with vc:
         if fp and os.path.isfile(fp):
-            st.video(fp)
-            with open(fp, "rb") as f:
-                st.download_button("⬇ Download clip", f.read(), os.path.basename(fp),
-                                   mime="video/mp4", key=f"dl_{key}", width="stretch")
+            play_key = f"play_{key}"
+            if not video_on_demand or st.session_state.get(play_key):
+                st.video(fp)
+            elif st.button("▶ Play", key=f"{play_key}_btn", width="stretch"):
+                st.session_state[play_key] = True
+                st.rerun()
+            st.download_button("⬇ Download clip", _file_reader(fp), os.path.basename(fp),
+                               mime="video/mp4", key=f"dl_{key}", width="stretch")
         else:
             st.warning("Clip file not found on disk.")
         thumb = c.get("thumbnail")
@@ -554,9 +577,8 @@ def _render_clip(c: dict, key: str) -> None:
             _copyable("Hashtags", " ".join(md["hashtags"]), f"h_{key}")
         pubf = c.get("publish_file")
         if pubf and os.path.isfile(pubf):
-            with open(pubf, "rb") as f:
-                st.download_button("⬇ title/desc/tags (.txt)", f.read(),
-                                   os.path.basename(pubf), key=f"sc_{key}")
+            st.download_button("⬇ title/desc/tags (.txt)", _file_reader(pubf),
+                               os.path.basename(pubf), key=f"sc_{key}")
 
 
 def _render_timings(manifest: dict) -> None:
@@ -587,7 +609,7 @@ def _render_timings(manifest: dict) -> None:
 
 
 def _render_results(manifest: dict, out_dir: str | None = None,
-                    key_prefix: str = "live") -> None:
+                    key_prefix: str = "live", *, video_on_demand: bool = False) -> None:
     st.success(manifest.get("summary", "Done"))
     _render_qc(manifest)
     _render_timings(manifest)
@@ -601,7 +623,7 @@ def _render_results(manifest: dict, out_dir: str | None = None,
     st.markdown(f"### {len(clips)} clip(s)")
     for i, c in enumerate(clips):
         st.divider()
-        _render_clip(c, f"{key_prefix}_{i}")
+        _render_clip(c, f"{key_prefix}_{i}", video_on_demand=video_on_demand)
 
 
 def _worker_is_live(work_dir: str, *, freshness_s: float = 30.0) -> bool:
@@ -1035,6 +1057,29 @@ def _render_chat() -> None:
         st.rerun()
 
 
+_manifest_cache: dict[str, tuple[tuple, dict | None]] = {}
+
+
+def _read_manifest(path: str) -> dict | None:
+    """A run's manifest, parsed once per change of the file (manifests carry
+    every ffmpeg call's timing, so they are not small)."""
+    try:
+        st_ = os.stat(path)
+    except OSError:
+        return None
+    sig = (st_.st_mtime_ns, st_.st_size)
+    hit = _manifest_cache.get(path)
+    if hit and hit[0] == sig:
+        return hit[1]
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = None
+    _manifest_cache[path] = (sig, data)
+    return data
+
+
 def _render_history() -> None:
     st.header("📚 History")
     st.caption("Every finished run and its clips — review earlier work without hunting "
@@ -1048,22 +1093,25 @@ def _render_history() -> None:
         set(glob.glob(os.path.join(out_dir, _MANIFEST_GLOB))
             + glob.glob(os.path.join(out_dir, "**", _MANIFEST_GLOB), recursive=True)),
         key=os.path.getmtime, reverse=True)
-    if not manifests:
+    runs = []
+    for mp in manifests:
+        manifest = _read_manifest(mp)
+        if manifest is None:
+            continue
+        ts = datetime.datetime.fromtimestamp(os.path.getmtime(mp)).strftime("%Y-%m-%d %H:%M")
+        title = (manifest.get("source") or {}).get("title") or os.path.basename(mp)
+        runs.append((mp, manifest, f"{ts}  ·  {title}  ·  {len(manifest.get('clips', []))} clip(s)"))
+    if not runs:
         st.info("No runs yet. Finished jobs will appear here.")
         return
-    for mp in manifests:
-        try:
-            with open(mp, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        src = manifest.get("source", {})
-        ts = datetime.datetime.fromtimestamp(os.path.getmtime(mp)).strftime("%Y-%m-%d %H:%M")
-        title = src.get("title") or os.path.basename(mp)
-        n = len(manifest.get("clips", []))
-        with st.expander(f"{ts}  ·  {title}  ·  {n} clip(s)", expanded=False):
-            key = "hist_" + os.path.basename(mp).replace(".", "_")
-            _render_results(manifest, out_dir=os.path.dirname(mp), key_prefix=key)
+    # ONE run on screen at a time. This screen used to draw every run ever made,
+    # each with a video player and a download button per clip — and both read
+    # the whole clip file on every click. Pick a run; the newest is shown first.
+    pick = st.selectbox(f"Run ({len(runs)} so far, newest first)", range(len(runs)),
+                        format_func=lambda i: runs[i][2], key="hist_pick")
+    mp, manifest, _label = runs[pick or 0]
+    key = "hist_" + os.path.basename(mp).replace(".", "_")
+    _render_results(manifest, out_dir=os.path.dirname(mp), key_prefix=key, video_on_demand=True)
 
 
 # --------------------------------------------------------------------------- #

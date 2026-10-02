@@ -36,10 +36,14 @@ if ERRORLEVEL 1 (
   pause
   exit /b 1
 )
-call "venv\Scripts\activate.bat"
+REM Run the venv's own python.exe by full path, not activate.bat + a bare
+REM "python": activate.bat has the folder's ORIGINAL location written into
+REM it, so once the folder was moved (out of OneDrive, say) "python" quietly
+REM became some other Python without any of ShortForge's packages.
+set "PY=%CD%\venv\Scripts\python.exe"
 
 :loop
-python cli.py listen --owner-confirmed
+"%PY%" cli.py listen --owner-confirmed
 if %ERRORLEVEL% EQU 0 goto :done
 if %ERRORLEVEL% EQU 2 goto :notconfigured
 echo Listener stopped unexpectedly - restarting in 30s. Close this window to stop.

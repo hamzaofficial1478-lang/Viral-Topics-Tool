@@ -522,9 +522,10 @@ def _place(src: str, final: str) -> None:
     keeps its number and name). Copied to a temporary name first, so an
     interrupted move can never leave half a video under the real name."""
     import shutil
+    from ..utils import replace_with_retry
     tmp = final + ".incoming"
     shutil.move(src, tmp)
-    os.replace(tmp, final)
+    replace_with_retry(tmp, final)      # the old copy may be open in a player
 
 
 def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dict:
@@ -661,6 +662,14 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
     if replace.get("number") and old_file:
         dest = os.path.dirname(old_file)
         number = int(replace["number"])
+        if not os.path.isdir(dest):
+            # The earlier copy's folder is gone — the program folder was moved,
+            # or the videos were. Recreating the old path would bring back the
+            # folder that was moved away (into OneDrive, say); save into the
+            # current Shorts folder instead, under the same number.
+            log.warning("shorts: %s — its earlier folder no longer exists (%s); saving "
+                        "into the current Shorts folder", item["id"], dest)
+            dest = destination(cfg, st, item)
     else:
         dest = destination(cfg, st, item)
         number = 0

@@ -382,12 +382,17 @@ def cmd_ui(args: argparse.Namespace) -> int:
     worker is still running and rendering.
     """
     import subprocess
-    import shutil
     from shortforge import lifecycle
 
     app = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
-    if shutil.which("streamlit") is None:
-        log.error("Streamlit is not installed. Run: pip install streamlit")
+    # Through THIS Python, not the `streamlit` program on PATH: that program has
+    # the venv's original location written into it, so after the folder is
+    # moved (out of OneDrive, say) it points at nothing — or, worse, PATH finds
+    # a different Python's copy without ShortForge's packages.
+    import importlib.util
+    if importlib.util.find_spec("streamlit") is None:
+        log.error("Streamlit is not installed. Run setup.bat (or: python -m pip install "
+                  "streamlit)")
         return 1
 
     work_dir = Config.load(getattr(args, "config", None)).get("paths.work_dir", ".shortforge")
@@ -397,7 +402,7 @@ def cmd_ui(args: argparse.Namespace) -> int:
         include_queue_detail=False)
 
     log.info("launching ShortForge UI (Ctrl+C to stop) …")
-    return subprocess.call(["streamlit", "run", app])
+    return subprocess.call([sys.executable, "-m", "streamlit", "run", app])
 
 
 def _fmt_hms(seconds: float) -> str:
@@ -1578,7 +1583,8 @@ def build_parser() -> argparse.ArgumentParser:
     shd.add_argument("--country", help="Country code, e.g. PK, AE, US — or 'same' (as --like)")
     shd.add_argument("--language", help="Language code, e.g. ur, hi, en, ar — or 'same'")
     shd.add_argument("--min-subs", type=int, default=0)
-    shd.add_argument("--min-shorts", type=int, default=3)
+    shd.add_argument("--min-shorts", type=int, default=3,
+                     help="leave out channels with fewer Shorts than this (any number)")
     shd.add_argument("--no-ai", action="store_true", help="Keyword matching only")
     shd.add_argument("--strict-country", action="store_true",
                      help="Drop channels that don't list their country")

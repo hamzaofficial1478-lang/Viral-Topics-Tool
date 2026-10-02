@@ -458,9 +458,24 @@ def next_number(dd: str, folder: str) -> int:
     already in the folder. Either alone would do; both means that losing the
     counter file, or dropping extra numbered files in, still never re-uses a
     number. Deleting videos never makes the count go back down."""
-    saved = int(_load(_path(dd, COUNTERS_FILE), {"folders": {}})
-                .get("folders", {}).get(_folder_key(folder), 0) or 0)
-    return max(saved, highest_number_in(folder)) + 1
+    folders = _load(_path(dd, COUNTERS_FILE), {"folders": {}}).get("folders", {})
+    return max(_saved_number(folders, folder), highest_number_in(folder)) + 1
+
+
+def _tail(key: str, n: int = 2) -> tuple:
+    return tuple(re.split(r"[\\/]+", key.rstrip("\\/"))[-n:])
+
+
+def _saved_number(folders: dict, folder: str) -> int:
+    """The saved counter for ``folder``. When the program folder has been moved
+    (out of OneDrive, say) the counters are still filed under the OLD path, and
+    a channel whose uploaded videos were moved out would start again at 1 — so
+    a folder with the same last two names (``shorts/<channel>``) counts too."""
+    key = _folder_key(folder)
+    if key in folders:
+        return int(folders[key] or 0)
+    tail = _tail(key)
+    return max((int(v or 0) for k, v in folders.items() if _tail(k) == tail), default=0)
 
 
 def commit_number(dd: str, folder: str, number: int) -> None:

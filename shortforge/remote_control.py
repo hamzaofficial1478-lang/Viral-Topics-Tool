@@ -75,14 +75,21 @@ def _trim_chat_log(path: str, keep: int = _CHAT_LOG_MAX) -> None:
     # file, and a shared "<path>.tmp" lets one rename the other's partial write
     # into place.
     import tempfile
+    from .utils import replace_with_retry
+    tmp = None
     try:
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".",
                                    prefix=os.path.basename(path) + ".", suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.writelines(tail)
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path, timeout=2.0)
     except OSError:
-        pass
+        # trimming is housekeeping — try again next time; never leave the temp file
+        if tmp and os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def read_chat_log(work_dir: str = ".shortforge", limit: int = 100) -> list[dict]:

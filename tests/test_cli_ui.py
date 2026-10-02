@@ -14,7 +14,6 @@ from shortforge import lifecycle as L
 
 
 def test_cmd_ui_arms_its_own_exit_channel(monkeypatch, tmp_path):
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/streamlit")
     monkeypatch.setattr("subprocess.call", lambda *a, **k: 0)
 
     calls = []
@@ -36,5 +35,34 @@ def test_cmd_ui_arms_its_own_exit_channel(monkeypatch, tmp_path):
 
 
 def test_cmd_ui_refuses_cleanly_when_streamlit_is_missing(monkeypatch):
-    monkeypatch.setattr("shutil.which", lambda name: None)
+    import importlib.util
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec",
+                        lambda name, *a: None if name == "streamlit" else real(name, *a))
     assert cli.cmd_ui(cli.argparse.Namespace()) == 1
+
+
+def test_cmd_ui_runs_streamlit_through_this_python(monkeypatch, tmp_path):
+    """Not the `streamlit` program on PATH: that one has the venv's original
+    location written into it and breaks once the folder is moved."""
+    import sys
+    seen = []
+    monkeypatch.setattr("subprocess.call", lambda cmd, **k: seen.append(cmd) or 0)
+    monkeypatch.setattr(L, "install_exit_notice", lambda *a, **k: None)
+    monkeypatch.chdir(tmp_path)
+    assert cli.cmd_ui(cli.argparse.Namespace()) == 0
+    assert seen[0][:4] == [sys.executable, "-m", "streamlit", "run"]
+
+
+def test_launchers_survive_the_folder_being_moved():
+    """activate.bat + a bare `python` found some OTHER Python after the folder
+    was moved; the launchers call the venv's python.exe by its full path."""
+    import os
+    import re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("start_ui.bat", "start_all.bat", "start_listen.bat", "run_queue.bat"):
+        text = open(os.path.join(root, name), encoding="ascii").read()
+        assert 'call "venv\\Scripts\\activate.bat"' not in text, name
+        assert not re.search(r"(?im)^\s*python\s", text), name
+        assert not re.search(r'cmd /c "python\b', text), name
+        assert '"%PY%"' in text, name

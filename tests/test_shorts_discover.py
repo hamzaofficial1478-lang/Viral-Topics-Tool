@@ -407,3 +407,56 @@ def test_roman_script_channels_teach_words_for_an_urdu_search():
     words = " ".join(qs).split()
     assert "biryani" in words and "بریانی" in words
     assert "easy" not in words
+
+
+# --- minimum Shorts: any number, counted only when it matters ------------------- #
+
+def _listing_with_counts(counts: dict, seen: list):
+    """A fake Shorts tab whose length is the channel's real Shorts count."""
+    def listing(url, cfg, limit, lang=""):
+        cid = url.split("/channel/")[1].split("/")[0]
+        c = CATALOGUE[cid]
+        n = counts.get(cid, 6)
+        seen.append((cid, limit))
+        return {"channel": c["name"], "uploader_id": c["handle"], "channel_id": c["id"],
+                "channel_follower_count": c["subs"],
+                "entries": [{"id": f"v{i}", "title": c["titles"][i % len(c["titles"])],
+                             "view_count": 1000} for i in range(min(n, limit))]}
+    return listing
+
+
+def test_minimum_shorts_above_15_is_counted_and_enforced(fake_yt, monkeypatch):
+    """The operator asked for no 1–15 limit. Above 15 a channel's Shorts are
+    counted — paging through its Shorts tab — but only for channels that passed
+    every other check, and never further than the minimum."""
+    dd, _ = fake_yt
+    seen = []
+    monkeypatch.setattr(D, "_listing", _listing_with_counts(
+        {"UCpk1aaaaaaaaaaaaaaaaaaa": 500, "UCpk2aaaaaaaaaaaaaaaaaaa": 20}, seen))
+    job = _find(dd, language="ur", country="PK", count=5, min_shorts=40,
+                allow_unlisted_country=False)
+    assert _names(job) == ["Lahore Kitchen"]
+    assert job["results"][0]["shorts_seen"] == 40                  # "at least 40"
+    # Karachi Cooks (20) is counted and turned down; the rest have under 15
+    # Shorts in all, which the first look already shows — no counting needed
+    assert job["rejected"].get("too_few_shorts", 0) >= 1
+    deep = [(cid, lim) for cid, lim in seen if lim > D.SAMPLE]
+    assert sorted(cid for cid, _ in deep) == ["UCpk1aaaaaaaaaaaaaaaaaaa",
+                                              "UCpk2aaaaaaaaaaaaaaaaaaa"]
+    assert all(lim == 40 for _, lim in deep)
+
+
+def test_minimum_shorts_up_to_15_needs_no_extra_counting(fake_yt, monkeypatch):
+    dd, _ = fake_yt
+    seen = []
+    monkeypatch.setattr(D, "_listing", _listing_with_counts(
+        {"UCpk1aaaaaaaaaaaaaaaaaaa": 15, "UCpk2aaaaaaaaaaaaaaaaaaa": 4}, seen))
+    job = _find(dd, language="ur", country="PK", count=5, min_shorts=10,
+                allow_unlisted_country=False)
+    assert "Lahore Kitchen" in _names(job) and "Karachi Cooks" not in _names(job)
+    assert all(lim == D.SAMPLE for _, lim in seen)
+
+
+def test_any_minimum_is_accepted_when_the_search_is_created(tmp_path):
+    job = D.new_job(str(tmp_path), {"mode": "describe", "prompt": "cooking", "min_shorts": 750})
+    assert job["params"]["min_shorts"] == 750

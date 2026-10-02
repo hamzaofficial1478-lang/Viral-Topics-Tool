@@ -137,6 +137,30 @@ def _timeout_for(cmd: list[str]) -> float:
     return _DEFAULT_TIMEOUT
 
 
+def replace_with_retry(src: str, dst: str, *, timeout: float = 10.0) -> None:
+    """``os.replace``, waiting out another program that has ``dst`` open.
+
+    Windows refuses to replace a file while anyone has it open — the dashboard
+    reading a progress file it polls every few seconds, OneDrive opening each
+    changed file to upload it, an antivirus scan — and says "Access is denied"
+    (WinError 5) or "being used by another process" (WinError 32). Those holds
+    last milliseconds, so the answer is to wait and try again, not to fail: a
+    channel search died on exactly this, a file the dashboard was reading.
+    """
+    delay, waited = 0.02, 0.0
+    while True:
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            # WinError 5 / 32 / 33 all arrive as PermissionError
+            if waited >= timeout:
+                raise
+            time.sleep(delay)
+            waited += delay
+            delay = min(delay * 2, 0.5)
+
+
 def write_json_atomic(path: str, data) -> None:
     """Write JSON so a reader never sees a half-written file — even when two
     writers land at the same moment.
@@ -161,7 +185,7 @@ def write_json_atomic(path: str, data) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
     except BaseException:
         try:
             os.remove(tmp)

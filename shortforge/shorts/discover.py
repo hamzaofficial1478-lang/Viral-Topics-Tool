@@ -68,7 +68,8 @@ this that with from your what when how why who which will just also into over mo
 """.split())
 
 REASONS = {
-    "no_shorts": "posts no (or too few) Shorts",
+    "no_shorts": "posts no Shorts",
+    "too_few_shorts": "fewer Shorts than your minimum",
     "too_small": "below your minimum subscribers",
     "wrong_language": "Shorts are in a different language",
     "unknown_language": "language couldn't be told from its titles",
@@ -161,6 +162,15 @@ def _hl_for(language: str) -> str:
     except Exception:  # noqa: BLE001 - moved in some yt-dlp version: skip the hint
         return ""
     return code if code in ok else ""
+
+
+SAMPLE = 15        # Shorts read per channel for its titles, language and views
+
+
+def count_shorts(channel_url: str, cfg: Config, at_least: int) -> int:
+    """How many Shorts the channel has, counting no further than ``at_least``."""
+    info = _listing(store.shorts_tab_url(channel_url), cfg, int(at_least))
+    return len([e for e in info.get("entries") or [] if e])
 
 
 def search_channels(query: str, cfg: Config, limit: int = 30, lang: str = "") -> list[dict]:
@@ -473,6 +483,9 @@ def save_job(dd: str, job: dict) -> None:
     write_json_atomic(job_path(dd, job["id"]), job)
 
 
+_FINAL = ("done", "failed", "cancelled")
+
+
 def list_jobs(dd: str) -> list[dict]:
     out = []
     for name in os.listdir(_dir(dd)):
@@ -584,7 +597,7 @@ class _Job:
                     self.job.setdefault("progress", {}).update(v)
                 else:
                     self.job[k] = v
-            save_job(self.dd, self.job)
+            self._save(final=self.job.get("status") in _FINAL)
 
     def reject(self, reason: str) -> None:
         with self.lock:
@@ -595,6 +608,22 @@ class _Job:
         log.info("discover: %s", text)
         with self.lock:
             self.job.setdefault("notes", []).append(text)
+            self._save()
+
+    def _save(self, final: bool = False) -> None:
+        """A progress save that can't get at the file (Windows: the dashboard
+        or OneDrive has it open for longer than the retry waits) is skipped —
+        the next save writes everything anyway. It used to end the whole
+        search with "Access is denied". The FINAL save must land, so it keeps
+        trying for longer and only then gives up."""
+        try:
+            save_job(self.dd, self.job)
+        except PermissionError as e:
+            if not final:
+                log.warning("discover: couldn't save progress just now (%s) — the next "
+                            "update will", e)
+                return
+            time.sleep(2)
             save_job(self.dd, self.job)
 
 
@@ -794,7 +823,7 @@ def _run(J: _Job, cfg: Config, stop) -> None:
 
     def check(c: dict) -> dict | None:
         try:
-            info = _listing(store.shorts_tab_url(c["url"]), cfg, 15)
+            info = _listing(store.shorts_tab_url(c["url"]), cfg, SAMPLE)
         except ShortForgeError as e:
             J.reject("no_shorts" if "no shorts" in str(e).lower() else "unreachable")
             return None
@@ -806,8 +835,11 @@ def _run(J: _Job, cfg: Config, stop) -> None:
         c["subscribers"] = info.get("channel_follower_count") or c.get("subscribers")
         c["name"] = info.get("channel") or c.get("name")
         c["handle"] = info.get("uploader_id") or c.get("handle")
-        if len(entries) < p["min_shorts"]:
+        if not entries:
             J.reject("no_shorts")
+            return None
+        if len(entries) < min(p["min_shorts"], SAMPLE):
+            J.reject("too_few_shorts")          # the whole tab is shorter than asked
             return None
         lang, conf = LG.detect(c["titles"] + [c.get("description", "")])
         c["language"], c["language_conf"] = lang, conf
@@ -839,6 +871,19 @@ def _run(J: _Job, cfg: Config, stop) -> None:
                 return None
             if about.get("description"):
                 c["description"] = about["description"]
+        if p["min_shorts"] > SAMPLE:
+            # Counting a channel's Shorts means paging through its whole Shorts
+            # tab, so it is done last — only for channels that passed everything
+            # else — and stops as soon as the minimum is reached.
+            try:
+                n = count_shorts(c["url"], cfg, p["min_shorts"])
+            except ShortForgeError:
+                J.reject("unreachable")
+                return None
+            c["shorts_seen"] = n
+            if n < p["min_shorts"]:
+                J.reject("too_few_shorts")
+                return None
         return c
 
     accepted: list[dict] = []

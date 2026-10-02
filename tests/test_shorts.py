@@ -504,3 +504,17 @@ def test_tidy_cleans_old_style_folders_and_touches_nothing_else(dd, tmp_path):
     assert h[ids[0]]["number"] == 1 and h[ids[0]]["file"].endswith("1 - Last One Is Unbelievable #shorts.mp4")
     out = folder
     assert S.next_number(dd, str(out)) == 4                       # new downloads continue
+
+
+def test_numbering_follows_the_program_folder_when_it_is_moved(dd, tmp_path):
+    """Counters are filed by folder path. After moving the program out of
+    OneDrive the path changes; with the uploaded videos moved out, only the
+    counter remembered 1-5 — so it must still be found, not start at 1 again."""
+    old = str(tmp_path / "OneDrive" / "viral-topics-tool" / "out" / "shorts" / "Chan")
+    new = str(tmp_path / "ShortForge" / "out" / "shorts" / "Chan")
+    other = str(tmp_path / "ShortForge" / "out" / "shorts" / "Another")
+    S.commit_number(dd, old, 5)
+    assert S.next_number(dd, new) == 6
+    assert S.next_number(dd, other) == 1                    # a different channel
+    S.commit_number(dd, new, 6)
+    assert S.next_number(dd, new) == 7

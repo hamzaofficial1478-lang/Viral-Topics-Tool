@@ -119,6 +119,14 @@ stashed automatically (git otherwise refuses the pull outright); nothing is
 discarded, and the script tells you how to restore them. The same id is shown
 in the dashboard footer and at the top of `python cli.py doctor`.
 
+**Moving the folder** (out of OneDrive, to another drive): close ShortForge,
+copy the whole folder to its new place, run `setup.bat` there once, and run
+`install_autostart.bat` again if you use autostart (its launcher remembers the
+old place). The launchers run the venv's Python by its full path, so the moved
+venv keeps working; Shorts numbering and re-downloads follow the new location.
+Keep the folder out of OneDrive if you can: OneDrive opens every file it
+syncs, which slows ShortForge down.
+
 **Start automatically at logon:** double-click **`install_autostart.bat`** and pick
 Everything mode (UI + ntfy remote control) or Queue mode (option 3 turns it off
 again). It needs no admin rights and works out its own paths — it drops a small

@@ -30,15 +30,19 @@ if ERRORLEVEL 1 (
   pause
   exit /b 1
 )
-call "venv\Scripts\activate.bat"
+REM Run the venv's own python.exe by full path, not activate.bat + a bare
+REM "python": activate.bat has the folder's ORIGINAL location written into
+REM it, so once the folder was moved (out of OneDrive, say) "python" quietly
+REM became some other Python without any of ShortForge's packages.
+set "PY=%CD%\venv\Scripts\python.exe"
 
 REM Dashboard in the background + open the browser at it.
-start "ShortForge UI" /min cmd /c "python cli.py ui"
+start "ShortForge UI" /min cmd /c ""%PY%" cli.py ui"
 start "" /b cmd /c "ping -n 6 127.0.0.1 >nul & start http://localhost:8501"
 
 REM ntfy listener in THIS window (restarts itself if it drops).
 :loop
-python cli.py listen --owner-confirmed
+"%PY%" cli.py listen --owner-confirmed
 if %ERRORLEVEL% EQU 0 goto :done
 if %ERRORLEVEL% EQU 2 goto :notconfigured
 echo Listener stopped - restarting in 30s. Close this window to stop everything.

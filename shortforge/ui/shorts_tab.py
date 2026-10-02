@@ -417,10 +417,13 @@ def _tab_find(dd: str, run_every: str) -> None:
         a1, a2 = st.columns(2)
         min_subs = a1.number_input("Minimum subscribers", 0, 100_000_000, 0, step=1000,
                                    key="dc_minsubs")
-        min_shorts = a2.number_input("Minimum Shorts on the channel", 1, 15, 3,
-                                     key="dc_minshorts",
-                                     help="Out of the 15 newest it looks at — filters out "
-                                          "channels that rarely post Shorts.")
+        min_shorts = a2.number_input("Minimum Shorts on the channel", min_value=1,
+                                     value=3, step=1, key="dc_minshorts",
+                                     help="Channels with fewer Shorts than this are left "
+                                          "out. Any number works; above 15 each channel "
+                                          "that passes the other checks has its Shorts "
+                                          "counted, which takes a little longer the "
+                                          "bigger the number.")
         unlisted = st.toggle("Include channels that don't show their country", value=True,
                              key="dc_unlisted",
                              help="Many channels never set a country on YouTube. When on, "
@@ -597,6 +600,8 @@ def _results_table(job: dict, *, readonly: bool, saved_keys: set | None = None,
                      (r.get("country") or "country not listed")
                      + (" ✓" if r.get("country_status") == "match" else ""),
                      r.get("language_label") or "language unknown"]
+            if r.get("shorts_seen") and r["shorts_seen"] > 15:
+                facts.append(f"{r['shorts_seen']}+ Shorts")
             if r.get("fit") is not None:
                 facts.append(f"fit {r['fit']}/10")
             c1.markdown(f"**{i}. [{r['name']}]({r['url']}/shorts)**  \n" + " · ".join(facts))

@@ -286,3 +286,19 @@ def test_real_step_down_is_one_clean_stream_never_mixed(fake_youtube, tmp_path, 
     assert _frame_sizes(rec["file"]) == {("180", "320")}       # every frame one size
     assert _frames(rec["file"]) == 240
     assert "best on offer was 720×1280" in rec["quality_note"]
+
+
+@needs_ffmpeg
+def test_redownload_after_the_folder_moved_goes_to_the_current_folder(monkeypatch, tmp_path):
+    """The program folder was moved out of OneDrive: an earlier copy's path no
+    longer exists. Re-downloading must not recreate the old folder — it goes
+    into today's Shorts folder, keeping its number."""
+    cfg, _ = _patch_download(monkeypatch, tmp_path, fail_strict=False)
+    gone = tmp_path / "OneDrive" / "viral-topics-tool" / "out" / "shorts" / "C"
+    item = {"id": "vidvidvid01", "url": "u", "channel_name": "C", "source": "redownload",
+            "replace": {"number": 7, "file": str(gone / "7 - T.mp4")}}
+    rec = YT.download_short(item, cfg, {**S.DEFAULT_SETTINGS})
+    assert not (tmp_path / "OneDrive").exists()
+    assert rec["number"] == 7
+    assert os.path.dirname(rec["file"]) == YT.destination(cfg, {**S.DEFAULT_SETTINGS}, item)
+    assert os.path.basename(rec["file"]).startswith("7 - ")

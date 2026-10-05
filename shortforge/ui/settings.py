@@ -470,8 +470,14 @@ def render() -> None:
     st.header("⚙️ Settings")
     store = _load()
     _render_autodetect_import(store)
-    for w in capability_warnings(store):
-        st.warning(w)
+    # Four yellow warnings used to greet every visit here, three of them about
+    # dubbing into another language — which most runs never do. Only the one
+    # that changes every clip (no AI model) is shown up front, with what to do.
+    if not S.models_in(store, "llm", enabled_only=True):
+        st.info("🤖 **No AI model is set up on this PC yet.** The clip maker still works, "
+                "but picks moments and writes titles with simpler built-in rules. Add a "
+                "model under **🔑 Models & keys** — or, if your old PC had one, bring "
+                "everything over in **💾 Backup & restore → Import**.")
 
     # One section at a time. Settings used to be a single long page, every part
     # of it rebuilt on every click — including measuring the whole working
@@ -500,6 +506,12 @@ def render() -> None:
 
 
 def _render_models(store: dict) -> None:
+    dub = [w for w in capability_warnings(store) if not w.startswith("No LLM")]
+    if dub:
+        with st.expander(f"🎙️ Dubbing: {len(dub)} thing(s) the voices set up now can't do"):
+            st.caption("Only matters when a clip is dubbed into another language.")
+            for w in dub:
+                st.markdown(f"- {w}")
     st.caption("Add a **credential** once (base URL + key), then **Fetch available "
                "models** and enable the ones you want — each with its own category, "
                "toggle and failover priority. Click **Test & Detect** to auto-discover "

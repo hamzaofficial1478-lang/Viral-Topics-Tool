@@ -87,6 +87,56 @@ def _confidence(avg_logprob, no_speech_prob) -> float | None:
     return round(conf, 3)
 
 
+_SAMPLE_RATE = 16000
+
+
+def load_audio_16k(audio_path: str):
+    """The audio as 16 kHz mono float32 samples — what Whisper listens to —
+    read WITHOUT PyAV.
+
+    Handing faster-whisper a file path makes it decode the file with PyAV, and
+    PyAV 19 (Sept 2026) removed an argument every faster-whisper release passes
+    (``metadata_errors``): a fresh install then failed every transcription with
+    "open() got an unexpected keyword argument 'metadata_errors'". ShortForge
+    already makes a 16 kHz mono WAV with FFmpeg, so it is read here with the
+    standard library and the samples are handed over instead; any other file is
+    converted with FFmpeg first. A PyAV release can no longer break this.
+    """
+    import wave
+
+    import numpy as np
+
+    def read(path):
+        with wave.open(path, "rb") as w:
+            if (w.getnchannels(), w.getframerate(), w.getsampwidth()) != (1, _SAMPLE_RATE, 2):
+                return None
+            raw = w.readframes(w.getnframes())
+        return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+
+    try:
+        audio = read(audio_path)
+    except (wave.Error, EOFError, OSError):
+        audio = None
+    if audio is not None:
+        return audio
+    import tempfile
+    from ..utils import require_binary, run
+    fd, tmp = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        run([require_binary("ffmpeg"), "-y", "-i", audio_path, "-vn", "-ac", "1",
+             "-ar", str(_SAMPLE_RATE), "-c:a", "pcm_s16le", "-f", "wav", tmp])
+        audio = read(tmp)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    if audio is None:
+        raise RuntimeError(f"could not read audio from {os.path.basename(audio_path)}")
+    return audio
+
+
 class LocalWhisperASR(ASRProvider):
     name = "local-whisper"
 
@@ -110,7 +160,8 @@ class LocalWhisperASR(ASRProvider):
             self.cfg.get("transcribe.compute_type", "auto"))
         log.info("ASR: local faster-whisper '%s' on %s/%s", self.model_size, device, compute_type)
         model = WhisperModel(self.model_size, device=device, compute_type=compute_type)
-        seg_iter, info = model.transcribe(audio_path, word_timestamps=True,
+        audio = load_audio_16k(audio_path)          # samples, not a path: no PyAV
+        seg_iter, info = model.transcribe(audio, word_timestamps=True,
                                           language=language, vad_filter=True)
         segments = []
         for s in seg_iter:

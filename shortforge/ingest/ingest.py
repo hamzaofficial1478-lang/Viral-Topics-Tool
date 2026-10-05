@@ -209,8 +209,31 @@ def _resolve_concurrent_fragments(cfg: Config) -> int:
     return max(1, min(n, 16))
 
 
+AUTO_FIREFOX = "firefox browser cookies (found automatically)"
+
+
+def _firefox_profiles_dir() -> str | None:
+    """Firefox's profile folder on this PC, if Firefox has been used here."""
+    import sys
+    if os.name == "nt":
+        base = os.path.join(os.environ.get("APPDATA", ""), "Mozilla", "Firefox", "Profiles")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support/Firefox/Profiles")
+    else:
+        base = os.path.expanduser("~/.mozilla/firefox")
+    return base if os.path.isdir(base) else None
+
+
 def _auth_strategies(cfg: Config) -> list[tuple[str, dict]]:
-    """Ordered (label, ydl-opts-overlay): configured cookies → browser → none."""
+    """Ordered (label, ydl-opts-overlay): configured cookies → browser → none.
+
+    With nothing chosen in Settings → YouTube, "no cookies" was the ONLY try,
+    so a fresh install failed on YouTube's "confirm you're not a bot" until the
+    operator found that setting. When nothing is chosen and Firefox is on this
+    PC, its sign-in is tried after that — Firefox only: Chrome and Edge lock
+    their cookies on Windows, so trying them just fails slowly. Using it is
+    reported as a warning, never silently.
+    """
     cookies_file, browser = _resolve_auth(cfg)
     chain: list[tuple[str, dict]] = []
     if cookies_file:
@@ -219,6 +242,8 @@ def _auth_strategies(cfg: Config) -> list[tuple[str, dict]]:
     if browser:
         chain.append((f"{browser} browser cookies", {"cookiesfrombrowser": (browser,)}))
     chain.append(("no cookies", {}))
+    if not cookies_file and not browser and _firefox_profiles_dir():
+        chain.append((AUTO_FIREFOX, {"cookiesfrombrowser": ("firefox",)}))
     return chain
 
 
@@ -588,6 +613,10 @@ def download_resilient(url: str, cfg: Config, base: dict, *,
                 log.info("download: format '%s' worked (the preferred one wasn't "
                          "offered for this video)", fmt)
             log.info("download succeeded via '%s' in %.1fs", label, time.time() - t0)
+            if label == AUTO_FIREFOX:
+                log.warning("YouTube refused the download without signing in, so Firefox's "
+                            "sign-in was used. Choose Firefox in Settings → 📺 YouTube to use "
+                            "it straight away next time.")
             break
         except _BotWall as e:
             saw_bot = True

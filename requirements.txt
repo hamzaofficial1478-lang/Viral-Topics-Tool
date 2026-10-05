@@ -13,6 +13,11 @@
 yt-dlp[default]>=2025.11.12
 faster-whisper>=1.0.0,<2.0
 ctranslate2>=4.0,<5.0          # faster-whisper backend (Windows: needs VC++ redist)
+# faster-whisper opens files with PyAV, and PyAV 19 (Sept 2026) dropped an argument
+# every faster-whisper release still passes ("open() got an unexpected keyword
+# argument 'metadata_errors'"). ShortForge now hands Whisper the samples itself,
+# but keep PyAV below 19 until faster-whisper catches up.
+av>=11,<19
 PyYAML>=6.0
 # Headless OpenCV = no GUI/system deps (subject tracking, thumbnails, A3/A4).
 opencv-python-headless>=4.9.0,<5.0

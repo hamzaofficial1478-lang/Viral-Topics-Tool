@@ -512,3 +512,17 @@ def test_history_reads_no_clip_until_play_is_pressed(tmp_path, monkeypatch):
     at.button[1].click().run()                                     # first ▶ Play
     assert not at.exception
     assert len(at.get("video")) == 1 and len(reads) == 1
+
+
+def test_settings_leads_with_one_actionable_note_not_four_warnings(tmp_path, monkeypatch):
+    """Operator's screenshot: four yellow warnings on every Settings visit, three
+    of them about dubbing. Now: one note (no AI model) with what to do; the
+    dubbing limits sit in a closed panel under Models & keys."""
+    monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(tmp_path / "providers.local.json"))
+    at = _fresh()
+    at.sidebar.radio[0].set_value("Settings").run()
+    assert not at.exception
+    assert not [w for w in at.warning if "voice provider" in w.value]
+    assert any("No AI model is set up" in i.value and "Backup & restore" in i.value
+               for i in at.info)
+    assert any("Dubbing:" in e.label for e in at.expander)

@@ -33,9 +33,34 @@ def test_auth_strategies_order():
     assert labels[-1] == "no cookies"                    # no-cookies last
 
 
-def test_auth_strategies_default_is_just_no_cookies():
+def test_auth_strategies_default_is_just_no_cookies(monkeypatch):
+    monkeypatch.setattr(I, "_firefox_profiles_dir", lambda: None)   # no Firefox here
     labels = [lbl for lbl, _ in I._auth_strategies(Config.load())]
     assert labels == ["no cookies"]                      # nothing configured
+
+
+def test_firefox_is_tried_automatically_when_nothing_is_chosen(monkeypatch, tmp_path):
+    """A fresh install had ONLY "no cookies" and failed on YouTube's "confirm
+    you're not a bot" until the operator found Settings → YouTube."""
+    monkeypatch.setattr(I, "_firefox_profiles_dir", lambda: str(tmp_path))
+    labels = [lbl for lbl, _ in I._auth_strategies(Config.load())]
+    assert labels == ["no cookies", I.AUTO_FIREFOX]                # no-cookies first
+    cfg = Config.load()
+    cfg.override("ingest.cookies_from_browser", "chrome")           # a choice was made
+    assert I.AUTO_FIREFOX not in [lbl for lbl, _ in I._auth_strategies(cfg)]
+
+
+def test_automatic_firefox_rescues_a_blocked_download_and_says_so(tmp_path, monkeypatch,
+                                                                   _stub_probe, caplog):
+    monkeypatch.setattr(I, "_firefox_profiles_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(I, "_download_with_retries",
+                        _fake_dl_factory(tmp_path, bot_for={"none"}))
+    cfg = Config.load()
+    cfg.override("paths.work_dir", str(tmp_path))
+    with caplog.at_level("WARNING"):
+        meta = I._ingest_url("https://www.youtube.com/watch?v=vid", cfg)
+    assert meta.video_id == "vid"
+    assert "Firefox's sign-in was used" in caplog.text            # never silent
 
 
 def test_resolve_auth_falls_back_to_store(tmp_path, monkeypatch):

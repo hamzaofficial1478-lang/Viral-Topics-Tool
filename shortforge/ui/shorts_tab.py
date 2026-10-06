@@ -967,7 +967,13 @@ def _has_js_runtime() -> bool:
     remembered, and a "no" is looked at again every 30 seconds (so the warning
     goes away soon after update.bat installs Deno, without a restart)."""
     global _js_seen
-    from ..ingest.ingest import find_js_runtime
+    try:
+        from ..ingest.ingest import find_js_runtime
+    except ImportError:
+        # A half-finished `git pull` can leave this file newer than ingest.py.
+        # That is a broken checkout, not a missing Deno — don't nag about Deno
+        # (and don't take the whole page down over it); assume it's fine.
+        return True
     at, ok = _js_seen
     if ok or time.time() - at < 30:
         return ok

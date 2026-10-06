@@ -110,3 +110,22 @@ def test_ytdlp_version_is_actually_read():
     from shortforge import doctor
     assert I.ytdlp_version() == __version__
     assert "?" not in doctor._ytdlp().detail
+
+
+def test_shorts_page_survives_a_half_pulled_ingest(monkeypatch, tmp_path):
+    """A partial `git pull` left shorts_tab.py newer than ingest.py, so
+    `from ..ingest.ingest import find_js_runtime` raised ImportError and took
+    the whole YT Shorts page down. Now it is caught and the page renders."""
+    import builtins
+    from shortforge.ui import shorts_tab as T
+    monkeypatch.setattr(T, "_js_seen", (0.0, False))
+    real_import = builtins.__import__
+
+    def boom(name, *a, **k):
+        mod = real_import(name, *a, **k)
+        if name == "shortforge.ingest.ingest" or name.endswith("ingest.ingest"):
+            if a and len(a) >= 3 and a[2] and "find_js_runtime" in a[2]:
+                raise ImportError("cannot import name 'find_js_runtime'")
+        return mod
+    monkeypatch.setattr(builtins, "__import__", boom)
+    assert T._has_js_runtime() is True          # treated as fine, no crash

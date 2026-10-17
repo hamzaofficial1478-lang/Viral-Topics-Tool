@@ -324,7 +324,10 @@ def test_a_channel_that_runs_out_says_so(dd, tmp_path, fake_youtube):
     assert any("only 30 new" in m for m in msgs)
 
 
-def test_repeated_bot_walls_pause_the_run_and_keep_the_work(dd, tmp_path, fake_youtube):
+def test_repeated_bot_walls_pause_the_run_and_keep_failed_in_failed(dd, tmp_path, fake_youtube):
+    """A bot wall pauses after a streak. The Shorts that already failed STAY in
+    Failed (they used to be shuffled back to the queue under "Resume", which
+    looked like they vanished from Failed); the not-yet-tried ones stay queued."""
     S.add_channels(dd, "@alpha", 6, rights_confirmed=True)
     S.update_settings(dd, delay_seconds=0, stop_on_bot_wall=3)
     fake_youtube["botwall"] |= {f"alpha{i:06d}" for i in range(6)}
@@ -333,13 +336,15 @@ def test_repeated_bot_walls_pause_the_run_and_keep_the_work(dd, tmp_path, fake_y
     s = W.drain(_cfg(tmp_path), dd=dd, announce=msgs.append)
     run = S.load_run(dd)
     assert s["paused"] and run["paused"]
-    assert S.counts(run)[S.PENDING] == 6                          # all back in line
+    c = S.counts(run)
+    assert c[S.FAILED] == 3 and c[S.PENDING] == 3                 # failed stay failed
     assert any("asking to sign in" in m for m in msgs)
 
     fake_youtube["botwall"].clear()                               # cookies fixed
+    assert S.retry_failed(dd) == 3                                # the operator's one button
     S.set_paused(dd, False)
     s = W.drain(_cfg(tmp_path), dd=dd, announce=lambda m: None)
-    assert s["downloaded"] == 6
+    assert s["downloaded"] == 6                                   # nothing was lost
 
 
 def test_one_bad_short_does_not_stop_the_rest(dd, tmp_path, fake_youtube):

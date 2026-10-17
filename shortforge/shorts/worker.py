@@ -271,15 +271,19 @@ def _clear_abandoned_staging(dd: str, run: dict) -> None:
 
 def _pause_for_bot_wall(dd: str, announce, summary: dict) -> dict:
     store.set_paused(dd, True)
-    # The Shorts that hit the wall go back in line: the fix (cookies) cures them
-    # too, so Resume must retry them rather than leave them marked failed.
-    store.retry_failed(dd, only_bot_wall=True)
+    # The ones that already failed STAY in Failed — moving them back to the
+    # queue made them look like they vanished from Failed and reappeared under
+    # "Resume", which was confusing and, when the wall persisted, just looped.
+    # The remaining not-yet-tried Shorts stay queued, so Resume carries on with
+    # them; "Retry failed" (one button) re-queues the failed ones once cookies
+    # are fixed.
     summary["paused"] = True
     announce("⛔ <b>Shorts paused — YouTube is asking to sign in</b>\n"
              "Several downloads in a row hit YouTube's “confirm you're not a bot” wall, "
              "so I stopped instead of failing every remaining Short.\n"
-             "Fix: Settings → 📺 YouTube authentication → pick Firefox (signed in to "
-             "YouTube) → Test. Then press Resume in the Shorts tab.")
+             "Fix: first turn OFF any VPN or proxy (a flagged IP is the usual cause), then "
+             "Settings → 📺 YouTube authentication → pick Firefox (signed in to YouTube) → "
+             "Test. Then press “Retry failed”, and Resume, in the Shorts tab.")
     return summary
 
 

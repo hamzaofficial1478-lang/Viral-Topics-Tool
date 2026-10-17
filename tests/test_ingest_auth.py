@@ -120,8 +120,9 @@ def test_all_strategies_bot_wall_raises_friendly_message(tmp_path, monkeypatch, 
     cfg.override("ingest.cookies_from_browser", "firefox")
     with pytest.raises(ShortForgeError) as ei:
         I._ingest_url("https://www.youtube.com/watch?v=vid", cfg)
-    assert "requiring authentication" in str(ei.value)          # friendly, not raw yt-dlp
-    assert "Settings" in str(ei.value) and "not a bot" not in str(ei.value).split("(")[0]
+    msg = str(ei.value)
+    assert "Settings" in msg and "VPN" in msg and "Retry failed" in msg   # friendly + actionable
+    assert "Traceback" not in msg                                         # not the raw yt-dlp dump
 
 
 def test_unavailable_is_reported_immediately(tmp_path, monkeypatch, _stub_probe):
@@ -571,3 +572,37 @@ def test_every_client_refusing_says_so_and_points_at_ytdlp(tmp_path, monkeypatch
     assert "player client" in msg
     assert "yt-dlp" in msg
     assert "network problem" not in msg
+
+
+# --- the bot wall is per-client: rotating the client gets past it ------------- #
+
+def test_client_rotation_gets_past_a_bot_wall(monkeypatch):
+    """YouTube's "confirm you're not a bot" wall is largely per player client —
+    the TV/Safari clients get through when the default web client is walled.
+    _with_client_fallback must rotate the client on a bot wall, not only on 403."""
+    seen = []
+
+    def attempt(ex):
+        client = (ex.get("youtube", {}).get("player_client") or ["default"])[0]
+        seen.append(client)
+        if client in ("default", "tv"):           # default list is "default,tv"
+            raise I._BotWall("Sign in to confirm you're not a bot")
+        return f"downloaded via {client}"
+
+    cfg = Config.load()
+    assert I._with_client_fallback(cfg, attempt) == "downloaded via web_safari"
+    assert seen[0] == "default" and "web_safari" in seen   # configured clients first
+
+
+def test_bot_wall_is_re_raised_when_no_client_gets_through(monkeypatch):
+    """If every client is still walled, a _BotWall propagates (so the cookie
+    chain advances and the friendly sign-in message is shown) — never a 403."""
+    def attempt(ex):
+        raise I._BotWall("Sign in to confirm you're not a bot")
+    with pytest.raises(I._BotWall):
+        I._with_client_fallback(Config.load(), attempt)
+
+
+def test_bot_wall_clients_are_a_short_distinct_list():
+    assert I._BOTWALL_CLIENTS and all(isinstance(c, str) for c in I._BOTWALL_CLIENTS)
+    assert "tv" in I._BOTWALL_CLIENTS and "web_safari" in I._BOTWALL_CLIENTS

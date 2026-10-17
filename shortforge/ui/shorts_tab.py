@@ -620,9 +620,9 @@ def _results_table(job: dict, *, readonly: bool, saved_keys: set | None = None,
 
 
 def _tab_links(dd: str) -> None:
-    st.caption("One-off downloads: paste Short (or video) links — they're not saved as "
-               "channels. Anything already downloaded is skipped.")
-    text = st.text_area("Links — one per line", height=160, key="sh_links",
+    st.caption("One-off downloads — not saved as channels. Anything already downloaded "
+               "is skipped.")
+    text = st.text_area("Links — one per line", height=130, key="sh_links",
                         placeholder="https://www.youtube.com/shorts/abcdefghijk\n"
                                     "https://youtu.be/abcdefghijk")
     links = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
@@ -639,9 +639,6 @@ def _tab_links(dd: str) -> None:
         for b in q["bad_links"]:
             _flash("warning", f"Not a YouTube video link: {b}")
         st.rerun()
-
-    st.write("")
-    _quality_check(dd)
 
 
 def _quality_check(dd: str) -> None:
@@ -666,14 +663,23 @@ def _quality_check(dd: str) -> None:
 
 
 def _tab_downloads(dd: str) -> None:
+    st.caption("Live list of the Shorts in the current download. The numbers and the "
+               "buttons at the top of this screen control it.")
     run = S.load_run(dd)
     notes = run.get("notes") or {}
     for key, note in notes.items():
         st.caption(f"ℹ️ **{key}** — {note}")
     items = run.get("items", [])
     if not items:
-        st.info("Nothing in the current run. Start one from Channels or Paste links.")
+        st.info("Nothing downloading right now. Go to **📺 Channels**, tick the ones you "
+                "want, and press **Download**.")
         return
+    failed = [i for i in items if i.get("status") == S.FAILED]
+    if failed:
+        st.error(f"✗ **{len(failed)} failed.** Almost always YouTube asking to sign in. "
+                 "Fix: turn **off** any VPN/proxy, then **Settings → 📺 YouTube** → pick "
+                 "**Firefox** (signed in to YouTube) → **Test**. Then press **🔁 Retry "
+                 "failed** at the top.")
     rows = [{"": _STATUS_ICON.get(i.get("status"), "?"),
              "Channel": i.get("channel_name") or ("(pasted link)" if i.get("source") == "link"
                                                   else i.get("channel_key", "")),
@@ -1002,24 +1008,28 @@ def render(run_every: str = "3s") -> None:
     # Only the open tab is built. Streamlit otherwise runs every tab on every
     # click — all channel rows, the whole download history, past searches —
     # and switching between them is what dragged.
-    t1, t0, t2, t3, t4, t5 = lazy_tabs(["📺 Channels", "🔎 Find channels", "🔗 Paste links",
-                                        "⏬ This run", "🕘 History", "⚙️ Settings"],
-                                       key="sh_tab")
-    if t1.open:
-        with t1:
+    # Five tabs, common path first: pick channels and press Download, watch
+    # Progress, find more channels, browse History, change Settings. One-off
+    # link pasting lives under Channels (it is rarely the main thing).
+    t_ch, t_prog, t_find, t_hist, t_set = lazy_tabs(
+        ["📺 Channels", "⏬ Progress", "🔎 Find channels", "🕘 History", "⚙️ Settings"],
+        key="sh_tab")
+    if t_ch.open:
+        with t_ch:
             _tab_channels(dd)
-    if t0.open:
-        with t0:
-            _tab_find(dd, run_every)
-    if t2.open:
-        with t2:
-            _tab_links(dd)
-    if t3.open:
-        with t3:
+            st.divider()
+            with st.expander("🔗 Paste one-off Short links (not saved as channels)"):
+                _tab_links(dd)
+            _quality_check(dd)
+    if t_prog.open:
+        with t_prog:
             st.fragment(run_every=run_every)(_tab_downloads)(dd)
-    if t4.open:
-        with t4:
+    if t_find.open:
+        with t_find:
+            _tab_find(dd, run_every)
+    if t_hist.open:
+        with t_hist:
             _tab_history(dd, root)
-    if t5.open:
-        with t5:
+    if t_set.open:
+        with t_set:
             _tab_settings(dd, cfg)

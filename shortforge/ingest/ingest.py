@@ -37,10 +37,13 @@ _BROWSERS = ("firefox", "chrome", "edge", "brave")
 
 # Shown verbatim on a bot-detection wall — actionable, not the raw yt-dlp error.
 BOT_AUTH_MESSAGE = (
-    "YouTube is requiring authentication (\"Sign in to confirm you're not a bot\"). "
-    "Open Settings → YouTube authentication and select the browser you're logged "
-    "into YouTube with, then retry. Firefox is the most reliable on Windows. "
-    "On the CLI: add --cookies-from-browser firefox."
+    "YouTube is asking to sign in (\"Confirm you're not a bot\") and wouldn't serve "
+    "this video to any browser, sign-in or player client ShortForge tried. Fixes, "
+    "in order: (1) turn OFF any VPN or proxy — a flagged IP is the usual cause, and "
+    "it blocks even a signed-in account; (2) open Settings → 📺 YouTube, pick "
+    "Firefox (signed in to YouTube on this PC) and press Test; (3) run update.bat to "
+    "get the latest yt-dlp. Then press “Retry failed”. On the CLI: "
+    "--cookies-from-browser firefox."
 )
 
 
@@ -377,6 +380,12 @@ def _with_format_fallback(cfg: Config, attempt, formats: list[str] | None = None
 # which clients it will serve often enough that the operator should not need a
 # code change to react.
 _CLIENT_FALLBACKS = ("tv_simply", "mweb", "android_vr", "android", "ios", "web_safari")
+# Clients to try when YouTube throws the "confirm you're not a bot" wall. The
+# wall is largely per-client: the TV and Safari/mobile-web clients routinely get
+# through when the default web client is challenged, so rotating the client is
+# the single biggest lever on "it suddenly stopped downloading". Kept short so a
+# video that will fail everywhere still fails reasonably quickly.
+_BOTWALL_CLIENTS = ("tv", "web_safari", "mweb", "tv_simply")
 
 
 def _known_clients() -> set[str]:
@@ -394,12 +403,22 @@ def _known_clients() -> set[str]:
         return set()
 
 
-def _client_fallbacks(cfg: Config) -> list[str]:
-    raw = cfg.get("ingest.client_fallbacks")
+def _client_fallbacks(cfg: Config, *, bot: bool = False) -> list[str]:
+    key = "ingest.botwall_clients" if bot else "ingest.client_fallbacks"
+    raw = cfg.get(key)
+    default = _BOTWALL_CLIENTS if bot else _CLIENT_FALLBACKS
     names = ([c.strip() for c in str(raw).split(",") if c.strip()] if raw
-             else list(_CLIENT_FALLBACKS))
+             else list(default))
     known = _known_clients()
     return [c for c in names if not known or c in known]
+
+
+def _client_why(e: Exception) -> str:
+    if isinstance(e, _BotWall):
+        return "YouTube challenged it to sign in"
+    if isinstance(e, _Forbidden):
+        return "HTTP 403 on the media URL"
+    return "no usable format offered"
 
 
 def _with_client_fallback(cfg: Config, attempt):
@@ -422,11 +441,16 @@ def _with_client_fallback(cfg: Config, attempt):
     configured = ",".join(tried.get("youtube", {}).get("player_client", [])) or "default"
     try:
         return attempt(tried)
-    except (_Forbidden, _NoFormat) as first:
-        why = ("HTTP 403 on the media URL" if isinstance(first, _Forbidden)
-               else "no usable format offered")
+    except (_Forbidden, _NoFormat, _BotWall) as first:
+        # Three symptoms, one cause: this player client is not one YouTube will
+        # serve this video to right now. _Forbidden (403 after extraction) and
+        # _NoFormat (no usable format) were already handled by rotating the
+        # client; the bot wall ("confirm you're not a bot") is the SAME kind of
+        # per-client refusal, and the TV/Safari clients commonly get past it, so
+        # it rotates too. A bot wall uses a shorter, bot-wall-specific list.
+        why = _client_why(first)
         already = set(tried.get("youtube", {}).get("player_client", []))
-        for client in _client_fallbacks(cfg):
+        for client in _client_fallbacks(cfg, bot=isinstance(first, _BotWall)):
             if client in already:
                 continue
             log.warning("player client '%s': %s — retrying with '%s'",
@@ -436,11 +460,13 @@ def _with_client_fallback(cfg: Config, attempt):
                 log.info("download: the '%s' player client worked where '%s' could not",
                          client, configured)
                 return result
-            except (_Forbidden, _NoFormat) as e:
-                why = ("HTTP 403 on the media URL" if isinstance(e, _Forbidden)
-                       else "no usable format offered")
+            except (_Forbidden, _NoFormat, _BotWall) as e:
+                why = _client_why(e)
                 configured = client
                 continue
+        # Nothing worked: re-raise the ORIGINAL kind so the cookie-chain loop
+        # still treats a bot wall as a bot wall (next cookie set, then the
+        # friendly sign-in message) and a 403 as a 403.
         raise first
 
 

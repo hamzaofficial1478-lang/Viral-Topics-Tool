@@ -302,21 +302,29 @@ def probe_formats(url: str, cfg: Config) -> list[dict]:
     """Every format YouTube lists for ``url`` (no download), through the same
     cookie chain and player clients the download will use."""
     from ..ingest.ingest import (_auth_strategies, _classify, _BotWall, _clean_err,
-                                 _extractor_args, _js_runtime_opts, _require_ytdlp)
+                                 _client_fallbacks, _extractor_args, _js_runtime_opts,
+                                 _require_ytdlp)
     yt_dlp = _require_ytdlp()
     opts = {"quiet": True, "no_warnings": True, "skip_download": True,
             "socket_timeout": int(cfg.get("ingest.socket_timeout", 120) or 120),
-            "extractor_args": _extractor_args(cfg), **_js_runtime_opts()}
+            **_js_runtime_opts()}
+    # The configured clients first, then (on a bot wall) the same bot-wall-dodging
+    # clients the download rotates through, so the quality gate still has a real
+    # format list to aim at instead of failing shut.
+    client_args = [_extractor_args(cfg)] + [
+        {"youtube": {"player_client": [c]}} for c in _client_fallbacks(cfg, bot=True)]
     last: Exception | None = None
     for label, overlay in _auth_strategies(cfg):
-        try:
-            with yt_dlp.YoutubeDL({**opts, **overlay}) as ydl:
-                info = ydl.extract_info(url, download=False, process=False)
-            return list((info or {}).get("formats") or [])
-        except Exception as e:  # noqa: BLE001 - try the next cookie strategy
-            last = e
-            if not isinstance(_classify(e), _BotWall):
-                log.debug("shorts: probe via '%s' failed: %s", label, _clean_err(e)[:160])
+        for ex in client_args:
+            try:
+                with yt_dlp.YoutubeDL({**opts, **overlay, "extractor_args": ex}) as ydl:
+                    info = ydl.extract_info(url, download=False, process=False)
+                return list((info or {}).get("formats") or [])
+            except Exception as e:  # noqa: BLE001 - try the next client / cookie strategy
+                last = e
+                if not isinstance(_classify(e), _BotWall):
+                    log.debug("shorts: probe via '%s' failed: %s", label, _clean_err(e)[:160])
+                    break   # a non-bot-wall error won't be cured by another client
     raise ShortForgeError(f"could not read this Short's formats: "
                           f"{_clean_err(last) if last else 'unknown error'}") from last
 

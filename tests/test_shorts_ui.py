@@ -150,7 +150,7 @@ def test_wishlist_channels_can_be_moved_to_your_channels(dd):
 
 
 def test_pasted_links_are_queued(dd):
-    at = _shorts(tab="🔗 Paste links")
+    at = _shorts()                       # paste box lives on the Channels tab now
     at.text_area(key="sh_links").set_value(
         "https://www.youtube.com/shorts/abcdefghijk\nnot a link").run()
     at.checkbox(key="sh_links_rights").check().run()
@@ -281,7 +281,7 @@ def test_only_the_open_tab_is_built(dd, monkeypatch):
         real = getattr(T, name)
         monkeypatch.setattr(T, name, lambda *a, _n=name, _r=real, **k: (built.append(_n), _r(*a, **k)))
     at = _shorts()
-    assert not at.exception and built == ["_tab_channels"]
+    assert not at.exception and built == ["_tab_channels", "_tab_links"]
     built.clear()
     at.session_state["sh_tab"] = "🕘 History"
     at.run()

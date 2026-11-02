@@ -23,10 +23,9 @@ def _fresh():
 
 
 def _new_job():
-    """The sidebar defaults to the Queue screen now; switch to the job form."""
-    at = _fresh()
-    at.sidebar.radio[0].set_value("New job").run()
-    return at
+    """Load the Long Videos screen (which shows Queue and form together now)."""
+    # The 📹 Long Videos screen is the default, so just return fresh.
+    return _fresh()
 
 
 def test_new_job_screen_renders():
@@ -117,39 +116,6 @@ def test_history_screen_renders():
     at.sidebar.radio[0].set_value("History").run()
     assert not at.exception
     assert "📚 History" in [h.value for h in at.header]
-
-
-def test_chat_screen_renders_with_a_command_input():
-    """The in-dashboard chat (types the same vocabulary ntfy reads) has to at
-    least render — the actual parsing is covered exhaustively against the
-    shared `remote_control.handle_text` in test_remote_control.py; this only
-    guards that the screen wires up without crashing."""
-    at = _fresh()
-    at.sidebar.radio[0].set_value("Chat").run()
-    assert not at.exception
-    assert "💬 Chat" in [h.value for h in at.header]
-    assert len(at.chat_input) == 1
-
-
-def test_chat_command_reply_is_also_pushed_over_ntfy(tmp_path, monkeypatch):
-    """Typing a command in the dashboard Chat used to only log locally — a
-    command sent from the phone gets a real ntfy push reply (ntfy_bot.poll_once
-    calls send_ntfy), but the exact same command typed here produced nothing
-    on the phone. Fixed: the dashboard now pushes the reply too."""
-    import os
-    from shortforge import notify as N
-
-    monkeypatch.chdir(tmp_path)
-    os.makedirs(".shortforge", exist_ok=True)
-    sent = []
-    monkeypatch.setattr(N, "notify", lambda text, **k: sent.append(text) or True)
-
-    at = _fresh()
-    at.sidebar.radio[0].set_value("Chat").run()
-    at.chat_input[0].set_value("https://youtu.be/from-dashboard-chat clips=2").run()
-
-    assert not at.exception
-    assert len(sent) == 1 and "Queued" in sent[0]
 
 
 def test_job_settings_detail_matches_queue_formatting():

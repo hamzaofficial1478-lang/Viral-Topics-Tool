@@ -36,6 +36,8 @@ ingest:
   # persists to config/providers.local.json, which this operator CAN reach
   # without hand-editing a file). Falls back to 4 if never set anywhere.
   concurrent_fragments: null
+  # Automatically detect and remove visible logos/watermarks from source video
+  remove_logos: false
 
 transcribe:
   # 'base' garbles hard sources; 'small' is the sane CPU default. 'medium'/'large-v3'

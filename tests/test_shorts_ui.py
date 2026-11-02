@@ -57,7 +57,7 @@ def _shorts(at=None, tab: str | None = None):
     """Open the YT Shorts screen, on ``tab`` if given (else 📺 Channels)."""
     _OPEN_TAB["label"] = tab
     at = at or AppTest.from_file(_APP, default_timeout=30).run()
-    at.sidebar.radio[0].set_value("📥 YT Shorts").run()
+    at.sidebar.radio[0].set_value("📥 Shorts").run()
     return at
 
 

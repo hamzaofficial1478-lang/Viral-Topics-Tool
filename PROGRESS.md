@@ -14,9 +14,14 @@ running real jobs — a 29-minute source, six 2-minute clips, driven from their
 phone — and the work has moved from *can it make clips* to *does it survive being
 used*: the ntfy queue, cross-process state, failure reporting, and the dashboard.
 
-**Two tools now:** the long-video clip maker, and (new) the 📥 YT Shorts downloader
+**Two tools now:** the long-video clip maker, and (new) the 📥 Shorts downloader
 on its own dashboard screen — see its entries in the completed log (latest: the
 🔎 channel finder + ⭐ wishlist).
+
+**UI Restructure (in progress):** Consolidated from 6 screens to 5 focused ones:
+📹 Long Videos (Queue + form), 📥 Shorts, 🐛 Error Logs, 📚 History, ⚙️ Settings.
+Removed Chat tab (remote control via ntfy unused). Added logo removal checkbox
+(placeholder for future CV implementation).
 
 **Outstanding — needs the operator, cannot be settled from the sandbox:**
 1. **PC-shutdown notice** (`87394a6`) — closing ShortForge messages the phone;

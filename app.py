@@ -960,101 +960,60 @@ def _render_queue() -> None:
 
 
 @st.fragment(run_every="60s")
-def _chat_log_fragment(work_dir: str) -> None:
-    """The message list AND the ntfy connectivity line, auto-refreshing
-    together on their own timer.
+def _render_error_logs() -> None:
+    """Real-time error logs aggregated from both long-video processing and
+    shorts downloading. Shows errors chronologically with context."""
+    st.caption("Real-time error log — shows issues from long-video processing or shorts "
+               "downloads. Errors are logged with timestamp and context.")
 
-    A fragment reruns ONLY itself, driven by the browser's own clock — it does
-    not block or reload the rest of the page, and it does not touch
-    `st.chat_input`'s state (that widget lives outside the fragment), so
-    nothing you're mid-typing gets disturbed when the 60s tick fires.
-
-    This is NOT the same as a page-wide ``time.sleep(N); st.rerun()``, which
-    was tried first and rejected: that blocks the ENTIRE UI for N seconds on
-    every single render (real, perceptible freezing, not just a test
-    artifact), and it hangs headless/AppTest test execution outright, which
-    has no real browser timer to ever end the sleep-then-rerun cycle.
-
-    The connectivity line itself can only ever report the LAST known state
-    (`lifecycle.note_ntfy_status`, written by `ntfy_bot.listen`'s poll loop) —
-    a page load can't ask ntfy "are you there" on its own, and if ntfy is
-    genuinely down this fragment refreshing more or less often changes
-    nothing about when the real listener process next finds out.
-    """
-    from shortforge import lifecycle, remote_control as RC
-
-    state = lifecycle.read_state(work_dir)
-    if state and state.get("ntfy_ok") is False:
-        since = state.get("ntfy_down_since")
-        since_txt = ""
-        if since:
-            mins = int(max(0, time.time() - float(since)) // 60)
-            since_txt = f" (about {mins} min)" if mins else " (just now)"
-        st.error(f"🔌 ntfy connection lost{since_txt} — commands and push notifications "
-                f"won't arrive until it reconnects. Rendering is unaffected.")
-    elif state and state.get("ntfy_ok"):
-        st.caption("🟢 ntfy connected")
-
-    for entry in RC.read_chat_log(work_dir):
-        tag = "📱 *via ntfy*  \n" if entry.get("source") == "ntfy" else ""
-        with st.chat_message("user"):
-            st.markdown(tag + entry.get("text", ""), unsafe_allow_html=True)
-        with st.chat_message("assistant"):
-            st.markdown(entry.get("reply", ""), unsafe_allow_html=True)
-
-
-def _render_chat() -> None:
-    """One conversation, two doors in: type here, or send from your phone over
-    ntfy — both go through the identical shared `remote_control.handle_text()`
-    (CLAUDE.md rule 6: one command path, never a second one that can drift),
-    and both log to the SAME file (`remote_control.log_exchange`/
-    `read_chat_log`), so whichever one you use, this screen shows all of it.
-
-    Typing here also pushes the reply out over ntfy, same as `ntfy_bot.poll_once`
-    does for a phone-sent command — otherwise a command typed here (e.g.
-    "cancel", "clear") changes the queue with nothing landing on the phone,
-    which is exactly the "ntfy is missing things" gap the operator reported.
-    """
-    from shortforge import lifecycle
-    from shortforge import notify as N
-    from shortforge import remote_control as RC
     from shortforge.config import Config as _C
 
-    top = st.columns([5, 1])
-    top[0].header("💬 Chat")
-    if top[1].button("🔄 Refresh now", help="Pull in anything sent from your phone "
-                     "immediately, instead of waiting for the next auto-refresh."):
-        st.rerun()
-    st.caption("Type a link, settings, or a command — `/help` lists everything. Anything "
-               "sent from your phone over ntfy shows up here too (and vice versa) — it's "
-               "the same conversation either way. This auto-refreshes about every 60s; "
-               "press 🔄 Refresh now for sooner.")
-
     work_dir = _C.load().get("paths.work_dir", ".shortforge")
-    state = lifecycle.read_state(work_dir)
-    worker_live = bool(state and (time.time() - float(state.get("last_seen") or 0)) < 120)
-    if not worker_live:
-        st.warning("⚪ No worker is currently running — typing here still adds links and "
-                  "can pause/resume the queue, but nothing will actually render until "
-                  "`start_all.bat` is running (or you press ▶ Start working on the Queue "
-                  "screen).")
+    log_file = os.path.join(work_dir, "errors.log")
 
-    _chat_log_fragment(work_dir)
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("🔄 Refresh"):
+            st.rerun()
+    with col2:
+        if st.button("🗑️ Clear error log"):
+            try:
+                os.remove(log_file)
+                st.success("Error log cleared")
+                st.rerun()
+            except FileNotFoundError:
+                st.info("No error log to clear")
 
-    msg = st.chat_input("https://youtu.be/... 5 clips of 2 min landscape  —  or /status, start, pause…")
-    if msg:
-        reply = RC.handle_text(msg, work_dir)
-        RC.log_exchange(work_dir, "dashboard", msg, reply)
-        N.notify(reply)
-        st.rerun()
+    st.divider()
 
-    if RC.read_chat_log(work_dir, limit=1) and st.button(
-            "🧹 Clear chat history (the queue itself is untouched)"):
-        try:
-            os.remove(RC.chat_log_path(work_dir))
-        except OSError:
-            pass
-        st.rerun()
+    if not os.path.exists(log_file):
+        st.info("✓ No errors logged yet")
+        return
+
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except (OSError, IOError):
+        st.error("Could not read error log")
+        return
+
+    if not lines:
+        st.info("✓ Error log is empty")
+        return
+
+    # Show errors in reverse chronological order (newest first)
+    for line in reversed(lines[-100:]):  # Show last 100 errors
+        line = line.strip()
+        if not line:
+            continue
+
+        # Color-code by severity
+        if "ERROR" in line or "FAILED" in line:
+            st.error(line)
+        elif "WARNING" in line:
+            st.warning(line)
+        else:
+            st.text(line)
 
 
 _manifest_cache: dict[str, tuple[tuple, dict | None]] = {}
@@ -1252,6 +1211,10 @@ def _render_new_job_form() -> None:
             encoder = {"x264 (software, default)": "x264", "auto (best hardware)": "auto",
                        "qsv (Intel Quick Sync)": "qsv"}[encoder_pick]
             logo = st.file_uploader("Logo overlay (optional)", type=["png", "jpg"])
+            remove_logo = st.checkbox(
+                "Remove logos/watermarks from source video", value=False,
+                help="Automatically detect and remove visible logos, watermarks, and wordmarks "
+                     "from the video before processing. Works on any opacity level.")
 
     # ---- Extras (opt-in; off by default — STEP 9) --------------------------
     with st.expander("Extras (optional — off by default)"):
@@ -1305,6 +1268,7 @@ def _render_new_job_form() -> None:
     cfg.override("thumbnail.enabled", bool(want_thumbnail))
     cfg.override("edit.jumpcuts", bool(jumpcuts))
     cfg.override("transcribe.model", whisper_model)
+    cfg.override("ingest.remove_logos", bool(remove_logo))
     if source_lang.strip():
         cfg.override("transcribe.language", source_lang.strip())
     cfg.override("localize.language", language.strip() or None)
@@ -1329,46 +1293,55 @@ def main() -> None:
     st.title("🎬 ShortForge")
 
     with st.sidebar:
-        screen = st.radio("Screen", ["Queue", "Chat", "New job", "📥 YT Shorts", "Settings",
-                                     "History"], index=0,
-                          help="📥 YT Shorts is a separate tool: it downloads Shorts from "
-                               "the channels you save. Everything else makes clips from "
-                               "long videos.")
+        screen = st.radio("Screen", ["📹 Long Videos", "📥 Shorts", "🐛 Error Logs",
+                                     "📚 History", "⚙️ Settings"], index=0,
+                          help="📥 Shorts is a separate tool for downloading YouTube Shorts. "
+                               "Everything else makes clips from long videos.")
         st.divider()
 
-    if screen == "📥 YT Shorts":
+    # Long Videos screen — shows queue and form together
+    if screen == "📹 Long Videos":
+        job = st.session_state.get("job")
+        if job and job.get("state") == "running":
+            _render_running(job)
+        elif job and job.get("state") in ("done", "error"):
+            _render_job_result(job)
+        else:
+            col1, col2 = st.columns([1, 1], gap="large")
+            with col1:
+                st.subheader("📋 Queue")
+                _render_queue()
+            with col2:
+                st.subheader("➕ Add New Job")
+                _render_new_job_form()
+        _resource_footer()
+        return
+
+    # Shorts screen
+    if screen == "📥 Shorts":
         from shortforge.ui.shorts_tab import render as render_shorts
         render_shorts(run_every=_refresh_seconds())
         _resource_footer()
         return
-    if screen == "Settings":
+
+    # Error Logs screen
+    if screen == "🐛 Error Logs":
+        _render_error_logs()
+        _resource_footer()
+        return
+
+    # History screen
+    if screen == "📚 History":
+        _render_history()
+        _resource_footer()
+        return
+
+    # Settings screen
+    if screen == "⚙️ Settings":
         from shortforge.ui.settings import render as render_settings
         render_settings()
         _resource_footer()
         return
-    if screen == "History":
-        _render_history()
-        _resource_footer()
-        return
-    if screen == "Chat":
-        _render_chat()
-        _resource_footer()
-        return
-    if screen == "Queue":
-        _render_queue()
-        _resource_footer()
-        return
-
-    # New job — one of three states, all persisted in session_state so results
-    # survive the reruns that every button click / copy triggers.
-    job = st.session_state.get("job")
-    if job and job.get("state") == "running":
-        _render_running(job)
-        return
-    if job and job.get("state") in ("done", "error"):
-        _render_job_result(job)
-        return
-    _render_new_job_form()
 
 
 if __name__ == "__main__":

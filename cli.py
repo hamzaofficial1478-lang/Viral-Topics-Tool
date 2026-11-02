@@ -1784,7 +1784,21 @@ def _add_run_options(r: argparse.ArgumentParser) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _install_error_log(args.command)
     return args.func(args)
+
+
+def _install_error_log(command: str) -> None:
+    """Workers report their warnings/errors to the dashboard's 🐛 Error Logs screen."""
+    from shortforge import errorlog
+    src = {"run": errorlog.LONG, "run-batch": errorlog.LONG, "queue": errorlog.LONG,
+           "shorts": errorlog.SHORTS, "listen": errorlog.APP}.get(command)
+    if src is None:
+        return
+    try:
+        errorlog.install(Config.load().get("paths.work_dir", ".shortforge"), src)
+    except Exception as e:  # noqa: BLE001 - never stop a command over the error screen
+        log.debug("error log not installed: %s", e)
 
 
 if __name__ == "__main__":

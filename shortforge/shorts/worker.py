@@ -101,7 +101,8 @@ def drain(cfg: Config, *, should_stop: Callable[[], bool] | None = None,
             store.touch_lock(dd)
     threading.Thread(target=_beat, daemon=True, name="shorts-lock-heartbeat").start()
     try:
-        with N.KeepAwake("ShortForge is downloading Shorts"):
+        from .. import errorlog
+        with N.KeepAwake("ShortForge is downloading Shorts"), errorlog.source(errorlog.SHORTS):
             return _drain(cfg, dd, should_stop or (lambda: False), announce)
     finally:
         stop_beat.set()
@@ -215,7 +216,8 @@ def _drain(cfg: Config, dd: str, should_stop, announce) -> dict:
             rec = YT.download_short(item, cfg, st, _progress_hook_factory(dd, item))
             store.record_download(dd, rec)
             known.add(item["id"])
-            _mark(dd, item["id"], store.DONE, file=rec["file"], title=rec["title"])
+            _mark(dd, item["id"], store.DONE, file=rec["file"], title=rec["title"],
+                  logo=rec.get("logo"))
             summary["downloaded"] += 1
             summary["bytes"] += int(rec.get("filesize") or 0)
             bot_streak = 0

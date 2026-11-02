@@ -36,8 +36,14 @@ ingest:
   # persists to config/providers.local.json, which this operator CAN reach
   # without hand-editing a file). Falls back to 4 if never set anywhere.
   concurrent_fragments: null
-  # Automatically detect and remove visible logos/watermarks from source video
-  remove_logos: false
+
+delogo:
+  # Remove logos / watermarks / wordmarks burned into the source. Finds anything
+  # that stays fixed while the picture behind it changes (down to ~3% opacity)
+  # and fills it in from the pixels around it. Switch on per link in the dashboard.
+  enabled: false
+  samples: 48                    # frames sampled across the video
+  max_area: 0.15                 # never treat more than this share of the picture
 
 transcribe:
   # 'base' garbles hard sources; 'small' is the sane CPU default. 'medium'/'large-v3'

@@ -193,6 +193,11 @@ DEFAULTS: dict[str, Any] = {
         "max_gap": 0.35,
         "pad": 0.1,
     },
+    "delogo": {                     # remove logos/watermarks burned into the source
+        "enabled": False,
+        "samples": 48,              # frames sampled across the video to find what never moves
+        "max_area": 0.15,           # never treat more than this share of the picture
+    },
     "brand": {                      # M8 logo overlay
         "logo": None,
         "corner": "TR",             # TL | TR | BL | BR

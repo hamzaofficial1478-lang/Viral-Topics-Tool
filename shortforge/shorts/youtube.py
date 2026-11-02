@@ -623,6 +623,10 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
     if quality_note:
         log.warning("shorts: %s — %s", item["id"], quality_note)
 
+    logo_note = ""
+    if st.get("remove_logos"):
+        staged, logo_note = _remove_logo(staged, staging, cfg, item["id"])
+
     channel_name = item.get("channel_name") or info.get("channel") or info.get("uploader") or ""
     title = (info.get("title") or item.get("title") or item["id"]).strip()
     description, d_src = description_for(info)
@@ -661,7 +665,10 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
         "seconds": round(time.time() - t0, 1),
         "source": item.get("source") or "channel",
         "quality_note": quality_note,
+        "logo": logo_note,
     }
+    if logo_note.startswith("logo removed"):
+        rec["vcodec"] = "h264"
 
     # Name it by download order in its folder (a re-download keeps its number),
     # then move ONLY the video out.
@@ -722,6 +729,27 @@ def download_short(item: dict, cfg: Config, st: dict, progress_hook=None) -> dic
              rec["width"], rec["height"], rec["vcodec"], rec["bitrate_kbps"],
              rec["filesize"] / 1e6, rec["seconds"], os.path.basename(final))
     return rec
+
+
+def _remove_logo(staged: str, staging: str, cfg: Config, vid: str) -> tuple[str, str]:
+    """Strip a fixed logo/watermark from a downloaded Short. Returns (file, note).
+
+    A failure fails this Short: removal was asked for, so saving it with the logo
+    still on would look like success when it isn't.
+    """
+    import shutil
+    from .. import delogo
+    try:
+        det = delogo.detect(staged, cfg)
+        if not det.found:
+            return staged, det.describe()
+        cleaned = os.path.join(staging, "nologo" + (os.path.splitext(staged)[1] or ".mp4"))
+        delogo.clean_file(staged, cleaned, det)
+    except ShortForgeError as e:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise ShortForgeError(f"logo removal failed: {e}") from e
+    log.info("shorts: %s — %s", vid, det.describe())
+    return cleaned, det.describe()
 
 
 def _date(raw) -> str:

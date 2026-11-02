@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
-"""ShortForge web dashboard (Part D) — a thin Streamlit layer over the pipeline.
+"""ShortForge web dashboard — a thin Streamlit layer over the pipeline.
 
-Launch:
-
-    streamlit run app.py
-
-It reuses `run_pipeline` (no pipeline logic is duplicated here): fill in a form,
-click Run, then watch live per-stage progress + a log tail while the job runs in
-a background thread, and when it finishes review each clip inline — video,
-thumbnail, hook score + justification, copy-ready title/description/tags, a
-download button, the run summary + QC, and a button that opens the output folder.
-A History screen lists past runs. The CLI stays fully functional — this is just
-an additional entry point.
+Launch with ``python cli.py ui``. Screens: 📹 Long videos (one list of links:
+add, tick, process — each link keeps its own settings), 📥 Shorts, 🐛 Error
+logs, 📚 History and ⚙️ Settings. Clip jobs run in a separate worker process
+(`cli.py queue run`, or the one `start_all.bat` starts), so closing the browser
+never stops them.
 """
 
 from __future__ import annotations
@@ -21,11 +15,9 @@ import glob
 import json
 import logging
 import os
-import queue
+import re
 import subprocess
 import sys
-import tempfile
-import threading
 import time
 
 try:
@@ -35,9 +27,7 @@ except ImportError:  # pragma: no cover
 
 from shortforge.captions.templates import ANIMATIONS, list_templates
 from shortforge.config import Config
-from shortforge.pipeline import run_pipeline
-from shortforge.research import suggest
-from shortforge.utils import ShortForgeError, load_env_file, setup_logging
+from shortforge.utils import load_env_file, setup_logging
 
 # Map log-line keywords to a progress fraction + friendly stage label.
 _STAGES = [
@@ -46,6 +36,7 @@ _STAGES = [
     ("hook scoring", 0.38, "Scoring hooks"),
     ("hook detection", 0.42, "Finding the best moments"),
     ("selected", 0.52, "Selecting clips"),
+    ("logo removal: scanning", 0.56, "Looking for logos/watermarks"),
     ("virtual camera", 0.62, "Reframing (virtual camera)"),
     ("translating", 0.68, "Translating"),
     ("stems", 0.72, "Separating music/voice"),
@@ -56,25 +47,6 @@ _STAGES = [
 _MANIFEST_GLOB = "*_manifest.json"
 
 
-class _QueueHandler(logging.Handler):
-    """Push (levelno, message) for each log record onto a queue the UI drains."""
-
-    def __init__(self, q: queue.Queue):
-        super().__init__()
-        self.q = q
-
-    def emit(self, record):
-        try:
-            self.q.put((record.levelno, record.getMessage()))
-        except Exception:  # noqa: BLE001
-            pass
-
-
-def _save_upload(uploaded, suffix: str) -> str:
-    fd, path = tempfile.mkstemp(suffix=suffix)
-    with os.fdopen(fd, "wb") as f:
-        f.write(uploaded.getbuffer())
-    return path
 
 
 _THEME_CSS = """
@@ -293,188 +265,10 @@ def _stage_from_lines(lines: list[str]) -> tuple[float, str]:
     return frac, label
 
 
-def _plan_steps(duration, tolerance, num, aspect, reframe, whisper_model,
-                language, dub_kind, metadata_on: bool = False) -> list[str]:
-    """Plain-language 'what happens next' bullets from the chosen options."""
-    lang = (language or "").strip()
-    tracking = str(reframe).lower().startswith("track")
-    count = "an auto-recommended number of" if int(num) == 0 else f"**{int(num)}**"
-    steps = [
-        f"**Transcribe** the audio with Whisper **{whisper_model}**.",
-        f"**Find the strongest moments** and cut {count} clip(s) of about "
-        f"**{int(duration)}s** (±{int(tolerance)}s), ending on natural pauses.",
-        f"**Reframe** to **{aspect or '9:16'}** "
-        f"({'tracking virtual camera' if tracking else 'center crop'}).",
-    ]
-    if lang:
-        if dub_kind == "captions":
-            steps.append(f"**Translate** the captions to **{lang}** (original audio kept).")
-        else:
-            voice = "a cloned voice" if dub_kind == "clone" else "a synthetic voice"
-            steps.append(f"**Translate and dub** into **{lang}** with {voice}, "
-                         "separating music/voice so the bed survives.")
-    else:
-        steps.append("**Keep** the original language and audio.")
-    if metadata_on:
-        steps.append("**Burn captions, render** vertical MP4s, and write an SEO "
-                     "**title, description and tags** for each clip.")
-    else:
-        steps.append("**Burn captions and render** vertical MP4s. (Title/description/tags "
-                     "are off — turn them on under **Extras** if you want them.)")
-    return steps
-
-
-def _plan_notes(whisper_model, language, dub_kind) -> list[str]:
-    """Honest speed/cost flags to set expectations before a run."""
-    lang = (language or "").strip()
-    notes = []
-    if lang and dub_kind != "captions":
-        notes.append("💲 Dubbing calls your TTS provider (ElevenLabs is paid) and the "
-                     "translation LLM — the exact cost is shown after transcription.")
-    elif lang:
-        notes.append("💲 Translation calls your configured LLM provider — cost depends on it.")
-    else:
-        notes.append("💲 Local-only run — no API cost.")
-    if whisper_model in ("medium", "large-v3"):
-        notes.append("🐢 High transcription accuracy is slow on this CPU — expect a long "
-                     "transcribe stage. 'small' is usually enough.")
-    if lang and dub_kind != "captions":
-        notes.append("⏳ Dubbing runs Demucs stem separation (~8–12× realtime on CPU) — "
-                     "the longest stage; an ETA is logged before it starts.")
-    return notes
-
-
-# --------------------------------------------------------------------------- #
-#  Job lifecycle (background thread + session-state so results survive reruns) #
-# --------------------------------------------------------------------------- #
-
-def _job_settings_detail(cfg) -> str:
-    """Plain-English 'what this run will produce', in the same words the
-    Queue/ntfy path already uses (shortforge.queue.describe_settings) — one
-    formatter, not a second copy that can drift."""
-    from shortforge import queue as Q
-    settings = {
-        "num_clips": int(cfg.get("select.num_clips", 0) or 0) or None,
-        "duration": int(cfg.get("select.target_duration", 0) or 0) or None,
-        "aspect": cfg.get("reframe.aspect"),
-        "resolution": cfg.get("reframe.resolution"),
-        "language": cfg.get("localize.language"),
-        "caption_template": cfg.get("captions.template"),
-    }
-    return Q.describe_settings({"settings": {k: v for k, v in settings.items() if v}})
-
-
-def _start_job(source, cfg, transcript_path, out_dir) -> None:
-    from shortforge import notify as N
-
-    q: queue.Queue = queue.Queue()
-    handler = _QueueHandler(q)
-    logging.getLogger("shortforge").addHandler(handler)
-    box: dict = {}
-
-    def target():
-        try:
-            box["manifest"] = run_pipeline(
-                source, cfg, owner_confirmed=True, transcript_path=transcript_path)
-        except ShortForgeError as e:
-            box["error"] = str(e)
-        except Exception as e:  # noqa: BLE001
-            box["error"] = f"Unexpected error: {e}"
-
-    t = threading.Thread(target=target, daemon=True)
-    t.start()
-    st.session_state.job = {
-        "state": "running", "thread": t, "queue": q, "handler": handler, "box": box,
-        "lines": [], "warnings": [], "out_dir": out_dir, "started": time.time(),
-        "source": source,
-    }
-    # The Queue/ntfy path always announces a link starting; this manual "New job"
-    # form was the one way to run something with no notification at all —
-    # confirmed by the operator testing it directly. Same message shape, so a
-    # phone glance can't tell which door the job came in from.
-    N.notify(f"🎬 <b>Job started</b> — making {_job_settings_detail(cfg)}\n{str(source)[:80]}")
-
-
-def _drain_queue(job: dict) -> None:
-    q = job["queue"]
-    while True:
-        try:
-            level, msg = q.get_nowait()
-        except queue.Empty:
-            break
-        job["lines"].append(msg)
-        if level >= logging.WARNING:
-            job["warnings"].append((level, msg))
-
-
 def _render_warnings(warnings: list, limit: int | None = None) -> None:
     items = warnings[-limit:] if limit else warnings
     for level, msg in items:
         (st.error if level >= logging.ERROR else st.warning)(msg)
-
-
-def _render_running(job: dict) -> None:
-    _drain_queue(job)
-    thread = job["thread"]
-    frac, label = _stage_from_lines(job["lines"])
-    elapsed = int(time.time() - job["started"])
-    st.subheader("⏳ Working on your clips…")
-    st.progress(frac, text=f"{label}  ·  {elapsed}s elapsed")
-    st.caption("You can leave this page open — it updates live. The job keeps running "
-               "even if you switch to Settings.")
-    if job["warnings"]:
-        with st.expander(f"⚠️ {len(job['warnings'])} warning(s) so far", expanded=False):
-            _render_warnings(job["warnings"], limit=8)
-    st.caption("Live log")
-    st.code("\n".join(job["lines"][-18:]) or "Starting…")
-
-    if thread.is_alive():
-        time.sleep(0.5)            # brief poll; the page reruns so it never looks frozen
-        st.rerun()
-    else:                          # finished — finalize and flip to the result view
-        from shortforge import notify as N
-
-        _drain_queue(job)
-        logging.getLogger("shortforge").removeHandler(job["handler"])
-        took = int(time.time() - job["started"])
-        if "error" in job["box"]:
-            job["state"], job["error"] = "error", job["box"]["error"]
-            N.notify(f"⚠️ <b>Job failed</b> after {took}s\n{job['error'][:300]}\n"
-                     f"{str(job.get('source', ''))[:80]}")
-        else:
-            job["state"], job["manifest"] = "done", job["box"].get("manifest")
-            n_clips = len((job["manifest"] or {}).get("clips", []))
-            N.notify(f"✅ <b>Job done</b> — {n_clips} clip(s) in {took}s\n"
-                     f"{str(job.get('source', ''))[:80]}")
-        st.rerun()
-
-
-def _render_job_result(job: dict) -> None:
-    if st.button("◀ Start another job", key="newjob"):
-        st.session_state.pop("job", None)
-        st.rerun()
-    if job["state"] == "error":
-        err = job.get("error", "The job failed.")
-        st.error(err)
-        if "requiring authentication" in err or "not a bot" in err.lower():
-            st.info("👉 Open the **Settings** screen (left sidebar) → **📺 YouTube "
-                    "authentication**, pick the browser you're logged into YouTube with "
-                    "(Firefox is most reliable on Windows), **Save**, then start the job again.")
-        if job.get("warnings"):
-            st.markdown("**Warnings during the run:**")
-            _render_warnings(job["warnings"], limit=10)
-        with st.expander("Full log", expanded=False):
-            st.code("\n".join(job.get("lines", [])[-60:]) or "(no log)")
-        return
-    manifest = job.get("manifest")
-    if not manifest:
-        st.error("No output was produced.")
-        return
-    if job.get("warnings"):        # item 4: surface stage warnings (e.g. vision 400s)
-        with st.expander(f"⚠️ {len(job['warnings'])} warning(s) during the run "
-                         "(clips still produced)", expanded=False):
-            _render_warnings(job["warnings"])
-    _render_results(manifest, out_dir=job.get("out_dir"), key_prefix="live")
 
 
 # --------------------------------------------------------------------------- #
@@ -644,11 +438,8 @@ def _start_worker() -> None:
     Only for the standalone-dashboard case — see `_begin_working`, which never
     calls this while `cli.py listen` is already running.
     """
-    import sys
-    here = os.path.dirname(os.path.abspath(__file__))
-    st.session_state.queue_proc = subprocess.Popen(
-        [sys.executable, os.path.join(here, "cli.py"), "queue", "run", "--owner-confirmed"],
-        cwd=here)
+    from shortforge import runner
+    st.session_state.queue_proc = runner.spawn_worker(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _begin_working(work_dir: str) -> str:
@@ -701,319 +492,521 @@ def _refresh_seconds() -> str:
     return f"{max(1.0, min(v, 60.0)):g}s"
 
 
-@st.fragment(run_every=_refresh_seconds())
-def _queue_status_fragment(work_dir: str) -> None:
-    """Everything that changes while the queue runs — metrics, the
-    working/paused banner, live progress for the running job, and the jobs
-    table — auto-refreshing together on the browser's own timer.
+# --------------------------------------------------------------------------- #
+#  📹 Long videos — one list: add links, tick the ones you want, process       #
+# --------------------------------------------------------------------------- #
 
-    Refresh cadence is `_refresh_seconds()` — 3s by default, adjustable in
-    Settings. The tick does more work than it used to (a queue read, a log-file
-    read, a dataframe rebuild), so on a busy machine a slower cadence can feel
-    better; the only thing a slower one costs is staleness.
+_SHAPES = {"16:9 landscape": "16:9", "9:16 portrait": "9:16", "1:1 square": "1:1"}
+_STATUS = {"listed": "⚪ waiting", "pending": "⏳ queued", "running": "▶ working",
+           "done": "✅ done", "failed": "✗ failed"}
+_DUB = {"Keep the original audio": "captions", "Dub with a synthetic voice": "voice",
+        "Dub with a cloned voice (ElevenLabs)": "clone"}
+_VIDEO_TYPES = ["mp4", "mov", "mkv", "webm", "m4v"]
 
-    The bug this fixes: an earlier version only put the progress bar/log
-    inside a fragment and left the metrics + jobs table computed once per
-    full page load, from a `Q.load_queue()` snapshot taken at that moment.
-    A job started from ntfy/Chat runs in a separate process, so it can
-    finish (or a lot can otherwise change) with nobody clicking anything in
-    the browser to trigger a fresh read — the operator watched a job
-    silently finish (3 clips made, status flipped to done) while this
-    screen kept showing "Running / 0 clips made" indefinitely, because nothing
-    outside the small progress fragment ever re-read the queue file. Now the
-    whole status section shares one fresh `Q.load_queue()` per tick, so the
-    metrics, banner, progress and table can never disagree with each other or
-    go stale relative to one another.
 
-    The queue-driven path runs in its own PROCESS (`cli.py listen`'s worker
-    thread, or a spawned `queue run` subprocess) — separate from the
-    dashboard, unlike the New Job form's own background THREAD, which shares
-    this process and so can push log lines into an in-memory queue directly.
-    There's no equivalent in-memory channel across processes, so progress is
-    read from the shared per-job log file instead (`runner.job_log_path`,
-    written by `runner._attach_job_log`) — works the same regardless of which
-    process is actually doing the work. A fragment, not a page-wide
-    sleep+rerun: refreshes only itself on the browser's own timer, doesn't
-    block the page, and (found the hard way, twice, on the Chat screen)
-    doesn't hang headless/AppTest execution, which has no real browser timer
-    to drive a blocking loop.
-    """
-    from shortforge import lifecycle
+def _work_dir() -> str:
+    return Config.load().get("paths.work_dir", ".shortforge")
+
+
+def _flash(kind: str, text: str) -> None:
+    st.session_state.setdefault("lv_flash", []).append((kind, text))
+
+
+def _show_flash() -> None:
+    for kind, text in st.session_state.pop("lv_flash", []):
+        getattr(st, kind)(text)
+
+
+def _split_sources(text: str) -> tuple[list[str], list[str]]:
+    """Lines that are links or video files on this PC, and lines that are neither."""
+    ok, bad = [], []
+    for line in (text or "").splitlines():
+        s = line.strip().strip('"').strip()
+        if not s:
+            continue
+        if s.lower().startswith(("http://", "https://", "www.")) or os.path.isfile(s):
+            ok.append(s)
+        else:
+            bad.append(s)
+    return ok, bad
+
+
+def _save_upload(work_dir: str, uploaded) -> str:
+    folder = os.path.join(work_dir, "uploads")
+    os.makedirs(folder, exist_ok=True)
+    name = re.sub(r"[^\w.\- ]+", "_", os.path.basename(uploaded.name)) or "upload.mp4"
+    path = os.path.abspath(os.path.join(folder, name))
+    with open(path, "wb") as f:
+        f.write(uploaded.getbuffer())
+    return path
+
+
+def _save_upload_as(work_dir: str, uploaded, prefix: str) -> str:
+    path = _save_upload(work_dir, uploaded)
+    final = os.path.join(os.path.dirname(path), prefix + os.path.basename(path))
+    os.replace(path, final)
+    return final
+
+
+def _new_link_settings() -> tuple[dict, str, object]:
+    """The settings panel for the links being added. Returns (settings, label, logo file)."""
+    from shortforge.reframe.resolution import CHOICES as _RC
+    from shortforge.render.render import QUALITY_CHOICES
+
+    c1, c2, c3, c4 = st.columns(4)
+    n_clips = c1.number_input("Clips per video", min_value=0, value=3, step=1, key="lv_clips",
+                              help="0 = let ShortForge decide from the video's length.")
+    dur = c2.number_input("Clip length (seconds)", min_value=5, value=60, step=5, key="lv_dur",
+                          help="No upper limit — 120 or 180 for long clips is fine.")
+    shape = c3.selectbox("Shape", list(_SHAPES), 0, key="lv_shape",
+                         help="Landscape and square centre-crop. Portrait follows the speaker.")
+    res_keys = [k for k, _ in _RC]
+    res = c4.selectbox("Resolution", res_keys, res_keys.index("1080p"), key="lv_res",
+                       format_func=lambda k: dict(_RC)[k])
+    logo = st.checkbox(
+        "🧽 Remove logos / watermarks from these videos", key="lv_logo",
+        help="Finds anything that stays fixed on screen while the picture changes — a "
+             "channel logo, a watermark, a wordmark, even a faint one (down to about 3% "
+             "opacity) — and fills it in from the pixels around it, in every clip. Adds "
+             "about half a minute per video to look for it. Only for videos you own or "
+             "are licensed to edit.")
+    with st.expander("More settings (optional)"):
+        m1, m2 = st.columns(2)
+        language = m1.text_input("Output language", key="lv_lang",
+                                 placeholder="blank = keep the original",
+                                 help="An ISO code (en, fr, de, es, ja, ar …) to translate the "
+                                      "captions — and dub, if you pick a voice.")
+        dub = m2.selectbox("Audio", list(_DUB), 0, key="lv_dub",
+                           help="Only used with an output language. Dubbing replaces the "
+                                "voice and keeps the music/sound-effects bed.")
+        m3, m4 = st.columns(2)
+        q_keys = [k for k, _ in QUALITY_CHOICES]
+        quality = m3.selectbox("Encode quality", q_keys, q_keys.index("high"), key="lv_quality",
+                               format_func=lambda k: dict(QUALITY_CHOICES)[k])
+        caption = m4.selectbox("Caption style", ["(default)"] + list_templates(), 0,
+                               key="lv_caps")
+        a1, a2, a3 = st.columns(3)
+        animation = a1.selectbox("Caption animation", ["(default)"] + ANIMATIONS, 0,
+                                 key="lv_anim")
+        camera = a2.selectbox("Camera", ["Centre crop", "Follow the speaker"], 0,
+                              key="lv_cam", help="Follow the speaker = virtual camera "
+                                                 "(portrait only; slower).")
+        encoder = a3.selectbox("Video encoder", ["x264", "auto", "qsv"], 0, key="lv_enc",
+                               format_func={"x264": "x264 (software, safe)",
+                                            "auto": "auto (best hardware)",
+                                            "qsv": "qsv (Intel Quick Sync)"}.get,
+                               help="Falls back to x264 by itself if hardware encoding fails.")
+        w1, w2, w3 = st.columns(3)
+        whisper = w1.selectbox("Transcription accuracy", ["(default)", "small", "medium",
+                                                          "large-v3", "base"], 0,
+                               key="lv_whisper",
+                               help="Whisper model. 'small' is the sensible default on this "
+                                    "CPU; medium/large-v3 are slower.")
+        src_lang = w2.text_input("Spoken language", key="lv_srclang",
+                                 placeholder="blank = detect",
+                                 help="Force the language spoken in the video (fr, en …).")
+        jumpcuts = w3.checkbox("Trim dead air (jump cuts)", key="lv_jump")
+        m5, m6, m7 = st.columns(3)
+        metadata = m5.checkbox("Title, description & tags", key="lv_meta",
+                               help="Uses your configured AI model once per clip.")
+        thumb = m6.checkbox("Cover thumbnail", key="lv_thumb")
+        label = m7.text_input("Label (optional)", key="lv_label", placeholder="podcast",
+                              help="Tags these videos' output files so you can tell them apart.")
+        overlay = st.file_uploader("Add YOUR logo on top of every clip (optional)",
+                                   type=["png", "jpg"], key="lv_overlay")
+    settings = {"num_clips": int(n_clips) or None, "duration": int(dur),
+                "aspect": _SHAPES[shape], "resolution": res, "quality": quality,
+                "remove_logos": bool(logo), "metadata": bool(metadata),
+                "thumbnail": bool(thumb)}
+    if language.strip():
+        settings["language"] = language.strip()
+        settings["dub"] = _DUB[dub]
+    if caption != "(default)":
+        settings["caption_template"] = caption
+    if animation != "(default)":
+        settings["caption_animation"] = animation
+    if camera != "Centre crop":
+        settings["reframe_mode"] = "track"
+    if encoder != "x264":
+        settings["encoder"] = encoder
+    if whisper != "(default)":
+        settings["whisper_model"] = whisper
+    if src_lang.strip():
+        settings["source_language"] = src_lang.strip()
+    if jumpcuts:
+        settings["jumpcuts"] = True
+    return settings, label, overlay
+
+
+def _add_section(work_dir: str) -> None:
     from shortforge import queue as Q
-    from shortforge import runner
+
+    st.subheader("1. Add videos")
+    text = st.text_area(
+        "Video links — one per line, as many as you like", key=_urls_key(), height=110,
+        placeholder="https://www.youtube.com/watch?v=...\nhttps://youtu.be/...\n"
+                    "C:\\Videos\\my-video.mp4  (a file on this PC works too)")
+    with st.expander("…or upload a video file (up to 200 MB)"):
+        up = st.file_uploader("Video file", type=_VIDEO_TYPES, key="lv_upload",
+                              label_visibility="collapsed")
+    st.markdown("**Settings for these videos** — each video keeps its own; you can still "
+                "change them in the list below until it starts.")
+    settings, label, overlay = _new_link_settings()
+    owner = st.checkbox("I confirm these are my own or licensed videos", key="lv_owner",
+                        help="ShortForge only processes content you own or have the rights "
+                             "to — this keeps the clips monetizable and free of Content-ID "
+                             "claims.")
+    sources, bad = _split_sources(text)
+    for b in bad[:5]:
+        st.warning(f"Not a link, and not a file on this PC: {b[:90]}")
+    n = len(sources) + (1 if up is not None else 0)
+    if n == 0:
+        st.info("➕ Paste a link above (or several, one per line).")
+        return
+    if not owner:
+        st.info("☑️ Tick the ownership confirmation to continue.")
+    go = False
+    if n == 1:
+        b1, b2 = st.columns(2)
+        go = b1.button("▶ Process this video now", type="primary", width="stretch",
+                       disabled=not owner, key="lv_go")
+        add = b2.button("➕ Add to the queue", width="stretch", disabled=not owner,
+                        key="lv_add")
+    else:
+        add = st.button(f"➕ Add {n} videos to the queue", type="primary", width="stretch",
+                        disabled=not owner, key="lv_add")
+    if not (go or add):
+        return
+
+    if up is not None:
+        sources.append(_save_upload(work_dir, up))
+    if overlay is not None:
+        settings["logo_overlay"] = _save_upload_as(work_dir, overlay, "brand_")
+    _, (added, skipped) = Q.mutate_queue(
+        work_dir, lambda q: Q.add_links(q, sources, settings, label=label, status=Q.LISTED))
+    if added and not go:
+        _flash("success", f"Added {len(added)} video(s). Tick them in the list below and "
+                          f"press ▶ Process — or ▶ Process all.")
+    if skipped:
+        _flash("warning", f"{len(skipped)} video(s) are already in the list, so they were "
+                          f"not added again:\n\n" + Q.describe_skipped(
+                              skipped, "A failed one can be retried from the list: tick it "
+                                       "and press ▶ Process selected. To redo a finished one, "
+                                       "remove it from the list first."))
+    if go:
+        target = (added or skipped)[0]
+        if target["status"] in (Q.LISTED, Q.FAILED):
+            _process(work_dir, {target["id"]})
+        elif target["status"] == Q.DONE:
+            _flash("info", "That video is already done — its clips are in 📚 History. "
+                           "Remove it from the list first to make clips from it again.")
+        else:
+            _flash("info", "That video is already queued or working — see the list below.")
+    if added:
+        st.session_state["lv_urls_ver"] = st.session_state.get("lv_urls_ver", 0) + 1
+    _reset_links_table()
+    st.rerun()
+
+
+def _process(work_dir: str, ids) -> int:
+    """Queue the chosen waiting/failed videos (all when ``ids`` is None) and start."""
+    from shortforge import queue as Q
+    _, started = Q.mutate_queue(work_dir, lambda q: Q.start_jobs(q, ids))
+    if started:
+        _flash("success", f"▶ Processing {len(started)} video(s). " + _begin_working(work_dir))
+    _reset_links_table()
+    return len(started)
+
+
+def _urls_key() -> str:
+    """A new key empties the box — clearing the old key's value leaves the text on screen."""
+    return f"lv_urls_{st.session_state.get('lv_urls_ver', 0)}"
+
+
+def _links_table_key() -> str:
+    return f"lv_tbl_{st.session_state.get('lv_tbl_ver', 0)}"
+
+
+def _reset_links_table() -> None:
+    """Start the table afresh after its rows changed — pending edits are by position."""
+    st.session_state["lv_tbl_ver"] = st.session_state.get("lv_tbl_ver", 0) + 1
+
+
+def selected_ids(ids: list[str], edited_rows: dict | None) -> list[str]:
+    out = []
+    for row, changes in (edited_rows or {}).items():
+        try:
+            if changes.get("✓") and 0 <= int(row) < len(ids):
+                out.append(ids[int(row)])
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def apply_link_edits(work_dir: str, ids: list[str], edited_rows: dict | None) -> tuple[int, int]:
+    """Save settings changed in the list. Returns (saved, refused because already started)."""
+    from shortforge import queue as Q
+    cols = {"Clips": "num_clips", "Seconds": "duration", "Shape": "aspect",
+            "Resolution": "resolution", "🧽 Logo": "remove_logos"}
+    wanted = {}
+    for row, changes in (edited_rows or {}).items():
+        try:
+            jid = ids[int(row)]
+        except (IndexError, TypeError, ValueError):
+            continue
+        fields = {cols[c]: v for c, v in changes.items() if c in cols and v is not None}
+        if fields:
+            wanted[jid] = fields
+
+    def fn(q):
+        saved = refused = 0
+        for jid, fields in wanted.items():
+            job = Q.get_job(q, jid)
+            if job is None:
+                continue
+            if not Q.editable(job):
+                refused += 1
+                continue
+            s = job.setdefault("settings", {})
+            for k, v in fields.items():
+                if k == "num_clips":
+                    v = max(0, int(v)) or None
+                elif k == "duration":
+                    v = max(5, int(v))
+                elif k == "remove_logos":
+                    v = bool(v)
+                if v is None:
+                    s.pop(k, None)
+                else:
+                    s[k] = v
+            saved += 1
+        return saved, refused
+
+    if not wanted:
+        return 0, 0
+    return Q.mutate_queue(work_dir, fn)[1]
+
+
+def _on_links_edit(work_dir: str, ids: list[str], tkey: str) -> None:
+    edits = (st.session_state.get(tkey) or {}).get("edited_rows")
+    _, refused = apply_link_edits(work_dir, ids, {
+        r: {c: v for c, v in ch.items() if c != "✓"} for r, ch in (edits or {}).items()})
+    if refused:
+        _flash("warning", "A video that has already started or finished can't be changed — "
+                          "remove it and add it again to redo it with new settings.")
+        _reset_links_table()
+
+
+def _video_name(url: str) -> str:
+    return os.path.basename(url) if os.path.isfile(url) else url
+
+
+def _running_progress(work_dir: str, running_job: dict) -> None:
+    from shortforge import lifecycle, runner
+
+    parsed = runner.read_job_log(work_dir)
+    lines = [msg for _, msg in parsed]
+    warnings = [(lvl, msg) for lvl, msg in parsed if lvl >= logging.WARNING]
+    frac, label = _stage_from_lines(lines)
+    cur = (lifecycle.read_state(work_dir) or {}).get("current") or {}
+    started = cur.get("started")
+    elapsed_text = f"  ·  {int(time.time() - started)}s elapsed" if started else ""
+    idx, total = cur.get("index"), cur.get("total")
+    loc = f"Link {idx}/{total} — " if idx and total else ""
+    st.info("⏳ Working… this updates on its own. You can close this tab — it keeps going.")
+    st.progress(frac, text=f"{label}{elapsed_text}")
+    st.caption(f"Now: {loc}{_video_name(running_job['url'])[:70]}")
+    if warnings:
+        with st.expander(f"⚠️ {len(warnings)} warning(s) so far", expanded=False):
+            _render_warnings(warnings, limit=8)
+    st.caption("Live log")
+    st.code("\n".join(lines[-18:]) or "Starting…")
+
+
+@st.fragment(run_every=_refresh_seconds())
+def _links_fragment(work_dir: str) -> None:
+    """The list, its live status and its buttons — refreshes on its own."""
+    from shortforge import queue as Q
+    from shortforge.reframe.resolution import CHOICES as _RC
 
     q = Q.load_queue(work_dir)
-    counts = Q.counts(q)
+    jobs = q.get("jobs", [])
+    st.subheader("2. Your videos")
+    if not jobs:
+        st.caption("Nothing here yet — add videos above.")
+        return
+    c = Q.counts(q)
     paused = Q.is_paused(q)
-    running = counts[Q.RUNNING] > 0
+    m = st.columns(5)
+    m[0].metric("Waiting for you", c[Q.LISTED])
+    m[1].metric("Queued", c[Q.PENDING])
+    m[2].metric("Working", c[Q.RUNNING])
+    m[3].metric("Done", c[Q.DONE])
+    m[4].metric("Clips made", Q.total_clips(q))
 
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Pending", counts[Q.PENDING])
-    m2.metric("Running", counts[Q.RUNNING])
-    m3.metric("Done", counts[Q.DONE])
-    m4.metric("Clips made", Q.total_clips(q))
+    running_job = next((j for j in jobs if j["status"] == Q.RUNNING), None)
+    if running_job:
+        _running_progress(work_dir, running_job)
+    elif c[Q.PENDING] and paused:
+        st.warning("⏸ Paused — queued videos wait until you press ▶ Resume.")
+    elif c[Q.PENDING] and not _worker_is_live(work_dir):
+        st.warning("Queued videos are waiting, but nothing is working on them.")
+        if st.button("▶ Start working", type="primary", key="lv_kick"):
+            _flash("success", _begin_working(work_dir))
+            st.rerun()
 
-    r1, r2, r3 = st.columns(3)
-    if r1.button("▶ Start working", type="primary", width="stretch",
-                 disabled=running or counts[Q.PENDING] == 0):
-        st.success(_begin_working(work_dir))
+    ids = [j["id"] for j in jobs]
+    rows = [{"✓": False,
+             "Status": _STATUS.get(j["status"], j["status"]),
+             "Video": _video_name(j["url"]),
+             "🧽 Logo": bool(j["settings"].get("remove_logos")),
+             "Clips": int(j["settings"].get("num_clips") or 0),
+             "Seconds": int(j["settings"].get("duration") or 60),
+             "Shape": j["settings"].get("aspect", "16:9"),
+             "Resolution": j["settings"].get("resolution", "1080p"),
+             "Made": len(j.get("clips") or []),
+             "Note": (j.get("error") or Q.describe_settings(j))[:120]} for j in jobs]
+    tkey = _links_table_key()
+    st.data_editor(
+        rows, key=tkey, hide_index=True, width="stretch", num_rows="fixed",
+        height=min(520, 38 + 35 * len(rows)),
+        disabled=["Status", "Video", "Made", "Note"],
+        column_config={
+            "✓": st.column_config.CheckboxColumn("✓", width="small",
+                                                 help="Tick the videos to process or remove."),
+            "Status": st.column_config.TextColumn("Status", width="small"),
+            "Video": st.column_config.TextColumn("Video", width="medium"),
+            "Made": st.column_config.NumberColumn("Made", width="small"),
+            "Clips": st.column_config.NumberColumn("Clips", min_value=0, step=1, format="%d",
+                                                   help="0 = automatic"),
+            "Seconds": st.column_config.NumberColumn("Seconds", min_value=5, step=5,
+                                                     format="%d"),
+            "Shape": st.column_config.SelectboxColumn("Shape", options=["16:9", "9:16", "1:1"]),
+            "Resolution": st.column_config.SelectboxColumn(
+                "Resolution", options=[k for k, _ in _RC]),
+            "🧽 Logo": st.column_config.CheckboxColumn(
+                "🧽 Logo", width="small",
+                help="Remove logos / watermarks from this video's clips."),
+        },
+        on_change=_on_links_edit, args=(work_dir, ids, tkey))
+    st.caption("Tick **✓** the videos you want, then **▶ Process selected** — or "
+               "**▶ Process all**. Clips, length, shape, resolution and 🧽 logo removal "
+               "can be changed right in the table until a video starts.")
+
+    picked = selected_ids(ids, (st.session_state.get(tkey) or {}).get("edited_rows"))
+    startable = {j["id"] for j in jobs if j["status"] in (Q.LISTED, Q.FAILED)}
+    sel_start = [i for i in picked if i in startable]
+    b1, b2, b3, b4 = st.columns(4)
+    if b1.button(f"▶ Process selected ({len(sel_start)})", type="primary", width="stretch",
+                 disabled=not sel_start, key="lv_proc_sel"):
+        _process(work_dir, set(sel_start))
         st.rerun()
-    if r2.button("⏸ Pause" if not paused else "▶ Resume", width="stretch"):
-        fresh = Q.load_queue(work_dir)      # not the snapshot from the top of the tick
-        Q.set_paused(fresh, not paused)
-        Q.save_queue(fresh, work_dir)
+    if b2.button(f"▶ Process all ({len(startable)})", width="stretch",
+                 disabled=not startable, key="lv_proc_all"):
+        _process(work_dir, None)
         st.rerun()
-    if r3.button("🧹 Clear finished", width="stretch"):
+    if b3.button(f"🗑 Remove selected ({len(picked)})", width="stretch",
+                 disabled=not picked, key="lv_rm"):
+        _remove(work_dir, set(picked))
+        st.rerun()
+    if c[Q.PENDING] or c[Q.RUNNING] or paused:
+        if b4.button("▶ Resume" if paused else "⏸ Pause after this video", width="stretch",
+                     key="lv_pause"):
+            Q.mutate_queue(work_dir, lambda qq: Q.set_paused(qq, not paused))
+            if paused:
+                _flash("success", _begin_working(work_dir))
+            st.rerun()
+    elif b4.button("🧹 Clear finished", width="stretch", disabled=not c[Q.DONE],
+                   key="lv_clear"):
         from shortforge import notify as N
         from shortforge import remote_control as RC
-        # Shared with /clear and the bare "clear" chat word (CLAUDE.md rule 6)
-        # so all three doors report the exact same count, worded the same way.
         N.notify(RC._clear(work_dir))
+        _reset_links_table()
         st.rerun()
 
-    running_job = next((j for j in q.get("jobs", []) if j["status"] == Q.RUNNING), None)
-    if running_job:
-        # Same level of detail the manual New Job form has always had (live log,
-        # warnings surfaced separately, elapsed time) — the operator asked for
-        # this explicitly after the metrics-staleness fix above still left this
-        # view thinner than New Job's, with no way to tell "it's fine, just
-        # working" from "something's actually wrong" without digging in logs
-        # elsewhere. The queue-driven path runs in its own PROCESS though, so
-        # there's no in-memory (levelno, message) queue like New Job's thread
-        # has — `runner.read_job_log` parses them back out of the per-job log
-        # file instead (written with a "LEVELNAME\tmessage" prefix for exactly
-        # this reason), same shared file `_stage_from_lines` already read here.
-        parsed = runner.read_job_log(work_dir)
-        lines = [msg for _, msg in parsed]
-        warnings = [(lvl, msg) for lvl, msg in parsed if lvl >= logging.WARNING]
-        frac, label = _stage_from_lines(lines)
-
-        cur = (lifecycle.read_state(work_dir) or {}).get("current") or {}
-        started = cur.get("started")
-        elapsed_text = f"  ·  {int(time.time() - started)}s elapsed" if started else ""
-        idx, total = cur.get("index"), cur.get("total")
-        loc = f"Link {idx}/{total} — " if idx and total else ""
-
-        st.info("⏳ Working… this updates on its own.")
-        st.progress(frac, text=f"{label}{elapsed_text}")
-        st.caption(f"Now: {loc}{running_job['url'][:70]}")
-        if warnings:
-            with st.expander(f"⚠️ {len(warnings)} warning(s) so far", expanded=False):
-                _render_warnings(warnings, limit=8)
-        st.caption("Live log")
-        st.code("\n".join(lines[-18:]) or "Starting…")
-    elif paused:
-        st.warning("⏸ Paused — new links are still accepted, nothing new starts.")
-
-    jobs = q.get("jobs", [])
-    if jobs:
-        st.divider()
-        marks = {Q.PENDING: "⏳", Q.RUNNING: "▶", Q.DONE: "✅", Q.FAILED: "✗"}
-        rows = [{
-            "#": i,
-            "": marks.get(j["status"], "?"),
-            "link": j["url"][:60],
-            "clips": j["settings"].get("num_clips", "auto"),
-            "seconds": j["settings"].get("duration", "-"),
-            "shape": j["settings"].get("aspect", "-"),
-            "made": len(j.get("clips") or []),
-            "note": (j.get("error") or "")[:60],
-        } for i, j in enumerate(jobs, 1)]
-        st.dataframe(rows, width="stretch", hide_index=True)
-    else:
-        st.caption("The queue is empty.")
+    failed = [j for j in jobs if j["status"] == Q.FAILED]
+    if failed:
+        st.error(f"✗ **{len(failed)} video(s) failed** — the reason is in the **Note** column "
+                 "and on the **🐛 Error logs** screen. Tick them and press ▶ Process selected "
+                 "to try again.")
+        if any("not a bot" in (j.get("error") or "").lower()
+               or "requiring authentication" in (j.get("error") or "") for j in failed):
+            st.info("👉 YouTube is asking to sign in: turn off any VPN/proxy, then **⚙️ "
+                    "Settings → 📺 YouTube authentication** → pick Firefox → Save.")
+    if c[Q.DONE]:
+        st.caption("Finished clips are on the **📚 History** screen (and in the `out` folder).")
 
 
-def _render_queue() -> None:
-    """Paste a batch of links with their settings and let the PC work through them."""
+def _remove(work_dir: str, ids: set) -> None:
+    from shortforge import notify as N
     from shortforge import queue as Q
-    from shortforge.config import Config as _C
+    fresh, gone = Q.mutate_queue(work_dir, lambda q: Q.remove_jobs(q, ids))
+    if gone:
+        left = Q.counts(fresh)[Q.PENDING] + Q.counts(fresh)[Q.LISTED]
+        N.notify(f"🗑 <b>Removed {len(gone)} link(s)</b>\n"
+                 + "\n".join(j["url"][:80] for j in gone[:5])
+                 + f"\n{left} link(s) still on the list.")
+        _flash("success", f"Removed {len(gone)} video(s).")
+    if len(gone) < len(ids):
+        _flash("warning", "The video that is working right now was kept — pause first, "
+                          "then remove it once it finishes.")
+    _reset_links_table()
 
-    st.header("🎬 Link queue")
-    st.caption("Paste one or more video links, choose the settings for this batch, and add "
-               "them. ShortForge works through them one at a time — you can close this tab.")
 
-    # No page-level queue snapshot on purpose: every handler below re-reads the
-    # file at the moment it acts. A single long-lived `q` read here was how a
-    # stale copy got written back over the worker's progress.
-    work_dir = _C.load().get("paths.work_dir", ".shortforge")
-
-    # ---- add links -------------------------------------------------------- #
-    st.subheader("1. Add links")
-    st.info("**The settings below apply only to the links you add in THIS step.** "
-            "Add your first batch, then change the settings and add the next link — "
-            "each link keeps the settings it was added with. You never need to delete "
-            "anything. Every link's own settings are shown in the table at the bottom.")
-    urls_text = st.text_area(
-        "Video links (one per line — same settings for all of them)", height=120,
-        key="q_urls",
-        placeholder="https://www.youtube.com/watch?v=...\nhttps://youtu.be/...")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        n_clips = st.number_input("How many clips from each link", min_value=0, value=3, step=1,
-                                  help="0 = let ShortForge decide from the video's length.")
-    with c2:
-        dur = st.number_input("Clip length (seconds)", min_value=5, value=60, step=5,
-                              help="No upper limit — 120 or 180 for long clips is fine.")
-    with c3:
-        shape = st.selectbox("Orientation", ["16:9 landscape", "9:16 portrait", "1:1 square"], 0,
-                             help="Landscape and square centre-crop (fast, no face tracking). "
-                                  "Portrait can follow the speaker.")
-    c4, c5 = st.columns(2)
-    with c4:
-        from shortforge.reframe.resolution import CHOICES as _RC
-        _rk = [k for k, _ in _RC]
-        res = st.selectbox("Resolution", _rk, _rk.index("1080p"),
-                           format_func=lambda k: dict(_RC)[k])
-    with c5:
-        label = st.text_input("Label (optional)", placeholder="podcast",
-                              help="Tags this batch's output files so you can tell them apart.")
-
-    aspect = {"16:9 landscape": "16:9", "9:16 portrait": "9:16", "1:1 square": "1:1"}[shape]
-    owner = st.checkbox("I confirm these are my own or licensed videos", value=False)
-    urls = [u.strip() for u in (urls_text or "").splitlines() if u.strip()]
-    if st.button(f"➕ Add {len(urls) or ''} link(s) to the queue".replace("  ", " "),
-                 type="primary", width="stretch", disabled=not (urls and owner)):
-        settings = {"num_clips": int(n_clips) or None, "duration": int(dur),
-                    "aspect": aspect, "resolution": res}
-        # Read fresh rather than reusing a page-level snapshot. Streamlit
-        # re-runs the whole script on a click, so today's window is only
-        # milliseconds wide and no loss has been observed — but the shape is
-        # the hazard: writing back a queue read at a different time than it is
-        # saved is what would roll a worker-completed job back to `pending` and
-        # erase its recorded clips. Keeping every handler self-contained means
-        # that stays true even if this button later moves into a fragment
-        # (fragments re-run alone, which is where the window really opens).
-        fresh = Q.load_queue(work_dir)
-        # Same dedupe as ntfy/Chat/CLI — one policy, one wording (see
-        # queue.add_links). Re-adding a link the queue already has would render
-        # the same video twice: hours of CPU here, and paid spend twice over.
-        added, skipped = Q.add_links(fresh, urls, settings, label=label)
-        Q.save_queue(fresh, work_dir)
-        if added:
-            st.success(f"Added {len(added)} link(s). {Q.describe(fresh)}")
-        if skipped:
-            st.warning(f"Skipped {len(skipped)} link(s) already in the queue:\n\n"
-                       + Q.describe_skipped(skipped))
-        if added:
-            st.rerun()
-    if not urls:
-        st.info("➕ Paste at least one link above.")
-    elif not owner:
-        st.info("☑️ Tick the ownership confirmation to add them.")
-
-    # ---- run controls + live status (metrics, progress, jobs table) -------- #
+def _render_long_videos() -> None:
+    st.header("📹 Long videos → clips")
+    st.caption("Add your videos, tick the ones you want, press ▶ Process. Each video keeps "
+               "its own settings, and a video already on the list is never added twice.")
+    _show_flash()
+    work_dir = _work_dir()
+    _add_section(work_dir)
     st.divider()
-    st.subheader("2. Work through the queue")
-    _queue_status_fragment(work_dir)
-
-    # A fresh read here, deliberately OUTSIDE the auto-refreshing fragment
-    # above: this is an editing tool, not a status display, and re-reading a
-    # jobs list mid-edit every 3s is a needless (if probably harmless) risk
-    # to the operator's in-progress selection — no reason to take it.
-    jobs = Q.load_queue(work_dir).get("jobs", [])
-    if jobs:
-        with st.expander("✏️ Change one link's settings (or remove it)", expanded=False):
-            opts = [f"{i}. {j['url'][:55]}" for i, j in enumerate(jobs, 1)]
-            pick = st.selectbox("Which link?", opts, key="q_edit_pick")
-            j = jobs[opts.index(pick)]
-            done = j["status"] in (Q.DONE, Q.RUNNING)
-            e1, e2, e3, e4 = st.columns(4)
-            ec = e1.number_input("Clips", min_value=0, key="q_e_clips",
-                                 value=int(j["settings"].get("num_clips") or 0))
-            ed = e2.number_input("Seconds", min_value=5, key="q_e_dur",
-                                 value=int(j["settings"].get("duration") or 60))
-            shapes = ["16:9", "9:16", "1:1"]
-            cur_shape = j["settings"].get("aspect", "16:9")
-            es = e3.selectbox("Shape", shapes, key="q_e_shape",
-                              index=shapes.index(cur_shape) if cur_shape in shapes else 0)
-            from shortforge.reframe.resolution import CHOICES as _RC2
-            resl = [k for k, _ in _RC2]
-            cur_res = j["settings"].get("resolution", "1080p")
-            er = e4.selectbox("Res", resl, key="q_e_res",
-                              index=resl.index(cur_res) if cur_res in resl else 0)
-            b1, b2 = st.columns(2)
-            if b1.button("💾 Save this link's settings", width="stretch", disabled=done):
-                fresh = Q.load_queue(work_dir)
-                fj = Q.get_job(fresh, j["id"])
-                fj["settings"].update({"num_clips": int(ec) or None, "duration": int(ed),
-                                       "aspect": es, "resolution": er})
-                fj["settings"] = {k: v for k, v in fj["settings"].items() if v is not None}
-                Q.save_queue(fresh, work_dir)
-                st.success("Saved for this link only.")
-                st.rerun()
-            if b2.button("🗑 Remove this link", width="stretch"):
-                from shortforge import notify as N
-                fresh = Q.load_queue(work_dir)
-                fresh["jobs"] = [x for x in fresh["jobs"] if x["id"] != j["id"]]
-                Q.save_queue(fresh, work_dir)
-                # Operator asked explicitly: whenever a link leaves the queue —
-                # from here, /cancel, /clear, or the chat words — a phone
-                # notification should say so. Ten links queued, one quietly
-                # vanishing with no trace was the reported gap.
-                left = Q.counts(fresh)[Q.PENDING]
-                N.notify(f"🗑 <b>Removed a queued link</b>\n{j['url'][:80]}\n"
-                        f"{left} link(s) still pending.")
-                st.rerun()
-            if done:
-                st.caption("This link is already running/finished — settings are locked.")
+    _links_fragment(work_dir)
 
 
-@st.fragment(run_every="60s")
+# --------------------------------------------------------------------------- #
+#  🐛 Error logs                                                               #
+# --------------------------------------------------------------------------- #
+
+@st.fragment(run_every=_refresh_seconds())
+def _error_log_fragment(work_dir: str, which: str, errors_only: bool) -> None:
+    from shortforge import errorlog as E
+
+    entries = E.read(work_dir, limit=500)
+    if which != "all":
+        entries = [e for e in entries if e.get("source") == which]
+    if errors_only:
+        entries = [e for e in entries if e.get("level") in ("ERROR", "CRITICAL")]
+    if not entries:
+        st.success("✓ No problems recorded" + (" for this section." if which != "all" else "."))
+        return
+    shown = entries[:60]
+    st.caption(f"Newest first — showing {len(shown)} of {len(entries)}.")
+    for e in shown:
+        when = datetime.datetime.fromtimestamp(float(e.get("t") or 0)).strftime("%d %b %H:%M:%S")
+        head = f"**{when}** · {E.LABELS.get(e.get('source'), e.get('source'))}"
+        body = f"{head}\n\n{e.get('msg', '')}"
+        (st.error if e.get("level") in ("ERROR", "CRITICAL") else st.warning)(body)
+
+
 def _render_error_logs() -> None:
-    """Real-time error logs aggregated from both long-video processing and
-    shorts downloading. Shows errors chronologically with context."""
-    st.caption("Real-time error log — shows issues from long-video processing or shorts "
-               "downloads. Errors are logged with timestamp and context.")
+    from shortforge import errorlog as E
 
-    from shortforge.config import Config as _C
-
-    work_dir = _C.load().get("paths.work_dir", ".shortforge")
-    log_file = os.path.join(work_dir, "errors.log")
-
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        if st.button("🔄 Refresh"):
-            st.rerun()
-    with col2:
-        if st.button("🗑️ Clear error log"):
-            try:
-                os.remove(log_file)
-                st.success("Error log cleared")
-                st.rerun()
-            except FileNotFoundError:
-                st.info("No error log to clear")
-
-    st.divider()
-
-    if not os.path.exists(log_file):
-        st.info("✓ No errors logged yet")
-        return
-
-    try:
-        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except (OSError, IOError):
-        st.error("Could not read error log")
-        return
-
-    if not lines:
-        st.info("✓ Error log is empty")
-        return
-
-    # Show errors in reverse chronological order (newest first)
-    for line in reversed(lines[-100:]):  # Show last 100 errors
-        line = line.strip()
-        if not line:
-            continue
-
-        # Color-code by severity
-        if "ERROR" in line or "FAILED" in line:
-            st.error(line)
-        elif "WARNING" in line:
-            st.warning(line)
-        else:
-            st.text(line)
+    st.header("🐛 Error logs")
+    st.caption("Every problem from making clips (📹 Long videos) and downloading Shorts "
+               "(📥 Shorts), newest first. It updates by itself while things run.")
+    work_dir = _work_dir()
+    c1, c2, c3 = st.columns([3, 3, 1])
+    which = c1.radio("From", ["all", E.LONG, E.SHORTS],
+                     format_func=lambda k: "Everything" if k == "all" else E.LABELS[k],
+                     horizontal=True, key="el_which")
+    level = c2.radio("Show", ["Errors and warnings", "Errors only"], horizontal=True,
+                     key="el_level")
+    if c3.button("🗑 Clear", width="stretch", key="el_clear",
+                 help="Empties this log. Nothing else is touched."):
+        E.clear(work_dir)
+        st.rerun()
+    _error_log_fragment(work_dir, which, level == "Errors only")
 
 
 _manifest_cache: dict[str, tuple[tuple, dict | None]] = {}
@@ -1073,275 +1066,36 @@ def _render_history() -> None:
     _render_results(manifest, out_dir=os.path.dirname(mp), key_prefix=key, video_on_demand=True)
 
 
-# --------------------------------------------------------------------------- #
-#  Main                                                                        #
-# --------------------------------------------------------------------------- #
-
-def _render_new_job_form() -> None:
-    st.caption("Turn your own long-form videos into short vertical clips — captions, "
-               "optional dub, SEO titles/tags. Your machine, your content.")
-
-    with st.sidebar:
-        st.header("Growing niches")
-        if st.button("Suggest niches"):
-            for nsug in suggest(top=5):
-                st.markdown(f"**{nsug['name']}**  ·  score {nsug['opportunity']}  \n"
-                            f"<small>{nsug['why']}</small>", unsafe_allow_html=True)
-
-    # ---- 1. Your video ------------------------------------------------------
-    st.subheader("1. Your video")
-    source_url = st.text_input(
-        "Video URL (from your own channel)",
-        help="A link to a video you own or have licensed. Leave blank if uploading a file.")
-    up = st.file_uploader("…or upload a file from your computer",
-                          type=["mp4", "mov", "mkv", "webm", "m4v"])
-    owner = st.checkbox(
-        "I confirm this is my own or licensed content",
-        value=False,
-        help="ShortForge only processes content you own or have the rights to — this keeps "
-             "the clips monetizable and free of Content-ID claims.")
-
-    # ---- 2. The basics ------------------------------------------------------
-    st.subheader("2. The basics")
-    b1, b2, b3 = st.columns(3)
-    with b1:
-        duration = st.number_input(
-            "Clip length (seconds)", min_value=5, value=45, step=5,
-            help="How long each short should be. No upper limit — 60, 120, 180s are all fine. "
-                 "Clips can never exceed the source video's length.")
-    with b2:
-        num = st.number_input(
-            "How many clips", min_value=0, value=0, step=1,
-            help="0 = let ShortForge decide from the video's length and its strongest moments. "
-                 "Any explicit number is honoured (limited only by how much good material exists).")
-    with b3:
-        language = st.text_input(
-            "Output language", value="",
-            help="Blank = keep the original language. Otherwise an ISO code (en, de, fr, es, "
-                 "ja, ar …) to translate the captions — and dub, if you choose a voice below.")
-
-    dub_choices = ["Keep the original audio (captions only)",
-                   "Dub with a synthetic voice",
-                   "Dub with a cloned voice (via ElevenLabs)"]
-    dub_mode = st.selectbox(
-        "Audio", dub_choices, 0,
-        help="Only applies when you set an output language. Dubbing replaces the original "
-             "voice and keeps the music/sound-effects bed. Cloning routes through your "
-             "configured ElevenLabs provider (local cloning is impractical on CPU).")
-    dub_kind = ("captions", "voice", "clone")[dub_choices.index(dub_mode)]
-
-    # ---- Advanced -----------------------------------------------------------
-    with st.expander("Advanced options (defaults are sensible — open only if you need them)"):
-        a1, a2 = st.columns(2)
-        with a1:
-            tolerance = st.number_input(
-                "Length tolerance (± seconds)", min_value=1, value=12, step=1,
-                help="How far a clip may stray from the target length so it can end on a "
-                     "natural pause instead of mid-sentence.")
-            min_speech_pct = st.slider(
-                "Treat as 'no voice-over' when talk covers less than",
-                min_value=0, max_value=80, value=25, step=5, format="%d%%",
-                help="Music, sports and b-roll videos have no voice-over, but the "
-                     "transcriber still 'hears' stray words in the music. Below this "
-                     "share of actual talk, clips are cut from the timeline instead — "
-                     "which always delivers the clip count and length you asked for. "
-                     "Set 0% to always use the speech-based hook finder.")
-            aspect = st.text_input(
-                "Aspect / shape", value="16:9",
-                help="9:16 (vertical), 1:1 (square), 16:9 (wide), or an exact WxH such as "
-                     "1080x1920. This is the SHAPE — pixel size is set separately below.")
-            from shortforge.reframe.resolution import (
-                CHOICES as _RES_CHOICES, source_height_needed)
-            _res_keys = [k for k, _ in _RES_CHOICES]
-            resolution = st.selectbox(
-                "Resolution (pixel size)", _res_keys,
-                _res_keys.index("1080p"),
-                format_func=lambda k: dict(_RES_CHOICES)[k],
-                help="The short side in pixels — separate from aspect. Going above the "
-                     "source's own resolution cannot add detail, so check the note below: "
-                     "it says whether your source can actually fill this size.")
-            from shortforge.render.render import QUALITY_CHOICES
-            _q_keys = [k for k, _ in QUALITY_CHOICES]
-            quality = st.selectbox(
-                "Encode quality", _q_keys, _q_keys.index("high"),
-                format_func=lambda k: dict(QUALITY_CHOICES)[k],
-                help="Facebook, Instagram and YouTube re-encode everything you upload, so "
-                     "your file is the INPUT to their encoder. A visually-clean file "
-                     "survives that second pass; a compressed one gets compounded. "
-                     "'Maximum' is slowest to render and best to upload.")
-            from shortforge.reframe import estimate_export
-            try:
-                _est = estimate_export(resolution, aspect, float(duration), int(num) or 1)
-                st.caption(f"→ {_est['width']}×{_est['height']} · ~{_est['mb_per_clip']} MB/clip "
-                           f"· render {_est['render_speed']}")
-                _need = source_height_needed(resolution, aspect)
-                st.caption(
-                    f"For a genuinely sharp {_est['width']}×{_est['height']}, the source "
-                    f"needs to be at least **{_need}px tall**. A 1080p source cropped to "
-                    f"{aspect} only has ~{int(1080 * _est['width'] / _est['height'])}px of "
-                    f"width left, which then has to be enlarged — that is what makes clips "
-                    f"look pixelated. ShortForge now downloads up to 4K automatically.")
-            except Exception:  # noqa: BLE001
-                pass
-            reframe = st.selectbox(
-                "Reframing", ["Center crop (fast)", "Track the action (virtual camera)"], 0,
-                help="Center crop is a fixed crop — no face detection, fastest. Track follows "
-                     "the speaker across the frame (only used for portrait output; it adds a "
-                     "per-frame vision pass).")
-            whisper_model = st.selectbox(
-                "Transcription accuracy", ["small", "base", "medium", "large-v3"], 0,
-                help="'small' is the balanced CPU default. 'base' is faster but garbles hard "
-                     "speech. 'medium'/'large-v3' are more accurate but much slower on CPU.")
-            source_lang = st.text_input(
-                "Spoken-language hint (blank = autodetect)", "",
-                help="Force the source language (ISO code, e.g. fr) if autodetect misreads it.")
-        with a2:
-            template = st.selectbox("Caption style", list_templates())
-            animation = st.selectbox("Caption animation", ["(style default)"] + ANIMATIONS)
-            jumpcuts = st.checkbox(
-                "Trim dead air (jump cuts)", value=False,
-                help="Cut long silent gaps so the clip feels tighter.")
-            enc_choices = ["x264 (software, default)", "auto (best hardware)",
-                           "qsv (Intel Quick Sync)"]
-            encoder_pick = st.selectbox(
-                "Video encoder", enc_choices, 0,
-                help="x264 is the safe default. QSV (Intel Quick Sync) is much faster on a "
-                     "hardware-encode machine — compare quality first with `encode-sample`. "
-                     "Falls back to x264 automatically if hardware encoding fails.")
-            encoder = {"x264 (software, default)": "x264", "auto (best hardware)": "auto",
-                       "qsv (Intel Quick Sync)": "qsv"}[encoder_pick]
-            logo = st.file_uploader("Logo overlay (optional)", type=["png", "jpg"])
-            remove_logo = st.checkbox(
-                "Remove logos/watermarks from source video", value=False,
-                help="Automatically detect and remove visible logos, watermarks, and wordmarks "
-                     "from the video before processing. Works on any opacity level.")
-
-    # ---- Extras (opt-in; off by default — STEP 9) --------------------------
-    with st.expander("Extras (optional — off by default)"):
-        st.caption("ShortForge focuses on finding and rendering clips. These add a "
-                   "per-clip LLM call / extra step, so they're off unless you turn them on.")
-        want_metadata = st.checkbox(
-            "Generate title, description & hashtags per clip", value=False,
-            help="Uses your configured LLM once per clip. Leave off if you write your own.")
-        want_thumbnail = st.checkbox(
-            "Generate a cover-frame thumbnail per clip", value=False,
-            help="Extracts a representative frame as a .jpg next to each clip.")
-
-    # ---- 3. What happens next ----------------------------------------------
-    st.subheader("3. What happens next")
-    for step in _plan_steps(duration, tolerance, num, aspect, reframe, whisper_model,
-                            language, dub_kind, metadata_on=want_metadata):
-        st.markdown(f"- {step}")
-    for note in _plan_notes(whisper_model, language, dub_kind):
-        st.caption(note)
-
-    # ---- Run (with inline validation) --------------------------------------
-    has_source = bool(source_url.strip() or up is not None)
-    ready = has_source and owner
-    if not has_source:
-        st.info("➕ Add a video URL or upload a file to continue.")
-    elif not owner:
-        st.info("☑️ Tick the ownership confirmation to continue.")
-    run = st.button("Run ▶", type="primary", width="stretch", disabled=not ready)
-    if not run:
-        return
-
-    source = source_url.strip()
-    transcript_path = None
-    if up is not None:
-        source = _save_upload(up, os.path.splitext(up.name)[1] or ".mp4")
-
-    cfg = Config.load()
-    cfg.override("reframe.aspect", aspect.strip() or "16:9")
-    cfg.override("reframe.resolution", resolution)
-    cfg.override("render.quality", quality)
-    cfg.override("select.target_duration", int(duration))
-    cfg.override("select.tolerance", int(tolerance))
-    cfg.override("select.num_clips", int(num))
-    cfg.override("select.min_speech_coverage", float(min_speech_pct) / 100.0)
-    cfg.override("captions.template", template)
-    if animation != "(style default)":
-        cfg.override("captions.animation", animation)
-    cfg.override("reframe.mode", "center" if reframe.startswith("Center") else "track")
-    cfg.override("render.encoder", encoder)
-    cfg.override("metadata.enabled", bool(want_metadata))   # STEP 9: opt-in extras
-    cfg.override("thumbnail.enabled", bool(want_thumbnail))
-    cfg.override("edit.jumpcuts", bool(jumpcuts))
-    cfg.override("transcribe.model", whisper_model)
-    cfg.override("ingest.remove_logos", bool(remove_logo))
-    if source_lang.strip():
-        cfg.override("transcribe.language", source_lang.strip())
-    cfg.override("localize.language", language.strip() or None)
-    if language.strip() and dub_kind != "captions":
-        cfg.override("localize.dub", True)
-        cfg.override("localize.tts_backend", "xtts" if dub_kind == "clone" else "auto")
-    out_dir = os.path.abspath("out")
-    cfg.override("paths.output_dir", out_dir)
-    if logo is not None:
-        cfg.override("brand.logo", _save_upload(logo, os.path.splitext(logo.name)[1] or ".png"))
-
-    _start_job(source, cfg, transcript_path, out_dir)
-    st.rerun()
-
-
 def main() -> None:
     st.set_page_config(page_title="ShortForge", page_icon="🎬", layout="wide")
     _inject_theme()
     setup_logging(False)
     load_env_file(".env")
+    from shortforge import errorlog
+    errorlog.install(_work_dir(), errorlog.APP)
 
     st.title("🎬 ShortForge")
-
     with st.sidebar:
-        screen = st.radio("Screen", ["📹 Long Videos", "📥 Shorts", "🐛 Error Logs",
-                                     "📚 History", "⚙️ Settings"], index=0,
-                          help="📥 Shorts is a separate tool for downloading YouTube Shorts. "
-                               "Everything else makes clips from long videos.")
+        screen = st.radio(
+            "Screen", ["📹 Long videos", "📥 Shorts", "🐛 Error logs", "📚 History",
+                       "⚙️ Settings"], index=0,
+            help="📹 Long videos turns your videos into clips. 📥 Shorts downloads Shorts "
+                 "from the channels you save. 🐛 Error logs shows every problem from both.")
         st.divider()
 
-    # Long Videos screen — shows queue and form together
-    if screen == "📹 Long Videos":
-        job = st.session_state.get("job")
-        if job and job.get("state") == "running":
-            _render_running(job)
-        elif job and job.get("state") in ("done", "error"):
-            _render_job_result(job)
-        else:
-            col1, col2 = st.columns([1, 1], gap="large")
-            with col1:
-                st.subheader("📋 Queue")
-                _render_queue()
-            with col2:
-                st.subheader("➕ Add New Job")
-                _render_new_job_form()
-        _resource_footer()
-        return
-
-    # Shorts screen
     if screen == "📥 Shorts":
         from shortforge.ui.shorts_tab import render as render_shorts
         render_shorts(run_every=_refresh_seconds())
-        _resource_footer()
-        return
-
-    # Error Logs screen
-    if screen == "🐛 Error Logs":
+    elif screen == "🐛 Error logs":
         _render_error_logs()
-        _resource_footer()
-        return
-
-    # History screen
-    if screen == "📚 History":
+    elif screen == "📚 History":
         _render_history()
-        _resource_footer()
-        return
-
-    # Settings screen
-    if screen == "⚙️ Settings":
+    elif screen == "⚙️ Settings":
         from shortforge.ui.settings import render as render_settings
         render_settings()
-        _resource_footer()
-        return
+    else:
+        _render_long_videos()
+    _resource_footer()
 
 
 if __name__ == "__main__":

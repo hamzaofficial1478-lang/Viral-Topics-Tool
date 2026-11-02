@@ -514,16 +514,6 @@ def ingest(source: str, cfg: Config, *, owner_confirmed: bool) -> SourceMeta:
         meta = _ingest_local(source)
 
     meta.owner_confirmed = True
-
-    # Logo/watermark removal hook (FUTURE: implement detection + inpainting)
-    if cfg.get("ingest.remove_logos"):
-        log.info(
-            "logo removal enabled — detecting and removing visible logos/watermarks "
-            "(feature in beta)")
-        # TODO: Implement logo detection and removal via computer vision pipeline
-        # Would require: frame sampling → logo detection model → inpainting → video reconstruction
-        # Placeholder for now; actual implementation deferred
-
     log.info(
         "ingested: %s  (%.0fs, %s)",
         meta.title or os.path.basename(meta.file_path),

@@ -50,14 +50,20 @@ def build_filtergraph(
     burned_band: dict | None = None,
     burned_mode: str = "cover",
     sharpen: bool = False,
+    remove_logo: str | None = None,
 ) -> str:
     nodes: list[str] = []
     vin = "0:v"
 
+    # Logo/watermark removal works in source pixels, so it comes before any crop.
+    if remove_logo and not pre_cropped:
+        nodes.append(f"[0:v]{remove_logo}[dl]")
+        vin = "dl"
+
     # M9 jump cuts (plain path): keep only the speech ranges, then re-stamp
     # PTS so the removed dead air closes up. Captions are remapped to match.
     if video_select and not pre_cropped:
-        nodes.append(f"[0:v]select='{video_select}',setpts=N/FRAME_RATE/TB[jc]")
+        nodes.append(f"[{vin}]select='{video_select}',setpts=N/FRAME_RATE/TB[jc]")
         vin = "jc"
 
     # A3: treat burned-in source captions (cover/blur/crop) before compositing

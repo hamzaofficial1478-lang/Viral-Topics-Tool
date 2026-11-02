@@ -299,3 +299,14 @@ def test_history_is_read_once_per_change(dd, monkeypatch):
     S.record_download(dd, {"id": "bbbbbbbbbbb", "channel_key": "@a"})   # file changes
     assert len(S.history_items(dd)) == 2 and len(reads) == 2
     assert S.known_ids(dd) == {"abcdefghijk", "bbbbbbbbbbb"}           # no-repeat: fresh read
+
+
+def test_logo_removal_tick_box_is_next_to_download_and_remembered(dd):
+    from shortforge.shorts import store as S
+    S.add_channels(dd, "@somechannel", 5, rights_confirmed=True)
+    at = _shorts()
+    box = at.checkbox(key="sh_remove_logos")
+    assert "Remove logos" in box.label and box.value is False
+    box.check().run()
+    assert S.settings(dd)["remove_logos"] is True
+    assert _shorts().checkbox(key="sh_remove_logos").value is True

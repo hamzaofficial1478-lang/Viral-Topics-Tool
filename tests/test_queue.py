@@ -526,3 +526,56 @@ def test_the_running_link_is_recorded_for_crash_reporting(tmp_path, monkeypatch)
     assert seen["state"]["current"]["url"] == "https://youtu.be/BBB"
     assert "2 clip(s)" in seen["state"]["current"]["detail"]
     assert lifecycle.read_state(work)["current"] is None      # cleared when finished
+
+
+# --- the dashboard's list: added videos wait until "Process" ---------------- #
+
+def test_listed_links_never_start_on_their_own(tmp_path):
+    from shortforge import queue as Q
+    q = Q.load_queue(str(tmp_path))
+    added, _ = Q.add_links(q, ["https://youtu.be/a", "https://youtu.be/b"], {}, status=Q.LISTED)
+    assert Q.next_pending(q) is None
+    assert Q.counts(q)[Q.LISTED] == 2 and "2 waiting for you" in Q.describe(q)
+
+
+def test_start_jobs_takes_waiting_and_failed_only(tmp_path):
+    from shortforge import queue as Q
+    q = {"jobs": []}
+    a = Q.add_job(q, "https://youtu.be/a", status=Q.LISTED)
+    f = Q.add_job(q, "https://youtu.be/f", status=Q.FAILED)
+    f["error"] = "boom"
+    d = Q.add_job(q, "https://youtu.be/d", status=Q.DONE)
+    assert [j["id"] for j in Q.start_jobs(q, {a["id"], d["id"]})] == [a["id"]]
+    assert [j["id"] for j in Q.start_jobs(q)] == [f["id"]]
+    assert f["status"] == Q.PENDING and f["error"] is None and d["status"] == Q.DONE
+
+
+def test_remove_jobs_keeps_the_one_rendering():
+    from shortforge import queue as Q
+    q = {"jobs": []}
+    a = Q.add_job(q, "https://youtu.be/a", status=Q.LISTED)
+    r = Q.add_job(q, "https://youtu.be/r", status=Q.RUNNING)
+    gone = Q.remove_jobs(q, {a["id"], r["id"]})
+    assert [j["id"] for j in gone] == [a["id"]] and [j["id"] for j in q["jobs"]] == [r["id"]]
+
+
+def test_a_listed_duplicate_is_reported_as_on_the_list():
+    from shortforge import queue as Q
+    q = {"jobs": []}
+    Q.add_links(q, ["https://youtu.be/same"], {}, status=Q.LISTED)
+    added, skipped = Q.add_links(q, ["https://youtu.be/same?si=x"], {}, status=Q.LISTED)
+    assert not added and "already on the list" in Q.describe_skipped(skipped)
+
+
+def test_dub_and_logo_settings_reach_the_pipeline_config():
+    from shortforge import queue as Q
+    from shortforge.config import Config
+    cfg = Config.load()
+    job = {"settings": {"language": "fr", "dub": "voice", "remove_logos": True}}
+    Q.apply_job_settings(cfg, job)
+    assert cfg.get("localize.language") == "fr" and cfg.get("localize.dub") is True
+    assert cfg.get("delogo.enabled") is True
+    assert "dubbed" in Q.describe_settings(job) and "logo removal" in Q.describe_settings(job)
+    cfg2 = Config.load()
+    Q.apply_job_settings(cfg2, {"settings": {"language": "fr", "dub": "captions"}})
+    assert cfg2.get("localize.dub") is False

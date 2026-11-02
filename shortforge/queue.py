@@ -39,6 +39,8 @@ LOCK_STALE_AFTER = 300.0
 _LOCK_TOUCH_EVERY = 30.0
 
 PENDING, RUNNING, DONE, FAILED = "pending", "running", "done", "failed"
+# On the dashboard's list but not started: nothing runs until "Process" is pressed.
+LISTED = "listed"
 
 
 # --- single-worker lock ------------------------------------------------------- #
@@ -145,7 +147,17 @@ JOB_SETTINGS = {
     "thumbnail": "thumbnail.enabled",
     # Encode quality, so "4k maximum quality" from the phone actually lands.
     "quality": "render.quality",
+    "remove_logos": "delogo.enabled",
+    "dub": "localize.dub",               # captions | voice | clone — see apply_job_settings
+    "source_language": "transcribe.language",
+    "whisper_model": "transcribe.model",
+    "reframe_mode": "reframe.mode",
+    "encoder": "render.encoder",
+    "jumpcuts": "edit.jumpcuts",
+    "caption_animation": "captions.animation",
+    "logo_overlay": "brand.logo",        # your own logo, drawn onto every clip
 }
+DUB_CHOICES = ("captions", "voice", "clone")
 
 
 def queue_path(work_dir: str = ".shortforge") -> str:
@@ -247,7 +259,8 @@ def mutate_queue(work_dir: str, fn):
     return q, result
 
 
-def add_job(q: dict, url: str, settings: dict | None = None, label: str = "") -> dict:
+def add_job(q: dict, url: str, settings: dict | None = None, label: str = "",
+            status: str = PENDING) -> dict:
     """Append a link with its own settings. Returns the created job."""
     settings = {k: v for k, v in (settings or {}).items()
                 if k in JOB_SETTINGS and v not in (None, "")}
@@ -256,7 +269,7 @@ def add_job(q: dict, url: str, settings: dict | None = None, label: str = "") ->
         "url": url.strip(),
         "label": label.strip(),
         "settings": settings,
-        "status": PENDING,
+        "status": status,
         "added": time.time(),
         "started": None,
         "finished": None,
@@ -333,7 +346,7 @@ def find_duplicate(q: dict, url: str) -> dict | None:
 
 
 def add_links(q: dict, urls, settings: dict | None = None,
-              label: str = "") -> tuple[list[dict], list[dict]]:
+              label: str = "", status: str = PENDING) -> tuple[list[dict], list[dict]]:
     """Add several links at once, skipping ones already in the queue.
 
     Returns ``(added, skipped)`` where ``skipped`` holds the *existing* jobs the
@@ -352,21 +365,45 @@ def add_links(q: dict, urls, settings: dict | None = None,
         if existing is not None:
             skipped.append(existing)
             continue
-        added.append(add_job(q, url, settings, label=label))
+        added.append(add_job(q, url, settings, label=label, status=status))
     return added, skipped
 
 
-def describe_skipped(skipped: list[dict]) -> str:
+def start_jobs(q: dict, ids=None) -> list[dict]:
+    """Queue waiting or failed links for processing — the given ids, or all of them."""
+    started = []
+    for j in q.get("jobs", []):
+        if (ids is None or j["id"] in ids) and j["status"] in (LISTED, FAILED):
+            j["status"] = PENDING
+            j["error"] = None
+            started.append(j)
+    return started
+
+
+def remove_jobs(q: dict, ids) -> list[dict]:
+    """Drop the given links; one that is rendering right now is kept."""
+    gone = [j for j in q.get("jobs", []) if j["id"] in ids and j["status"] != RUNNING]
+    q["jobs"] = [j for j in q.get("jobs", []) if j not in gone]
+    return gone
+
+
+def editable(job: dict) -> bool:
+    return job["status"] in (LISTED, PENDING, FAILED)
+
+
+def describe_skipped(skipped: list[dict],
+                     way_out: str = "To run one again, remove it first "
+                                    "(/clear drops finished jobs).") -> str:
     """Plain-English 'why nothing happened for those', with the way out."""
     if not skipped:
         return ""
-    states = {PENDING: "already waiting", RUNNING: "running right now",
-              DONE: "already done", FAILED: "already tried (it failed)"}
+    states = {LISTED: "already on the list", PENDING: "already waiting",
+              RUNNING: "running right now", DONE: "already done",
+              FAILED: "already tried (it failed)"}
     lines = [f"• {j['url'][:60]} — {states.get(j['status'], j['status'])}"
              for j in skipped[:5]]
     more = f"\n…and {len(skipped) - 5} more" if len(skipped) > 5 else ""
-    return ("\n".join(lines) + more
-            + "\nTo run one again, remove it first (/clear drops finished jobs).")
+    return "\n".join(lines) + more + "\n" + way_out
 
 
 def next_pending(q: dict) -> dict | None:
@@ -377,7 +414,7 @@ def next_pending(q: dict) -> dict | None:
 def counts(q: dict) -> dict:
     jobs = q.get("jobs", [])
     return {s: sum(1 for j in jobs if j["status"] == s)
-            for s in (PENDING, RUNNING, DONE, FAILED)}
+            for s in (LISTED, PENDING, RUNNING, DONE, FAILED)}
 
 
 def total_clips(q: dict) -> int:
@@ -452,20 +489,33 @@ def describe_settings(job: dict) -> str:
             bits.append(str(s[key]))
     if s.get("language"):
         bits.append(f"→ {s['language']}")
+        if s.get("dub") in ("voice", "clone"):
+            bits.append("dubbed" + (" (cloned voice)" if s["dub"] == "clone" else ""))
+    if s.get("remove_logos"):
+        bits.append("logo removal")
     if s.get("metadata"):
         bits.append("+ title/description")
     if s.get("thumbnail"):
         bits.append("+ thumbnail")
     if s.get("caption_template"):
         bits.append(f"{s['caption_template']} captions")
+    if s.get("reframe_mode") == "track":
+        bits.append("following the speaker")
+    if s.get("logo_overlay"):
+        bits.append("+ your logo")
     return ", ".join(bits) or "default settings"
 
 
 def apply_job_settings(cfg, job: dict) -> None:
     """Overlay this job's own settings onto a fresh Config (per-link settings)."""
+    s = job.get("settings", {})
     for key, dotted in JOB_SETTINGS.items():
-        if key in job.get("settings", {}):
-            cfg.override(dotted, job["settings"][key])
+        if key in s and key != "dub":
+            cfg.override(dotted, s[key])
+    dub = s.get("dub")
+    if dub in ("voice", "clone") and s.get("language"):
+        cfg.override("localize.dub", True)
+        cfg.override("localize.tts_backend", "xtts" if dub == "clone" else "auto")
 
 
 def is_paused(q: dict) -> bool:
@@ -479,5 +529,6 @@ def set_paused(q: dict, paused: bool) -> None:
 
 def describe(q: dict) -> str:
     c = counts(q)
-    return (f"{len(q.get('jobs', []))} job(s): {c[PENDING]} pending, {c[RUNNING]} running, "
+    waiting = f"{c[LISTED]} waiting for you, " if c[LISTED] else ""
+    return (f"{len(q.get('jobs', []))} job(s): {waiting}{c[PENDING]} pending, {c[RUNNING]} running, "
             f"{c[DONE]} done, {c[FAILED]} failed — {total_clips(q)} clip(s) produced")

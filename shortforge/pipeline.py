@@ -18,6 +18,7 @@ from .analyze import load_external_transcript, transcribe
 from .analyze.audio import plan_keep_ranges, total_kept
 from .brand import logo_spec
 from .cache import Cache
+from . import delogo
 from .captions import build_ass, subtitles_filter
 from .captions.templates import resolve as resolve_caption_style
 from .config import Config
@@ -259,6 +260,12 @@ def run_pipeline(
         if burned_band:
             log.info("burned-in captions: applying '%s' treatment to the detected band",
                      burned_mode)
+    logo_scan = None
+    if delogo.enabled(cfg):
+        with timing.stage("delogo"):
+            logo_scan = delogo.detect(meta.file_path, cfg, work_dir)
+    delogo_vf = delogo.ffmpeg_filter(logo_scan) if logo_scan else None
+    cfg.override("delogo._vf", delogo_vf)
     lang = transcript.language or "xx"
     date = _dt.date.today().strftime("%Y%m%d")
     slug = _slug(meta.title, "source")
@@ -572,12 +579,14 @@ def run_pipeline(
                         meta.file_path, clip, track, out_w, out_h, fg, cfg, out_path,
                         audio_path=dub_audio, keep_ranges=keep_ranges,
                         burned_band=burned_band, burned_mode=burned_mode,
+                        logo_scan=logo_scan,
                     )
             else:
                 fg = build_filtergraph(
                     probe.width, probe.height, out_w, out_h,
                     fill=fill, subtitles=subs, logo=logo, video_select=video_select,
                     burned_band=burned_band, burned_mode=burned_mode, sharpen=sharpen,
+                    remove_logo=delogo_vf,
                 )
 
                 def _do_render(clip=clip, fg=fg, out_path=out_path,
@@ -643,12 +652,15 @@ def run_pipeline(
     # "render" bucket = wall-clock; each ffmpeg still logs/records itself.
     if render_jobs:
         from concurrent.futures import ThreadPoolExecutor
+        from . import errorlog
+        _err_src = errorlog.current()
 
         def _run_job(item):
             """Never raise: one bad clip must not throw away the whole run (every
             other clip is already fully analysed and rendered by this point)."""
             clip_id, thunk = item
             timing.activate(_timings)     # per-thread: record ffmpeg into the shared Timings
+            errorlog.set_current(_err_src)
             try:
                 thunk()
                 return clip_id, None
@@ -715,7 +727,8 @@ def run_pipeline(
          if upscale > 1.02 else f"source {probe.width}x{probe.height}"),
         f"metadata {'on' if do_meta else 'off'}",
         f"thumbnail {'on' if do_thumb else 'off'}",
-    ] + (["jumpcuts"] if jumpcuts_on else [])
+    ] + ([logo_scan.describe()] if logo_scan else [])
+      + (["jumpcuts"] if jumpcuts_on else [])
       + (["lipsync"] if lipsync_on else [])
       + ([f"cost ~${cost_estimate.cost_usd:.2f}"] if cost_estimate and cost_estimate.priced else []))
     log.info(summary)
@@ -760,6 +773,7 @@ def run_pipeline(
             "translation_backend": translation_backend,
             "stems_separated": bool(accompaniment_source),
             "burned_in": burned_mode if burned_band else "none",
+            "logo_removal": logo_scan.to_dict() if logo_scan else None,
         },
         "cost_estimate": cost_estimate.to_dict() if cost_estimate else None,
         "recommendation": {"recommended_clips": n_rec, "rationale": rationale},

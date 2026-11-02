@@ -77,6 +77,15 @@ def read_job_log(work_dir: str) -> list[tuple[int, str]]:
     return out
 
 
+def spawn_worker(root: str):
+    """Start `cli.py queue run` as its own process, so it outlives the dashboard."""
+    import subprocess
+    import sys
+    return subprocess.Popen(
+        [sys.executable, os.path.join(root, "cli.py"), "queue", "run", "--owner-confirmed"],
+        cwd=root)
+
+
 def fmt_hms(seconds: float) -> str:
     m, s = divmod(int(max(0, seconds)), 60)
     h, m = divmod(m, 60)
@@ -262,9 +271,11 @@ def drain_queue(make_cfg: Callable[[], Config], work_dir: str,
             # Announce the start too — "it's alive and this is what it understood".
             announce(f"🎬 <b>Link {idx}/{total} started</b> — making {detail}\n{job['url'][:80]}")
 
+            from . import errorlog
             log_handler = _attach_job_log(work_dir)
             try:
-                ok, n, msg = run_one(job, idx, total, make_cfg, work_dir)
+                with errorlog.source(errorlog.LONG):
+                    ok, n, msg = run_one(job, idx, total, make_cfg, work_dir)
             finally:
                 _detach_job_log(log_handler)
             made += n

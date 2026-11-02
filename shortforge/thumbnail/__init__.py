@@ -76,7 +76,8 @@ def make_thumbnail(
     src_h = int(cfg.get("reframe._src_h", 0)) or 0
 
     graph = build_filtergraph(
-        src_w or out_w, src_h or out_h, out_w, out_h, fill=fill
+        src_w or out_w, src_h or out_h, out_w, out_h, fill=fill,
+        remove_logo=cfg.get("delogo._vf"),
     )
     # Optional text hook: splice a drawtext node before [v].
     if cfg.get("thumbnail.text_hook", False):

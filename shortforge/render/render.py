@@ -255,6 +255,7 @@ def render_clip_tracked(
     keep_ranges: list[tuple[float, float]] | None = None,
     burned_band: dict | None = None,
     burned_mode: str = "cover",
+    logo_scan=None,
     _encoder: str | None = None,
 ) -> str:
     """Render a clip with per-frame subject-tracking crop (M5, Phase 2).
@@ -352,6 +353,9 @@ def render_clip_tracked(
             if rel_keep is not None and not _in_ranges(t, rel_keep):
                 continue
             # A3: treat burned-in source captions before cropping/piping.
+            if logo_scan is not None and logo_scan.found:
+                from .. import delogo
+                frame = delogo.treat_frame(frame, logo_scan)
             if burned_band is not None:
                 from ..captions import burned_in
                 frame = burned_in.treat_frame(frame, burned_band, burned_mode)
@@ -387,7 +391,8 @@ def render_clip_tracked(
             return render_clip_tracked(
                 source_path, clip, track, out_w, out_h, filtergraph, cfg, out_path,
                 audio_path=audio_path, keep_ranges=keep_ranges,
-                burned_band=burned_band, burned_mode=burned_mode, _encoder="libx264")
+                burned_band=burned_band, burned_mode=burned_mode, logo_scan=logo_scan,
+                _encoder="libx264")
         raise ShortForgeError("tracked render failed:\n" + "\n".join(tail))
     errf.close()
 

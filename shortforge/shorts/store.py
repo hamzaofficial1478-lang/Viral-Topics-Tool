@@ -70,6 +70,9 @@ DEFAULT_SETTINGS: dict = {
     # picture it offers, that Short fails (and can be retried) instead of being
     # saved at a lower resolution. On = keep the best that could be downloaded.
     "allow_lower_quality": False,
+    # Find logos/watermarks that stay fixed on screen and fill them in (re-encodes
+    # the Short). Only for videos you own or are licensed to edit.
+    "remove_logos": False,
     "delay_seconds": 2,           # pause between downloads — fewer bot walls
     "stop_on_bot_wall": 3,        # pause the run after N bot walls in a row
     # Channels found by "Find channels" go to a separate WISHLIST, not straight

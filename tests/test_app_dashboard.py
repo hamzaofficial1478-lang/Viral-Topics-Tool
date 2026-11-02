@@ -1,4 +1,4 @@
-"""STEP 3.6: dashboard renders headless; caps removed; ownership gate enforced.
+"""The dashboard renders headless; one link list; caps removed; ownership gate enforced.
 
 The dashboard (`app.py`) is a thin Streamlit layer, exercised here via Streamlit's
 headless AppTest so a broken form is caught in CI without a browser.
@@ -22,42 +22,169 @@ def _fresh():
     return AppTest.from_file(_APP, default_timeout=30).run()
 
 
-def _new_job():
-    """Load the Long Videos screen (which shows Queue and form together now)."""
-    # The 📹 Long Videos screen is the default, so just return fresh.
-    return _fresh()
+@pytest.fixture
+def wd(tmp_path, monkeypatch):
+    """Run in an empty folder, so the link list starts empty and stays out of the repo."""
+    monkeypatch.chdir(tmp_path)
+    return tmp_path / ".shortforge"
 
 
-def test_new_job_screen_renders():
-    at = _new_job()
+def _btn(at, starts: str):
+    return next(b for b in at.button if b.label.startswith(starts))
+
+
+def _jobs(wd):
+    from shortforge import queue as Q
+    return Q.load_queue(str(wd))["jobs"]
+
+
+def _no_real_worker(monkeypatch) -> list:
+    """The app script runs as its own module under AppTest, so patch the shared
+    modules it calls — never let a test start a real `cli.py queue run`."""
+    from shortforge import lifecycle, runner
+    spawned = []
+    monkeypatch.setattr(runner, "spawn_worker", lambda root: spawned.append(1))
+    monkeypatch.setattr(lifecycle, "worker_is_live", lambda *a, **k: False)
+    return spawned
+
+
+def _paste(at, text: str, *, owner: bool = True):
+    at.text_area[0].set_value(text).run()
+    if owner:
+        at.checkbox(key="lv_owner").check().run()
+    return at
+
+
+def test_long_videos_is_the_default_screen_with_one_add_section_and_one_list(wd):
+    at = _fresh()
     assert not at.exception
-    subs = [s.value for s in at.subheader]
-    assert "1. Your video" in subs and "3. What happens next" in subs
-    labels = [n.label for n in at.number_input]
-    assert "Clip length (seconds)" in labels and "How many clips" in labels
+    assert [h.value for h in at.header] == ["📹 Long videos → clips"]
+    assert [s.value for s in at.subheader] == ["1. Add videos", "2. Your videos"]
+    assert any("links" in (t.label or "").lower() for t in at.text_area)
 
 
-def test_run_is_gated_on_source_and_ownership():
-    at = _new_job()
-    assert at.button[0].disabled is True                      # nothing entered yet
-    at.text_input[0].set_value("https://example.com/my-video").run()
-    assert at.button[0].disabled is True                      # still need ownership
-    at.checkbox[0].set_value(True).run()                      # owner confirmation
-    assert at.button[0].disabled is False
+def test_logo_removal_tick_box_is_on_screen_not_tucked_in_an_expander(wd):
+    """The operator couldn't find it: it used to sit inside a closed Advanced
+    expander of one form, and did nothing anyway."""
+    at = _fresh()
+    logo = at.checkbox(key="lv_logo")
+    assert "Remove logos" in logo.label
+    for exp in at.expander:
+        assert "lv_logo" not in [c.key for c in exp.checkbox]
 
 
-def test_no_duration_or_clip_cap():
-    at = _new_job()
-    at.number_input[0].set_value(300).run()                   # old slider capped at 90
-    at.number_input[1].set_value(35).run()                    # old number_input capped at 20
+def test_add_is_gated_on_links_and_ownership(wd):
+    at = _fresh()
+    assert not [b for b in at.button if "Add" in b.label]       # nothing pasted yet
+    _paste(at, "https://youtu.be/one\nhttps://youtu.be/two", owner=False)
+    assert _btn(at, "➕ Add 2 videos").disabled is True
+    at.checkbox(key="lv_owner").check().run()
+    assert _btn(at, "➕ Add 2 videos").disabled is False
+
+
+def test_one_link_can_be_processed_straight_away_many_go_to_the_queue(wd):
+    at = _paste(_fresh(), "https://youtu.be/only-one")
+    assert {b.label for b in at.button} >= {"▶ Process this video now", "➕ Add to the queue"}
+    at = _paste(_fresh(), "https://youtu.be/a\nhttps://youtu.be/b\nhttps://youtu.be/c")
+    assert [b.label for b in at.button if "Add" in b.label or "now" in b.label] == \
+        ["➕ Add 3 videos to the queue"]
+
+
+def test_added_videos_wait_for_process_and_keep_their_settings(wd):
+    from shortforge import queue as Q
+    at = _paste(_fresh(), "https://youtu.be/a\nhttps://youtu.be/b")
+    at.number_input(key="lv_clips").set_value(35).run()        # no cap on clips…
+    at.number_input(key="lv_dur").set_value(300).run()         # …or on length
+    at.checkbox(key="lv_logo").check().run()
+    _btn(at, "➕ Add 2").click().run()
     assert not at.exception
-    plan = " ".join(m.value for m in at.markdown)
-    assert "300s" in plan and "**35**" in plan
+    jobs = _jobs(wd)
+    assert [j["status"] for j in jobs] == [Q.LISTED, Q.LISTED]
+    assert jobs[0]["settings"]["num_clips"] == 35 and jobs[0]["settings"]["duration"] == 300
+    assert jobs[0]["settings"]["remove_logos"] is True
+    assert Q.next_pending(Q.load_queue(str(wd))) is None         # nothing runs by itself
+    assert at.text_area[0].value in ("", None)                  # the box is cleared
+
+
+def test_advanced_options_from_the_old_form_are_still_reachable(wd):
+    at = _paste(_fresh(), "https://youtu.be/advanced")
+    at.selectbox(key="lv_cam").set_value("Follow the speaker").run()
+    at.selectbox(key="lv_enc").set_value("qsv").run()
+    at.selectbox(key="lv_whisper").set_value("medium").run()
+    at.selectbox(key="lv_anim").set_value("karaoke").run()
+    at.text_input(key="lv_srclang").set_value("fr").run()
+    at.checkbox(key="lv_jump").check().run()
+    _btn(at, "➕ Add to the queue").click().run()
+    s = _jobs(wd)[0]["settings"]
+    assert {k: s[k] for k in ("reframe_mode", "encoder", "whisper_model", "caption_animation",
+                              "source_language", "jumpcuts")} == {
+        "reframe_mode": "track", "encoder": "qsv", "whisper_model": "medium",
+        "caption_animation": "karaoke", "source_language": "fr", "jumpcuts": True}
+    from shortforge import queue as Q
+    from shortforge.config import Config
+    cfg = Config.load()
+    Q.apply_job_settings(cfg, _jobs(wd)[0])
+    assert (cfg.get("reframe.mode"), cfg.get("render.encoder"), cfg.get("transcribe.model"),
+            cfg.get("transcribe.language"), cfg.get("edit.jumpcuts")) == \
+        ("track", "qsv", "medium", "fr", True)
+
+
+def test_a_link_already_on_the_list_is_not_added_again(wd):
+    at = _paste(_fresh(), "https://youtu.be/same-video")
+    _btn(at, "➕ Add to the queue").click().run()
+    _paste(at, "https://www.youtube.com/watch?v=same-video&si=share")
+    _btn(at, "➕ Add to the queue").click().run()
+    assert len(_jobs(wd)) == 1
+    assert any("already in the list" in w.value for w in at.warning)
+
+
+def test_process_now_adds_and_starts_one_video(wd, monkeypatch):
+    from shortforge import queue as Q
+    spawned = _no_real_worker(monkeypatch)
+    at = _paste(_fresh(), "https://youtu.be/go-now")
+    _btn(at, "▶ Process this video now").click().run()
+    assert not at.exception
+    assert [j["status"] for j in _jobs(wd)] == [Q.PENDING]
+    assert spawned == [1]
+
+
+def test_process_all_starts_waiting_and_failed_only(wd, monkeypatch):
+    from shortforge import queue as Q
+    spawned = _no_real_worker(monkeypatch)
+    q = Q.load_queue(str(wd))
+    for url, status in (("https://youtu.be/w1", Q.LISTED), ("https://youtu.be/w2", Q.LISTED),
+                        ("https://youtu.be/f1", Q.FAILED), ("https://youtu.be/d1", Q.DONE)):
+        Q.add_job(q, url, {}, status=status)
+    Q.save_queue(q, str(wd))
+    at = _fresh()
+    assert _btn(at, "▶ Process selected (0)").disabled is True   # nothing ticked
+    _btn(at, "▶ Process all (3)").click().run()
+    assert [j["status"] for j in _jobs(wd)] == [Q.PENDING, Q.PENDING, Q.PENDING, Q.DONE]
+    assert spawned == [1]
+
+
+def test_ticked_rows_and_table_edits(wd):
+    import app
+    from shortforge import queue as Q
+    q = Q.load_queue(str(wd))
+    a = Q.add_job(q, "https://youtu.be/a", {"num_clips": 3}, status=Q.LISTED)
+    b = Q.add_job(q, "https://youtu.be/b", {"num_clips": 3}, status=Q.RUNNING)
+    Q.save_queue(q, str(wd))
+    ids = [a["id"], b["id"]]
+    assert app.selected_ids(ids, {0: {"✓": True}, 1: {"Clips": 5}, 7: {"✓": True}}) == [a["id"]]
+    saved, refused = app.apply_link_edits(str(wd), ids, {
+        0: {"Clips": 6, "Seconds": 2, "Shape": "9:16", "🧽 Logo": True},
+        1: {"Clips": 9}})                                       # running: locked
+    assert (saved, refused) == (1, 1)
+    jobs = {j["id"]: j for j in _jobs(wd)}
+    assert jobs[a["id"]]["settings"] == {"num_clips": 6, "duration": 5, "aspect": "9:16",
+                                         "remove_logos": True}
+    assert jobs[b["id"]]["settings"] == {"num_clips": 3}
 
 
 def test_settings_screen_renders():
     at = _fresh()
-    at.sidebar.radio[0].set_value("Settings").run()
+    at.sidebar.radio[0].set_value("⚙️ Settings").run()
     assert not at.exception
 
 
@@ -72,7 +199,7 @@ def test_settings_shows_credentials_with_a_seeded_model(tmp_path, monkeypatch):
     S.save_store(store)
 
     at = _fresh()
-    at.sidebar.radio[0].set_value("Settings").run()
+    at.sidebar.radio[0].set_value("⚙️ Settings").run()
     assert not at.exception
     assert "🔑 Credentials" in [s.value for s in at.subheader]
 
@@ -81,7 +208,7 @@ def _settings_tab(label: str):
     """Settings opens on its first tab; only the open tab is built. (The test
     tool can't click a tab, so the choice is set the way a click sets it.)"""
     at = _fresh()
-    at.sidebar.radio[0].set_value("Settings").run()
+    at.sidebar.radio[0].set_value("⚙️ Settings").run()
     at.session_state["set_tab"] = label
     return at.run()
 
@@ -102,7 +229,7 @@ def test_settings_builds_only_the_open_section(monkeypatch):
     monkeypatch.setattr(M, "cache_report", lambda wd: (scans.append(wd), real(wd))[1])
     SET._disk_report.clear()
     at = _fresh()
-    at.sidebar.radio[0].set_value("Settings").run()
+    at.sidebar.radio[0].set_value("⚙️ Settings").run()
     assert not at.exception and scans == []
     assert "🔑 Credentials" in [s.value for s in at.subheader]
     assert "💾 Backup & restore settings" not in [s.value for s in at.subheader]
@@ -113,63 +240,9 @@ def test_settings_builds_only_the_open_section(monkeypatch):
 
 def test_history_screen_renders():
     at = _fresh()
-    at.sidebar.radio[0].set_value("History").run()
+    at.sidebar.radio[0].set_value("📚 History").run()
     assert not at.exception
     assert "📚 History" in [h.value for h in at.header]
-
-
-def test_job_settings_detail_matches_queue_formatting():
-    """The manual New-job path's notification uses the same wording as the
-    Queue/ntfy path (shared formatter), not a second copy that can drift."""
-    import app
-    from shortforge.config import Config
-
-    cfg = Config.load()
-    cfg.override("select.num_clips", 4)
-    cfg.override("select.target_duration", 90)
-    cfg.override("reframe.aspect", "9:16")
-    cfg.override("reframe.resolution", "1080p")
-    detail = app._job_settings_detail(cfg)
-    assert "4 clip(s) of 1m30s" in detail and "9:16" in detail and "1080p" in detail
-
-
-def test_manual_job_sends_ntfy_start_and_done_notifications(monkeypatch):
-    """The exact bug the operator reported: starting a job from the New Job
-    form (not the Queue/ntfy path) sent no notification at all — neither on
-    start nor on finish."""
-    import app
-    import streamlit as st
-    from shortforge import notify as N
-
-    sent = []
-    monkeypatch.setattr(N, "notify", lambda text, **k: sent.append(text) or True)
-    monkeypatch.setattr(app, "run_pipeline",
-                        lambda *a, **k: {"clips": [{"file_path": "a.mp4"},
-                                                    {"file_path": "b.mp4"}]})
-    # _render_running() ends its "finished" branch with st.rerun(), which would
-    # otherwise re-execute this whole `run()` — including _start_job() again —
-    # in a loop under AppTest. We only care that the notify fired, not about
-    # actually completing a second render pass, so make rerun a no-op here.
-    monkeypatch.setattr(st, "rerun", lambda *a, **k: None)
-
-    def run():
-        import app
-        import streamlit as st
-        from shortforge.config import Config
-
-        cfg = Config.load()
-        cfg.override("select.num_clips", 2)
-        app._start_job("https://youtu.be/manual-test", cfg, None, "/tmp")
-        job = st.session_state.job
-        job["thread"].join(timeout=5)
-        app._render_running(job)          # finalizes state + fires the done/failed notice
-
-    from streamlit.testing.v1 import AppTest
-    at = AppTest.from_function(run, default_timeout=15).run()
-    assert not at.exception
-    assert len(sent) == 2
-    assert "Job started" in sent[0] and "manual-test" in sent[0]
-    assert "Job done" in sent[1] and "2 clip(s)" in sent[1]
 
 
 def test_stage_from_lines_tracks_furthest_progress():
@@ -221,24 +294,6 @@ def test_import_store_rejects_junk():
     assert UI._valid_store({"nonsense": 1}) is False
     with _pytest.raises(ValueError):
         UI._import_store({"nonsense": 1})
-
-
-def test_queue_screen_is_the_default_and_renders():
-    """The Queue screen is where links get pasted — it must be the landing screen."""
-    at = _fresh()
-    assert not at.exception
-    assert "🎬 Link queue" in [h.value for h in at.header]
-    subs = [s.value for s in at.subheader]
-    assert "1. Add links" in subs and "2. Work through the queue" in subs
-    labels = [t.label for t in at.text_area]
-    assert any("links" in (l or "").lower() for l in labels)   # the paste box exists
-
-
-def test_queue_add_is_gated_on_links_and_ownership():
-    """No links pasted / ownership unticked -> the Add button stays disabled."""
-    at = _fresh()
-    add = next(b for b in at.button if "Add" in b.label)
-    assert add.disabled is True
 
 
 def test_queue_screen_shows_live_progress_for_a_running_job(tmp_path, monkeypatch):
@@ -413,29 +468,25 @@ def test_clear_finished_button_notifies(tmp_path, monkeypatch):
     assert Q.load_queue(work_dir)["jobs"] == []
 
 
-def test_remove_this_link_button_notifies(tmp_path, monkeypatch):
-    import os
+def test_removing_links_notifies_and_keeps_the_one_working(wd, monkeypatch):
+    import app
     from shortforge import notify as N
     from shortforge import queue as Q
-
-    monkeypatch.chdir(tmp_path)
-    work_dir = ".shortforge"
-    os.makedirs(work_dir, exist_ok=True)
-    q = Q.load_queue(work_dir)
-    Q.add_job(q, "https://youtu.be/remove-me-please")
-    Q.save_queue(q, work_dir)
-
+    q = Q.load_queue(str(wd))
+    a = Q.add_job(q, "https://youtu.be/remove-me-please", status=Q.LISTED)
+    b = Q.add_job(q, "https://youtu.be/working-now", status=Q.RUNNING)
+    Q.save_queue(q, str(wd))
     sent = []
     monkeypatch.setattr(N, "notify", lambda text, **k: sent.append(text) or True)
 
-    at = _fresh()
-    btn = next(b for b in at.button if "Remove this link" in b.label)
-    btn.click().run()
+    def run(ids):
+        import app as _app
+        _app._remove(".shortforge", set(ids))
 
+    at = AppTest.from_function(run, args=([a["id"], b["id"]],), default_timeout=15).run()
     assert not at.exception
-    assert len(sent) == 1
-    assert "Removed a queued link" in sent[0] and "remove-me-please" in sent[0]
-    assert Q.load_queue(work_dir)["jobs"] == []
+    assert [j["url"] for j in _jobs(wd)] == ["https://youtu.be/working-now"]
+    assert len(sent) == 1 and "remove-me-please" in sent[0]
 
 
 def _past_runs(root: Path, n_runs: int, n_clips: int = 3) -> None:
@@ -470,7 +521,7 @@ def test_history_reads_no_clip_until_play_is_pressed(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "open", spy)
 
     at = _fresh()
-    at.sidebar.radio[0].set_value("History").run()
+    at.sidebar.radio[0].set_value("📚 History").run()
     assert not at.exception
     assert len(at.selectbox[0].options) == 4
     assert [b.label for b in at.button].count("▶ Play") == 3      # one run's clips only
@@ -486,7 +537,7 @@ def test_settings_leads_with_one_actionable_note_not_four_warnings(tmp_path, mon
     dubbing limits sit in a closed panel under Models & keys."""
     monkeypatch.setenv("SHORTFORGE_PROVIDERS_FILE", str(tmp_path / "providers.local.json"))
     at = _fresh()
-    at.sidebar.radio[0].set_value("Settings").run()
+    at.sidebar.radio[0].set_value("⚙️ Settings").run()
     assert not at.exception
     assert not [w for w in at.warning if "voice provider" in w.value]
     assert any("No AI model is set up" in i.value and "Backup & restore" in i.value

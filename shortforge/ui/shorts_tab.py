@@ -216,6 +216,7 @@ def _tab_channels(dd: str) -> None:
         f"switched on)", value=bool(st_.get("include_wishlist")), key="sh_inc_wish",
         disabled=not wish, on_change=_on_include_wishlist, args=(dd,),
         help="Remembered. Applies to this button and to “shorts start” from your phone.")
+    _logo_checkbox(dd, st_)
     keys = S.download_keys(dd, include_wishlist=inc)
     picked = [c for c in chans if c["key"] in keys]
     total = sum(int(c.get("count", 0)) for c in picked)
@@ -228,6 +229,21 @@ def _tab_channels(dd: str) -> None:
 
 def _on_include_wishlist(dd: str) -> None:
     S.update_settings(dd, include_wishlist=bool(st.session_state["sh_inc_wish"]))
+
+
+def _logo_checkbox(dd: str, st_: dict) -> None:
+    st.checkbox("🧽 Remove logos / watermarks from the downloaded Shorts",
+                value=bool(st_.get("remove_logos")), key="sh_remove_logos",
+                on_change=_on_remove_logos, args=(dd,),
+                help="Finds anything that stays fixed on screen while the picture changes "
+                     "— a channel logo, a watermark, a wordmark, even a faint one — and "
+                     "fills it in from the pixels around it. Each Short is re-encoded, so "
+                     "it takes a little longer. Remembered; applies to pasted links too. "
+                     "Only use it on videos you own or are licensed to edit.")
+
+
+def _on_remove_logos(dd: str) -> None:
+    S.update_settings(dd, remove_logos=bool(st.session_state["sh_remove_logos"]))
 
 
 def _channel_section(dd: str, chans: list[dict], taken: dict, which: str, title: str,
@@ -626,6 +642,12 @@ def _tab_links(dd: str) -> None:
                         placeholder="https://www.youtube.com/shorts/abcdefghijk\n"
                                     "https://youtu.be/abcdefghijk")
     links = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if S.load_channels(dd)["channels"]:
+        st.caption("🧽 Logo removal is **" + ("on" if S.settings(dd).get("remove_logos")
+                                              else "off")
+                   + "** — set with the tick box above the Download button.")
+    else:
+        _logo_checkbox(dd, S.settings(dd))
     rights = st.checkbox("These are my Shorts, or I have the rights to reuse them",
                          key="sh_links_rights")
     if st.button(f"⏬ Download {len(links) or ''} link(s)".replace("  ", " "),
@@ -686,7 +708,11 @@ def _tab_downloads(dd: str) -> None:
              "Title": i.get("title") or i["id"],
              "Status": i.get("status"),
              "Problem": (i.get("error") or "")[:160],
+             "Logo": i.get("logo") or "",
              "Link": i.get("url")} for i in items]
+    if not any(r["Logo"] for r in rows):
+        for r in rows:
+            del r["Logo"]
     st.dataframe(rows, hide_index=True, width="stretch",
                  column_config={"Link": st.column_config.LinkColumn("Link", display_text="open")})
     if not S.has_work(run) and st.button("🧹 Clear this list", key="sh_clear_run",

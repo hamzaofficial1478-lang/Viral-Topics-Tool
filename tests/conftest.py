@@ -10,6 +10,13 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from shortforge.models import Segment, Transcript, Word  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_leftover_error_log():
+    yield
+    from shortforge import errorlog
+    errorlog.uninstall()
+
+
 def _seg(start: float, end: float, text: str) -> Segment:
     tokens = text.split()
     per = (end - start) / max(1, len(tokens))

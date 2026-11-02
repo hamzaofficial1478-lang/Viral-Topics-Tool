@@ -1,0 +1,406 @@
+"""M4 — Clip selection + the "how many clips?" recommender.
+
+Turns ranked hook candidates into concrete clips. Each clip is a *continuous*
+passage of the source (never random splices) grown from a high-scoring anchor.
+In coherent mode (default), boundaries snap to natural thought/topic breaks —
+pauses in the speech — so a clip begins at the start of an idea and ends on its
+payoff, playing as a complete little story rather than an arbitrary window.
+"""
+
+from __future__ import annotations
+
+from ..config import Config
+from ..models import Candidate, Clip, Segment, Transcript
+from ..utils import log
+
+_STRONG = 0.5   # candidate score considered a "strong standalone moment"
+_MAX_CLIPS = 20
+_MIN_CLIP_SECONDS = 6.0
+
+# Words that signal a segment continues a previous thought — a bad place to
+# START a clip unless there was a real pause before it.
+_CONTINUATIONS = {
+    "and", "but", "so", "or", "nor", "yet", "because", "which", "that", "then",
+    "also", "plus", "however", "therefore", "thus", "although", "though",
+    "whereas", "while", "since", "besides", "anyway",
+}
+
+
+def recommend_clip_count(
+    transcript: Transcript, candidates: list[Candidate], cfg: Config
+) -> tuple[int, str]:
+    """Recommend N clips from video length and count of strong moments."""
+    target = float(cfg.get("select.target_duration", 45))
+    strong = sum(1 for c in candidates if c.score >= _STRONG)
+    by_length = int(transcript.duration // max(1.0, target))
+
+    if strong > 0:
+        n = max(1, min(strong, by_length if by_length else strong, _MAX_CLIPS))
+    else:
+        n = max(1, min(by_length or 1, 3))
+
+    mins = transcript.duration / 60.0
+    rationale = (
+        f"This {mins:.0f}-min video has {strong} strong standalone moment"
+        f"{'s' if strong != 1 else ''}; room for ~{by_length} clips of "
+        f"{target:.0f}s. Recommending {n} clip{'s' if n != 1 else ''}."
+    )
+    return n, rationale
+
+
+def _score_by_segment(transcript: Transcript, candidates: list[Candidate]) -> dict[int, Candidate]:
+    """Map each segment index to its candidate (by matching start time)."""
+    starts = {round(s.start, 3): i for i, s in enumerate(transcript.segments)}
+    out: dict[int, Candidate] = {}
+    for c in candidates:
+        i = starts.get(round(c.start, 3))
+        if i is not None:
+            out[i] = c
+    return out
+
+
+def split_long_segments(segments: list[Segment], max_len: float,
+                        piece: float) -> list[Segment]:
+    """Break segments longer than ``max_len`` into ~``piece``-second pieces.
+
+    Clips are grown by whole segments and a segment is never split, so ONE
+    over-long segment became one over-long clip: an ASR that returns a single
+    block for the whole file (an API answering with ``text`` and no ``segments``,
+    or a long uninterrupted passage) turned "3 clips of 2 minutes" into one
+    15-minute clip. Splitting first means the ordinary growth logic — anchors,
+    pauses, tolerance — applies to material it can actually work with, so both
+    the requested LENGTH and the requested COUNT become reachable.
+
+    Word timings are preserved by assigning each word to the piece containing its
+    midpoint; wordless segments (no per-word timing) have their text divided in
+    proportion to each piece's share of the duration.
+    """
+    if max_len <= 0 or piece <= 0:
+        return list(segments)
+    out: list[Segment] = []
+    for seg in segments:
+        dur = seg.end - seg.start
+        if dur <= max_len:
+            out.append(seg)
+            continue
+        parts = max(2, int(round(dur / piece)))
+        step = dur / parts
+        words = list(seg.words or [])
+        tokens = (seg.text or "").split()
+        for i in range(parts):
+            lo = seg.start + i * step
+            hi = seg.end if i == parts - 1 else seg.start + (i + 1) * step
+            mine = [w for w in words if lo <= (w.start + w.end) / 2.0 < hi]
+            if mine:
+                text = " ".join(w.text for w in mine).strip()
+            else:
+                # No word timings: hand each piece its share of the words. The
+                # text is only used for captions/metadata, and the alternative —
+                # repeating the whole block on every piece — is worse.
+                a = round(len(tokens) * i / parts)
+                b = round(len(tokens) * (i + 1) / parts)
+                text = " ".join(tokens[a:b]).strip()
+            out.append(Segment(start=lo, end=hi, text=text, words=mine,
+                               confidence=seg.confidence))
+    if len(out) != len(segments):
+        log.info("split %d over-long ASR segment(s) into %d pieces of ~%.0fs so clips "
+                 "can honour the requested length", len(segments), len(out), piece)
+    return out
+
+
+def build_clips(
+    transcript: Transcript,
+    candidates: list[Candidate],
+    cfg: Config,
+    source_hash: str,
+) -> list[Clip]:
+    """Select up to N clips, snapped to sentence boundaries."""
+    target = float(cfg.get("select.target_duration", 45))
+    tol = float(cfg.get("select.tolerance", 12))
+
+    # Do this BEFORE anything reads `segments`: a segment longer than the
+    # tolerance window can never be trimmed later, only avoided.
+    segments = split_long_segments(transcript.segments,
+                                   max_len=max(target + tol, _MIN_CLIP_SECONDS),
+                                   piece=target)
+    if not segments:
+        return []
+    if len(segments) != len(transcript.segments):
+        transcript = Transcript(language=transcript.language,
+                                duration=transcript.duration, segments=segments)
+
+    width = int(cfg.get("reframe.width", 1080))
+    height = int(cfg.get("reframe.height", 1920))
+    resolution = f"{width}x{height}"
+
+    requested = int(cfg.get("select.num_clips", 0) or 0)
+    if requested > 0:
+        # Honour an explicit request (no silent cap) — the operator asked for N.
+        # We can only ever emit as many clips as there are non-overlapping
+        # passages, so the real ceiling is the source, not an arbitrary number.
+        n = requested
+    else:
+        n, _ = recommend_clip_count(transcript, candidates, cfg)
+
+    # Never grow to a window shorter than the minimum clip length, even when
+    # target-tol dips below it (small target / large tolerance).
+    lower = max(target - tol, _MIN_CLIP_SECONDS)
+    upper = max(target + tol, lower)
+
+    coherent = bool(cfg.get("select.coherent", True))
+    pause_thr = float(cfg.get("select.pause_threshold", 0.5))
+    max_backup = int(cfg.get("select.max_backup", 2))   # keep the hook anchor early
+    gaps = _gaps(segments)
+
+    seg_score = _score_by_segment(transcript, candidates)
+    # Anchor order: highest-scoring segments first.
+    order = sorted(
+        range(len(segments)),
+        key=lambda i: seg_score[i].score if i in seg_score else 0.0,
+        reverse=True,
+    )
+
+    # STEP 3.5: don't anchor clips on low-confidence (likely garbled) segments.
+    min_conf = float(cfg.get("transcribe.min_confidence", 0.0) or 0.0)
+
+    used: set[int] = set()
+    chosen: list[tuple[int, int, Candidate]] = []  # (lo, hi, anchor candidate)
+
+    for anchor in order:
+        if len(chosen) >= n:
+            break
+        if anchor in used:
+            continue
+        if min_conf > 0:
+            c = getattr(segments[anchor], "confidence", None)
+            if c is not None and c < min_conf:
+                continue
+        if coherent:
+            lo, hi = _grow_coherent(
+                anchor, segments, gaps, used, lower, upper, target, pause_thr, max_backup
+            )
+        else:
+            lo, hi = _grow(anchor, segments, used, lower, upper)
+        if lo is None:
+            continue
+        dur = segments[hi].end - segments[lo].start
+        if dur < _MIN_CLIP_SECONDS:
+            continue
+        if dur < lower - 0.5:
+            # Long-clip guard: report rather than silently truncate when the
+            # requested duration can't be reached from the remaining source.
+            at_end = hi >= len(segments) - 1 or (hi + 1) in used
+            at_start = lo <= 0 or (lo - 1) in used
+            edge = ("the source ends" if at_end and not at_start else
+                    "it is the start of the source" if at_start and not at_end else
+                    "surrounding material is already used by other clips")
+            log.warning(
+                "clip at %.1fs is only %.1fs, short of the requested ~%.0fs because %s "
+                "— emitting the shorter clip (not padding or truncating silently).",
+                segments[anchor].start, dur, target, edge)
+        for i in range(lo, hi + 1):
+            used.add(i)
+        anchor_cand = seg_score.get(anchor, Candidate(
+            start=segments[anchor].start, end=segments[anchor].end, score=0.0))
+        chosen.append((lo, hi, anchor_cand))
+
+    # Second pass: the first pass anchors on the highest-scoring segments, and
+    # each clip it places consumes a contiguous block. That fragments the
+    # timeline, so later high-score anchors can sit next to used material and
+    # fail to grow to the requested length — the operator asked for 6 clips of
+    # 2 minutes from a 29-minute source (12 min of 29 — easily available) and
+    # got 4, because scoring order, not available material, had run out. So
+    # before giving up, sweep the untouched stretches chronologically for room
+    # the score-ordered pass skipped over.
+    if len(chosen) < n:
+        for anchor in range(len(segments)):
+            if len(chosen) >= n:
+                break
+            if anchor in used:
+                continue
+            lo, hi = (_grow_coherent(anchor, segments, gaps, used, lower, upper,
+                                     target, pause_thr, max_backup) if coherent
+                      else _grow(anchor, segments, used, lower, upper))
+            if lo is None:
+                continue
+            if segments[hi].end - segments[lo].start < _MIN_CLIP_SECONDS:
+                continue
+            for i in range(lo, hi + 1):
+                used.add(i)
+            chosen.append((lo, hi, seg_score.get(anchor, Candidate(
+                start=segments[anchor].start, end=segments[anchor].end, score=0.0))))
+
+    # Still short? Say so. Quietly handing back 4 clips when 6 were asked for is
+    # exactly the silent degrade this project forbids — the operator has no way
+    # to tell "the source couldn't give more" from "something went wrong".
+    if requested > 0 and len(chosen) < requested:
+        covered = sum(segments[hi].end - segments[lo].start for lo, hi, _ in chosen)
+        log.warning(
+            "asked for %d clip(s) of ~%.0fs but only %d fit: %.0fs of the %.0fs source "
+            "is usable speech once each clip is grown to a whole thought and clips "
+            "cannot overlap. Ask for shorter clips, or a longer source, for more.",
+            requested, target, len(chosen), covered, transcript.duration or 0.0)
+
+    # Emit in chronological order; keep the rank/score for the manifest.
+    chosen.sort(key=lambda t: segments[t[0]].start)
+    clips: list[Clip] = []
+    for idx, (lo, hi, anchor) in enumerate(chosen):
+        start = segments[lo].start
+        end = min(segments[hi].end, transcript.duration or segments[hi].end)
+        # Last line of defence on the operator's actual instruction. Splitting
+        # above should make this unreachable, but "I asked for 2 minutes and got
+        # 15" must be impossible by construction, not by argument.
+        if end - start > upper + 0.5:
+            log.warning("clip at %.0fs came out %.0fs long against a requested ~%.0fs "
+                        "— trimming it to the requested length.", start, end - start, target)
+            end = start + target
+        text = " ".join(s.text.strip() for s in segments[lo : hi + 1]).strip()
+        clips.append(
+            Clip(
+                clip_id=f"{idx + 1:02d}",
+                source_hash=source_hash,
+                start=start,
+                end=end,
+                score=round(anchor.score, 3),
+                reason=anchor.reason,
+                caption_text=text,
+                resolution=resolution,
+            )
+        )
+    return clips
+
+
+def _gaps(segments: list) -> list[float]:
+    """Pause (seconds) after each segment; last entry is +inf (end of video)."""
+    gaps = []
+    for i in range(len(segments)):
+        if i + 1 < len(segments):
+            gaps.append(max(0.0, segments[i + 1].start - segments[i].end))
+        else:
+            gaps.append(float("inf"))
+    return gaps
+
+
+def _first_word(text: str) -> str:
+    parts = text.strip().split()
+    return parts[0].lower().strip(",.!?;:") if parts else ""
+
+
+def _is_thought_start(i: int, segments: list, gaps: list[float], pause_thr: float) -> bool:
+    """True if segment ``i`` cleanly begins a thought (not mid-sentence)."""
+    if i == 0:
+        return True
+    if _first_word(segments[i].text) in _CONTINUATIONS:
+        # A continuation word only starts a clip cleanly after a real pause.
+        return gaps[i - 1] >= pause_thr
+    return True
+
+
+def _is_strong_end(i: int, segments: list, gaps: list[float], pause_thr: float) -> bool:
+    """True if segment ``i`` is followed by a pause (a thought/topic boundary)."""
+    return gaps[i] >= pause_thr
+
+
+def _grow_coherent(
+    anchor: int,
+    segments: list,
+    gaps: list[float],
+    used: set[int],
+    lower: float,
+    upper: float,
+    target: float,
+    pause_thr: float,
+    max_backup: int = 2,
+) -> tuple[int | None, int | None]:
+    """Grow a clip that starts on a thought-start and ends on its payoff.
+
+    1. Back up (bounded by ``max_backup``) only enough not to begin mid-thought —
+       so the hook anchor lands in the first ~1–2s, not buried in the middle.
+    2. Grow forward to reach the minimum length.
+    3. Extend to the nearest pause (natural end) within tolerance, else to the
+       segment closest to the target duration.
+    """
+    if anchor in used:
+        return None, None
+    n = len(segments)
+    lo = hi = anchor
+
+    # 1) Back up to a clean thought start (bounded, within upper) so the hook is early.
+    back = 0
+    while (
+        lo - 1 >= 0
+        and (lo - 1) not in used
+        and back < max_backup
+        and not _is_thought_start(lo, segments, gaps, pause_thr)
+        and segments[hi].end - segments[lo - 1].start <= upper
+    ):
+        lo -= 1
+        back += 1
+
+    # 2) Grow forward (preferred) to reach the lower bound.
+    while segments[hi].end - segments[lo].start < lower:
+        if hi + 1 < n and (hi + 1) not in used and \
+                segments[hi + 1].end - segments[lo].start <= upper:
+            hi += 1
+        elif lo - 1 >= 0 and (lo - 1) not in used and \
+                segments[hi].end - segments[lo - 1].start <= upper:
+            lo -= 1
+        else:
+            break
+
+    # 3) Extend to a natural end (pause) within upper; else closest to target.
+    best_hi = hi
+    while hi + 1 < n and (hi + 1) not in used:
+        if segments[hi + 1].end - segments[lo].start > upper:
+            break
+        hi += 1
+        if _is_strong_end(hi, segments, gaps, pause_thr):
+            best_hi = hi
+            break
+        cur = abs((segments[hi].end - segments[lo].start) - target)
+        prev = abs((segments[best_hi].end - segments[lo].start) - target)
+        if cur < prev:
+            best_hi = hi
+    hi = best_hi
+
+    return lo, hi
+
+
+def _grow(
+    anchor: int,
+    segments: list,
+    used: set[int],
+    lower: float,
+    upper: float,
+) -> tuple[int | None, int | None]:
+    """Grow [lo, hi] outward from ``anchor`` to within [lower, upper] seconds.
+
+    Adds whole neighbouring segments, preferring forward continuation, without
+    crossing into already-used segments. Returns (None, None) if the anchor is
+    unusable.
+    """
+    if anchor in used:
+        return None, None
+    lo = hi = anchor
+
+    while True:
+        dur = segments[hi].end - segments[lo].start
+        if dur >= lower:
+            break
+        can_fwd = hi + 1 < len(segments) and (hi + 1) not in used
+        can_bwd = lo - 1 >= 0 and (lo - 1) not in used
+
+        # Don't overshoot past the tolerance window once we have enough.
+        if can_fwd:
+            nxt = segments[hi + 1].end - segments[lo].start
+            if nxt <= upper or dur < lower:
+                hi += 1
+                continue
+        if can_bwd:
+            prv = segments[hi].end - segments[lo - 1].start
+            if prv <= upper or dur < lower:
+                lo -= 1
+                continue
+        break
+
+    return lo, hi
